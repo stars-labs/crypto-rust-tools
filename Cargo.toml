@@ -1,0 +1,9 @@
+[package]
+name = "rust-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[workspace]
+members = ["ssh-to-solana", "sol-yubikey-signer"]
