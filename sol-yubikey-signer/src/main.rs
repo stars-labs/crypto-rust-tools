@@ -472,6 +472,22 @@ fn solana_transfer_with_yubikey() -> Result<(), Box<dyn Error>> {
     let to_pubkey = to_str.parse::<Pubkey>()?;
     let lamports = lamports_str.parse::<u64>()?;
 
+    // Check if recipient exists and warn about rent-exempt minimum
+    match client.get_account(&to_pubkey) {
+        Ok(_) => {
+            // Account exists, proceed
+        }
+        Err(_) => {
+            let min_balance = client.get_minimum_balance_for_rent_exemption(0)?;
+            if lamports < min_balance {
+                println!(
+                    "Warning: Recipient account does not exist. You must send at least {} lamports (rent-exempt minimum) to create it.",
+                    min_balance
+                );
+            }
+        }
+    }
+
     // Build unsigned transaction
     let mut tx = build_transfer_tx(&from_pubkey, &to_pubkey, lamports, blockhash);
 
