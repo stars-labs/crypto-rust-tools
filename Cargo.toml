@@ -1,9 +1,9 @@
 [package]
-name = "rust-tools"
+name = "crypto-rust-tools"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 
 [workspace]
-members = ["ssh-to-solana", "sol-yubikey-signer"]
+members = ["ssh_to_solana", "yubikey_ed25519_crpyto", "solnana_mpc_frost"]

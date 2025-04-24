@@ -1,0 +1,15 @@
+[package]
+name = "solnana_mpc_frost"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frost-ed25519 = "2.1.0"
+frost-core = "2.1.0"
+rand = "*"
+solana-sdk = "2.2.2"
+solana-client = "2.2.7"
+bincode = "*"
+hex = "*"
+rand_core = "*"
+curve25519-dalek = "*"

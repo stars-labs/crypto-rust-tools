@@ -1,0 +1,20 @@
+[package]
+name = "ssh_to_solana"
+version = "0.1.1"
+edition = "2024"
+authors = ["xiongchenyu6@gmail.com"]
+description = "Convert GPG-exported ED25519 SSH key to Solana address"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stars-labs/crypto-rust-tools"
+keywords = ["solana", "ssh", "ed25519", "cli", "key-conversion"]
+categories = ["cryptography", "command-line-utilities"]
+
+[[bin]]
+name = "ssh_to_solana"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+base64 = "0.21"
+bs58 = "0.5"
+anyhow = "1.0"

@@ -33,6 +33,7 @@
               RUST_BACKTRACE = 1;
 
               buildInputs = [
+                systemd
               ];
               nativeBuildInputs = [
                 pkg-config
@@ -46,6 +47,7 @@
                 rustfmt
                 pcsclite
                 opensc
+
               ];
             };
         };
