@@ -7514,13 +7514,13 @@ name = "yubikey_ed25519_crpyto"
 version = "0.1.2"
 dependencies = [
  "anyhow",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "clap 4.5.34",
  "hex",
  "pcsc",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rpassword",
  "serde",
  "serde_json",
