@@ -1,3 +1,4 @@
+use bincode::serde::{decode_from_slice, encode_to_vec};
 use frost_core::Identifier;
 use frost_core::keys::{
     KeyPackage, PublicKeyPackage, SecretShare, VerifiableSecretSharingCommitment,
@@ -109,7 +110,7 @@ fn main() {
     };
 
     // Broadcast commitment to all other nodes
-    let commitment_bytes = bincode::serialize(&my_commitment).unwrap();
+    let commitment_bytes = encode_to_vec(&my_commitment, bincode::config::standard()).unwrap();
     for peer in 1..=total {
         if peer == index {
             continue;
@@ -128,8 +129,8 @@ fn main() {
         }
         let mut buf = Vec::new();
         recv_from(&listener, &mut buf);
-        let c: VerifiableSecretSharingCommitment<Ed25519Sha512> =
-            bincode::deserialize(&buf).unwrap();
+        let (c, _): (VerifiableSecretSharingCommitment<Ed25519Sha512>, usize) =
+            decode_from_slice(&buf, bincode::config::standard()).unwrap();
         let peer_id = Identifier::<Ed25519Sha512>::try_from(i).unwrap();
         all_commitments.insert(peer_id, c);
     }
@@ -162,8 +163,8 @@ fn main() {
         }
         let peer_id = Identifier::<Ed25519Sha512>::try_from(i).unwrap();
         let share = shares_map.get(&peer_id).unwrap();
+        let share_bytes = encode_to_vec(share, bincode::config::standard()).unwrap();
         let peer_addr = format!("127.0.0.1:1000{}", i);
-        let share_bytes = bincode::serialize(share).unwrap();
         send_to(&peer_addr, &share_bytes);
     }
 
@@ -179,7 +180,8 @@ fn main() {
         }
         let mut buf = Vec::new();
         recv_from(&listener, &mut buf);
-        let share: SecretShare<Ed25519Sha512> = bincode::deserialize(&buf).unwrap();
+        let (share, _): (SecretShare<Ed25519Sha512>, usize) =
+            decode_from_slice(&buf, bincode::config::standard()).unwrap();
         let peer_id = Identifier::<Ed25519Sha512>::try_from(i).unwrap();
         received_shares.insert(peer_id, share);
     }

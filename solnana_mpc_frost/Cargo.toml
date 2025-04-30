@@ -9,7 +9,26 @@ frost-core = "2.1.0"
 rand = "*"
 solana-sdk = "2.2.2"
 solana-client = "2.2.7"
-bincode = "*"
+bincode = { version = "*", features = ["serde"] }
 hex = "*"
 rand_core = "*"
 curve25519-dalek = "*"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+ratatui = { version = "*", features = ["crossterm"] }
+crossterm = { version = "0.29.0" }
+anyhow = "*"
+url = "*"
+webrtc = "*"
+lazy_static = "*"
+
+[[bin]]
+name = "signal_server"
+path = "src/signal_server.rs"
+
+[[bin]]
+name = "cli_node"
+path = "src/cli_node.rs"
