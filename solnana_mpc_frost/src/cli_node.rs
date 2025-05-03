@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex as StdMutex}; // Use StdMutex for TUI state
-use std::time::{Duration, SystemTime, UNIX_EPOCH}; // Add SystemTime and UNIX_EPOCH
+// Remove unused SystemTime, UNIX_EPOCH
+use std::time::Duration; // Add SystemTime and UNIX_EPOCH
 // Add HashSet import
 use std::{
     collections::{HashMap, HashSet},
@@ -7,95 +8,58 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    // Remove unused KeyCode
+    event::{self, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::{SinkExt, StreamExt};
 use lazy_static::lazy_static;
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
-};
-use serde::{Deserialize, Serialize}; // Add serde traits
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::{Mutex as TokioMutex, mpsc}; // Use TokioMutex for async WebRTC state
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 // Uncomment imports
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate};
+// Remove unused DataChannelMessage import
+// use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit; // Keep RTCIceCandidateInit here if used directly
 // Correct the import path for RTCIceCredentialType
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-// Remove unused import RTCSessionDescription
-// use webrtc::peer_connection::sdp::session_description::RTCSessionDescription; // Import RTCDataChannel // Import DataChannelMessage
 
 // Add these imports for WebRTC policies
 use webrtc::peer_connection::policy::{
     bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
     rtcp_mux_policy::RTCRtcpMuxPolicy,
 };
-
 // Import shared types from the library crate
 use solnana_mpc_frost::{ClientMsg, ServerMsg, SessionInfo};
 
-// --- WebRTC Signaling Structures ---
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type")]
-enum WebRTCSignal {
-    Offer(SDPInfo),
-    Answer(SDPInfo),
-    Candidate(CandidateInfo),
-}
+// --- Declare Modules ---
+mod negotiation;
+mod peer;
+mod signal;
+mod state;
+mod tui;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct SDPInfo {
-    sdp: String,
-}
+// --- Use items from modules ---
+use negotiation::initiate_offers_for_session;
+use peer::{apply_pending_candidates, create_and_setup_peer_connection};
+use signal::{SDPInfo, WebRTCSignal};
+use state::{AppState, ReconnectionTracker};
+// Import the new handler function
+use tui::{draw_main_ui, handle_key_event};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct CandidateInfo {
-    candidate: String,
-    #[serde(rename = "sdpMid")]
-    sdp_mid: Option<String>,
-    #[serde(rename = "sdpMLineIndex")]
-    sdp_mline_index: Option<u16>,
-}
-// --- End WebRTC Signaling Structures ---
-
-struct AppState {
-    peer_id: String,
-    peers: Vec<String>,
-    log: Vec<String>,
-    session: Option<SessionInfo>,
-    invites: Vec<SessionInfo>,
-    // Use TokioMutex for async access needed by WebRTC callbacks
-    peer_connections: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    // Store connection status for TUI display (under StdMutex)
-    peer_statuses: HashMap<String, RTCPeerConnectionState>,
-    // Flag to track if WebRTC setup has started for the current session
-    reconnection_tracker: ReconnectionTracker,
-    keep_alive_peers: HashSet<String>, // To track which peers are receiving keep-alives
-    // 添加一个可选的命令发送器字段
-    cmd_tx: Option<mpsc::UnboundedSender<ClientMsg>>,
-    // --- Perfect Negotiation Flags ---
-    making_offer: HashMap<String, bool>, // Track if we are currently making an offer TO a specific peer
-    ignore_offer: HashMap<String, bool>, // Track if we should ignore the next offer FROM a specific peer
-    // Add a field to store pending ICE candidates
-    pending_ice_candidates: HashMap<String, Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>>,
-}
-
-// --- WebRTC API Setup ---
+// --- WebRTC API Setup (Keep lazy_static here or move to a dedicated module) ---
 lazy_static! {
-    static ref WEBRTC_CONFIG: RTCConfiguration = RTCConfiguration {
+    // Make these public if peer.rs or negotiation.rs need direct access
+    // Or pass WEBRTC_API as an argument if preferred
+    pub static ref WEBRTC_CONFIG: RTCConfiguration = RTCConfiguration {
         ice_servers: vec![
             // Primary STUN servers - using multiple to increase reliability
             RTCIceServer {
@@ -127,7 +91,7 @@ lazy_static! {
         ice_candidate_pool_size: 10, // 增加候选池大小以提高连接成功率
         ..Default::default()
     };
-    static ref WEBRTC_API: webrtc::api::API = {
+    pub static ref WEBRTC_API: webrtc::api::API = {
         let mut m = MediaEngine::default();
         // NOTE: Registering codecs is required for audio/video, but not for data channels.
         // m.register_default_codecs().unwrap();
@@ -141,661 +105,7 @@ lazy_static! {
 }
 // --- End WebRTC API Setup ---
 
-// Define a struct to track reconnection attempts and prevent excessive reconnections
-struct ReconnectionTracker {
-    attempts: std::collections::HashMap<String, usize>,
-    timestamps: std::collections::HashMap<String, std::time::Instant>,
-    cooldown_until: std::collections::HashMap<String, Option<std::time::Instant>>, // 新增冷却期字段
-    max_sequential_attempts: usize, // 限制连续尝试次数
-}
-
-impl ReconnectionTracker {
-    fn new() -> Self {
-        Self {
-            attempts: std::collections::HashMap::new(),
-            timestamps: std::collections::HashMap::new(),
-            cooldown_until: std::collections::HashMap::new(),
-            // Increase allowed attempts before cooldown
-            max_sequential_attempts: 5, 
-        }
-    }
-
-    fn should_attempt(&mut self, peer_id: &str) -> bool {
-        let now = std::time::Instant::now();
-        
-        // 检查是否在冷却期
-        if let Some(Some(cooldown_time)) = self.cooldown_until.get(peer_id) {
-            if now < *cooldown_time {
-                return false; // 仍在冷却期，不尝试重连
-            } else {
-                // 冷却期结束，重置计数
-                self.cooldown_until.insert(peer_id.to_string(), None);
-                self.attempts.insert(peer_id.to_string(), 0);
-            }
-        }
-        
-        let attempt_count = self.attempts.entry(peer_id.to_string()).or_insert(0);
-        let last_attempt = self.timestamps.entry(peer_id.to_string()).or_insert(now);
-
-        // 指数退避策略 - 随着尝试次数增加而延长等待时间
-        let wait_duration = if *attempt_count == 0 {
-            Duration::from_millis(500) // 首次尝试更快
-        } else {
-            // Reduce the cap for exponential backoff (max wait ~15 seconds)
-            Duration::from_millis((500 * (1 << std::cmp::min(*attempt_count, 5))) as u64) 
-        };
-
-        // 如果已经过了足够的时间
-        if now.duration_since(*last_attempt) > wait_duration {
-            *last_attempt = now;
-            *attempt_count += 1;
-            
-            // 检查是否需要进入冷却期
-            if *attempt_count > self.max_sequential_attempts {
-                // Reduce cooldown duration to 30 seconds
-                self.cooldown_until.insert(
-                    peer_id.to_string(), 
-                    Some(now + Duration::from_secs(30)) 
-                );
-                return false;
-            }
-            
-            return true;
-        }
-        
-        false
-    }
-
-    fn reset(&mut self, peer_id: &str) {
-        self.attempts.remove(peer_id);
-        self.timestamps.remove(peer_id);
-        self.cooldown_until.remove(peer_id);
-    }
-    
-    // 新增一个方法来记录重连成功，只重置尝试次数但保留时间戳
-    fn record_success(&mut self, peer_id: &str) {
-        self.attempts.insert(peer_id.to_string(), 0);
-        self.cooldown_until.insert(peer_id.to_string(), None);
-    }
-}
-
-// --- NEW Helper Function: Create Peer Connection Object ---
-// Creates a single peer connection, sets up callbacks, and stores it.
-async fn create_and_setup_peer_connection(
-    peer_id: String,
-    _self_peer_id: String, // FIX: Mark unused variable
-    peer_connections_arc: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    cmd_tx: mpsc::UnboundedSender<ClientMsg>,
-    state_log: Arc<StdMutex<AppState>>,
-) -> Result<Arc<RTCPeerConnection>, String> {
-    // Check if connection already exists before creating
-    {
-        let peer_conns = peer_connections_arc.lock().await;
-        if let Some(existing_pc) = peer_conns.get(&peer_id) {
-            // FIX: Connection already exists, log and return Ok with the existing Arc
-            state_log.lock().unwrap().log.push(format!(
-                "WebRTC connection object for {} already exists. Skipping creation.",
-                peer_id
-            ));
-            return Ok(existing_pc.clone()); // Return the existing connection Arc
-        }
-        // Drop lock implicitly here
-    }
-
-    state_log
-        .lock()
-        .unwrap()
-        .log
-        .push(format!("Creating WebRTC connection object for {}", peer_id));
-
-    match WEBRTC_API.new_peer_connection(WEBRTC_CONFIG.clone()).await {
-        Ok(pc) => {
-            let pc_arc = Arc::new(pc);
-
-            // --- Setup Callbacks (Essential before processing any signals) ---
-            let peer_id_on_ice = peer_id.clone();
-            let cmd_tx_on_ice = cmd_tx.clone();
-            let state_log_on_ice = state_log.clone();
-            pc_arc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-                let peer_id = peer_id_on_ice.clone();
-                let cmd_tx = cmd_tx_on_ice.clone();
-                let state_log = state_log_on_ice.clone();
-                Box::pin(async move {
-                    if let Some(c) = candidate {
-                        // ... existing ICE candidate sending logic ...
-                        match c.to_json() {
-                            Ok(init) => {
-                                let signal = WebRTCSignal::Candidate(CandidateInfo {
-                                    candidate: init.candidate,
-                                    sdp_mid: init.sdp_mid,
-                                    sdp_mline_index: init.sdp_mline_index,
-                                });
-                                match serde_json::to_value(signal) {
-                                    Ok(json_val) => {
-                                        let _ = cmd_tx.send(ClientMsg::Relay {
-                                            to: peer_id.clone(),
-                                            data: json_val,
-                                        });
-                                        state_log
-                                            .lock()
-                                            .unwrap()
-                                            .log
-                                            .push(format!("Sent ICE candidate to {}", peer_id));
-                                    }
-                                    // FIX: Use error variable 'e'
-                                    Err(e) => {
-                                        state_log.lock().unwrap().log.push(format!(
-                                            "Error serializing ICE candidate for {}: {}",
-                                            peer_id, e
-                                        ));
-                                    }
-                                }
-                            }
-                            // FIX: Use error variable 'e'
-                            Err(e) => {
-                                state_log.lock().unwrap().log.push(format!(
-                                    "Error converting ICE candidate to JSON for {}: {}",
-                                    peer_id, e
-                                ));
-                            }
-                        }
-                    }
-                })
-            }));
-
-            // Setup state change handler with improved reconnection logic
-            let state_log_on_state = state_log.clone();
-            let peer_id_on_state = peer_id.clone();
-            let cmd_tx_on_state = cmd_tx.clone();
-            let pc_arc_for_state = pc_arc.clone();
-            pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-                let state_log = state_log_on_state.clone();
-                let peer_id = peer_id_on_state.clone();
-                let cmd_tx_local = cmd_tx_on_state.clone();
-                let pc_weak = Arc::downgrade(&pc_arc_for_state); // Keep pc_weak for potential future use
-
-                println!("Peer Connection State with {} has changed: {}", peer_id, s);
-
-                // Handle state changes with improved logic
-                match s {
-                    RTCPeerConnectionState::Connected => {
-                        // Reset reconnection tracking when connected
-                        if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("!!! WebRTC CONNECTED with {} !!!", peer_id));
-                            guard.reconnection_tracker.reset(&peer_id);
-                            
-                            // Setup keep-alive if not already set
-                            if !guard.keep_alive_peers.contains(&peer_id) {
-                                guard.keep_alive_peers.insert(peer_id.clone());
-                                
-                                // Setup keep-alive mechanism using a dedicated channel
-                                let pc_weak_clone = pc_weak.clone();
-                                let peer_id_clone = peer_id.clone();
-                                let state_log_clone = state_log.clone();
-                                
-                                tokio::spawn(async move {
-                                    // Create a dedicated keep-alive channel
-                                    if let Some(pc_strong) = pc_weak_clone.upgrade() {
-                                        match pc_strong.create_data_channel("keep-alive", None).await {
-                                            Ok(dc) => {
-                                                let dc_arc = Arc::new(dc);
-                                                
-                                                // Set up on_open handler for channel
-                                                let dc_weak = Arc::downgrade(&dc_arc);
-                                                let peer_id_ping = peer_id_clone.clone();
-                                                let state_log_ping = state_log_clone.clone();
-                                                
-                                                dc_arc.on_open(Box::new(move || {
-                                                    if let Ok(mut guard) = state_log_ping.try_lock() {
-                                                        guard.log.push(format!("Keep-alive channel open with {}", peer_id_ping));
-                                                    }
-                                                    
-                                                    // Start ping loop in a new task
-                                                    let dc_weak_ping = dc_weak.clone();
-                                                    let peer_ping = peer_id_ping.clone();
-                                                    let state_ping = state_log_ping.clone();
-                                                    
-                                                    tokio::spawn(async move {
-                                                        let mut interval = tokio::time::interval(Duration::from_secs(10));
-                                                        
-                                                        loop {
-                                                            interval.tick().await;
-                                                            
-                                                            if let Some(dc_strong) = dc_weak_ping.upgrade() {
-                                                                if dc_strong.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                                                                    break;
-                                                                }
-                                                                
-                                                                if let Err(e) = dc_strong.send_text("ping").await {
-                                                                    if let Ok(mut guard) = state_ping.try_lock() {
-                                                                        guard.log.push(format!(
-                                                                            "Keep-alive channel to {} failed: {}",
-                                                                            peer_ping, e
-                                                                        ));
-                                                                    }
-                                                                    break;
-                                                                }
-                                                            } else {
-                                                                // Channel was dropped
-                                                                break;
-                                                            }
-                                                        }
-                                                    });
-                                                    
-                                                    Box::pin(async {})
-                                                }));
-                                                
-                                                if let Ok(mut guard) = state_log_clone.try_lock() {
-                                                    guard.log.push(format!("Created keep-alive channel for {}", peer_id_clone));
-                                                }
-                                            },
-                                            Err(e) => {
-                                                if let Ok(mut guard) = state_log_clone.try_lock() {
-                                                    guard.log.push(format!("Failed to create keep-alive channel for {}: {}", 
-                                                        peer_id_clone, e));
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    },
-                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed => {
-                        // Combine Disconnected and Failed handling for rejoin logic
-                        if let Ok(mut guard) = state_log.try_lock() {
-                            let state_name = if s == RTCPeerConnectionState::Disconnected { "DISCONNECTED" } else { "FAILED" };
-                            guard.log.push(format!("!!! WebRTC {} with {} !!!", state_name, peer_id));
-                            
-                            // Remove keep-alive tracking if it failed/disconnected
-                            guard.keep_alive_peers.remove(&peer_id);
-
-                            // Attempt to rejoin the current session if allowed by tracker
-                            if guard.reconnection_tracker.should_attempt(&peer_id) {
-                                if let Some(current_session) = guard.session.clone() {
-                                    let session_id_to_rejoin = current_session.session_id;
-                                    guard.log.push(format!(
-                                        "Attempting automatic rejoin to session '{}' due to {} state with {}",
-                                        session_id_to_rejoin, state_name, peer_id
-                                    ));
-                                    
-                                    // Drop the guard before sending the command
-                                    drop(guard); 
-                                    
-                                    // Send JoinSession command to trigger rejoin process
-                                    let _ = cmd_tx_local.send(ClientMsg::JoinSession { 
-                                        session_id: session_id_to_rejoin 
-                                    });
-
-                                } else {
-                                    // Log if no active session to rejoin
-                                    guard.log.push(format!(
-                                        "Cannot attempt automatic rejoin for {}: No active session.",
-                                        peer_id
-                                    ));
-                                }
-                            } else {
-                                // Log if reconnection is skipped due to backoff/cooldown
-                                guard.log.push(format!(
-                                    "Skipping automatic rejoin attempt for {} (backoff/cooldown).",
-                                    peer_id
-                                ));
-                            }
-                        }
-                    },
-                    _ => {
-                        // Log other states without special handling
-                        if let Ok(mut app_state_guard) = state_log.try_lock() {
-                            app_state_guard.log.push(format!("WebRTC state with {}: {:?}", peer_id, s));
-                            // Update status map for TUI display
-                            app_state_guard.peer_statuses.insert(peer_id.clone(), s); 
-                        }
-                    }
-                }
-                
-                // Also update the status in state regardless of special handling
-                // Ensure the status map reflects the latest state reported by the callback
-                if let Ok(mut app_state_guard) = state_log.try_lock() {
-                    app_state_guard.peer_statuses.insert(peer_id.clone(), s);
-                }
-                
-                Box::pin(async {})
-            }));
-
-            let state_log_on_data = state_log.clone();
-            let peer_id_on_data = peer_id.clone();
-            pc_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-                // ... existing on_data_channel logic (logging, on_open, on_message) ...
-                let state_log = state_log_on_data.clone();
-                let peer_id = peer_id_on_data.clone();
-                // FIX: Add actual log message
-                state_log.lock().unwrap().log.push(format!(
-                    "Receiver: Data channel '{}' opened by {}",
-                    dc.label(),
-                    peer_id
-                ));
-
-                let state_log_open = state_log.clone();
-                let peer_id_open = peer_id.clone();
-                dc.on_open(Box::new(move || {
-                    // FIX: Add actual log message
-                    state_log_open.lock().unwrap().log.push(format!(
-                        "Receiver: Data channel open confirmed with {}",
-                        peer_id_open
-                    ));
-                    Box::pin(async {})
-                }));
-
-                let state_log_msg = state_log.clone();
-                let peer_id_msg = peer_id.clone();
-                dc.on_message(Box::new(move |msg: DataChannelMessage| {
-                    // FIX: Add actual log message
-                    let msg_str = String::from_utf8(msg.data.to_vec())
-                        .unwrap_or_else(|_| "Non-UTF8 data".to_string());
-                    state_log_msg.lock().unwrap().log.push(format!(
-                        "Receiver: Message from {}: {}",
-                        peer_id_msg, msg_str
-                    ));
-                    Box::pin(async {})
-                }));
-
-                Box::pin(async move {})
-            }));
-            // --- End Setup Callbacks ---
-
-            // --- Store the connection object ---
-            {
-                let mut peer_conns = peer_connections_arc.lock().await;
-                peer_conns.insert(peer_id.clone(), pc_arc.clone());
-                state_log
-                    .lock()
-                    .unwrap()
-                    .log
-                    .push(format!("Stored WebRTC connection object for {}", peer_id));
-            } // Drop lock
-
-            Ok(pc_arc)
-        }
-        Err(e) => {
-            // FIX: Add actual log message
-            let err_msg = format!(
-                "Error creating peer connection object for {}: {}",
-                peer_id, e
-            );
-            state_log.lock().unwrap().log.push(err_msg.clone());
-            Err(err_msg)
-        }
-    }
-}
-
-// --- REFACTORED Helper Function: Initiate Offers ---
-// Implements Perfect Negotiation logic (initiator side)
-async fn initiate_offers_for_session(
-    participants: Vec<String>,
-    self_peer_id: String,
-    peer_connections_arc: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    cmd_tx: mpsc::UnboundedSender<ClientMsg>,
-    state_log: Arc<StdMutex<AppState>>, // Use state_log which is Arc<StdMutex<AppState>>
-) {
-    state_log
-        .lock()
-        .unwrap()
-        .log
-        .push("Initiating WebRTC offers check...".to_string()); // Renamed log
-
-    // Lock connections once
-    let peer_conns = peer_connections_arc.lock().await;
-    state_log
-        .lock()
-        .unwrap()
-        .log
-        .push(format!("Found {} peer connection objects.", peer_conns.len()));
-
-
-    for peer_id in participants {
-        if peer_id == self_peer_id { // Removed unnecessary parentheses
-            continue;
-        }
-
-        // --- Perfect Negotiation Role Check ---
-        let should_initiate = self_peer_id < peer_id; // Impolite peer initiates
-
-        state_log.lock().unwrap().log.push(format!(
-            "Checking peer {}: Should initiate? {}", peer_id, should_initiate
-        ));
-
-        if should_initiate {
-            if let Some(pc_arc) = peer_conns.get(&peer_id) {
-                state_log.lock().unwrap().log.push(format!(
-                    "Found PC object for peer {}", peer_id
-                ));
-                let current_state = pc_arc.connection_state();
-                let signaling_state = pc_arc.signaling_state();
-
-                // Check if negotiation is needed based on state
-                let negotiation_needed = match current_state {
-                    RTCPeerConnectionState::New |
-                    RTCPeerConnectionState::Closed |
-                    RTCPeerConnectionState::Disconnected |
-                    RTCPeerConnectionState::Failed => true, // Need to negotiate if not connected/connecting
-                    _ => match signaling_state {
-                        webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => false, // Assume stable means no immediate need
-                        _ => false, // If already negotiating, don't start another one
-                    }
-                };
-
-                state_log.lock().unwrap().log.push(format!(
-                    "Peer {}: Negotiation needed? {} (State: {:?}/{:?})",
-                    peer_id, negotiation_needed, current_state, signaling_state
-                ));
-
-
-                if !negotiation_needed {
-                    // Log already exists, skipping continue
-                    continue;
-                }
-
-                // --- Check making_offer flag ---
-                let is_already_making_offer = state_log.lock().unwrap()
-                                            .making_offer.get(&peer_id).copied().unwrap_or(false);
-
-                state_log.lock().unwrap().log.push(format!(
-                    "Peer {}: Already making offer? {}", peer_id, is_already_making_offer
-                ));
-
-
-                if is_already_making_offer {
-                    // Log already exists, skipping continue
-                    continue;
-                }
-
-                // --- Proceed to make offer ---
-                state_log.lock().unwrap().log.push(format!(
-                    "Proceeding to spawn offer task for peer {}", peer_id // Added log
-                ));
-                let pc_arc_clone = pc_arc.clone();
-                let peer_id_clone = peer_id.clone();
-                let state_log_clone = state_log.clone(); // Clone the Arc<StdMutex<AppState>>
-                let cmd_tx_clone = cmd_tx.clone();
-
-                tokio::spawn(async move { // Spawn task for actual offer creation
-                    // --- Set making_offer flag ---
-                    state_log_clone.lock().unwrap().making_offer.insert(peer_id_clone.clone(), true);
-                    state_log_clone.lock().unwrap().log.push(format!("Set making_offer=true for {}", peer_id_clone));
-
-
-                    // Prefix offer_result with _ to mark it as intentionally unused
-                    let offer_result = async { // Wrap offer logic in an async block for easier cleanup
-                        // ... (Create Data Channel logic remains the same) ...
-                        // Add log before creating data channel
-                        state_log_clone.lock().unwrap().log.push(format!(
-                            "Offer Task [{}]: Creating data channel...", peer_id_clone
-                        ));
-                        // Example: Create a default data channel if none exists
-                        // Note: This might interfere if the other side also tries to create it.
-                        // Consider creating channels only *after* connection is stable, or use negotiation.
-                        // For now, let's assume a default channel is needed for testing.
-                        match pc_arc_clone.create_data_channel("data", None).await {
-                            Ok(dc) => {
-                                state_log_clone.lock().unwrap().log.push(format!(
-                                    "Offer Task [{}]: Created data channel '{}'. Setting up callbacks.", peer_id_clone, dc.label()
-                                ));
-                                let dc_arc = Arc::new(dc);
-                                // Setup basic logging callbacks for the created channel
-                                let state_log_dc = state_log_clone.clone();
-                                let peer_id_dc = peer_id_clone.clone();
-                                dc_arc.on_open(Box::new(move || {
-                                    state_log_dc.lock().unwrap().log.push(format!(
-                                        "Offer Task [{}]: Data channel opened!", peer_id_dc
-                                    ));
-                                    Box::pin(async {})
-                                }));
-                                let state_log_dc_msg = state_log_clone.clone();
-                                let peer_id_dc_msg = peer_id_clone.clone();
-                                dc_arc.on_message(Box::new(move |msg: DataChannelMessage| {
-                                     let msg_str = String::from_utf8(msg.data.to_vec()).unwrap_or_else(|_| "Non-UTF8 data".to_string());
-                                     state_log_dc_msg.lock().unwrap().log.push(format!(
-                                         "Offer Task [{}]: Received message: {}", peer_id_dc_msg, msg_str
-                                     ));
-                                    Box::pin(async {})
-                                }));
-                            }
-                            Err(e) => {
-                                 state_log_clone.lock().unwrap().log.push(format!(
-                                    "Offer Task [{}]: Error creating data channel: {}", peer_id_clone, e
-                                )); // Fixed: added missing closing parenthesis
-                                // Decide if this is fatal for the offer attempt
-                                // return Err(()); // Maybe don't fail the whole offer just for the data channel?
-                            }
-                        }
-
-
-                        // --- Create and Send Offer ---
-                        state_log_clone.lock().unwrap().log.push(format!(
-                            "Offer Task [{}]: Creating offer...", peer_id_clone // Added log
-                        ));
-                        match pc_arc_clone.create_offer(None).await {
-                            Ok(offer) => {
-                                state_log_clone.lock().unwrap().log.push(format!(
-                                    "Offer Task [{}]: Created offer. Setting local description...", peer_id_clone // Added log
-                                ));
-                                // Fix error logging for setting local description
-                                if let Err(e) = pc_arc_clone.set_local_description(offer.clone()).await {
-                                    state_log_clone.lock().unwrap().log.push(format!(
-                                        "Offer Task [{}]: Error setting local description (offer): {}", // Restored log
-                                        peer_id_clone, e
-                                    ));
-                                    return Err(()); // Indicate failure
-                                }
-                                state_log_clone.lock().unwrap().log.push(format!(
-                                    "Offer Task [{}]: Set local description (offer). Serializing and sending...", // Restored log
-                                    peer_id_clone
-                                ));
-
-                                let signal = WebRTCSignal::Offer(SDPInfo { sdp: offer.sdp });
-                                match serde_json::to_value(signal) {
-                                    Ok(json_val) => {
-                                        // Fix ClientMsg::Relay initialization
-                                        let _ = cmd_tx_clone.send(ClientMsg::Relay {
-                                            to: peer_id_clone.clone(), // Restored field
-                                            data: json_val,            // Restored field
-                                        });
-                                        state_log_clone
-                                            .lock()
-                                            .unwrap()
-                                            .log
-                                            .push(format!("Offer Task [{}]: Sent offer.", peer_id_clone)); // Restored log
-                                    }
-                                    // Fix error logging for offer serialization
-                                    Err(e) => {
-                                        state_log_clone.lock().unwrap().log.push(format!(
-                                            "Offer Task [{}]: Error serializing offer: {}", peer_id_clone, e
-                                        ));
-                                        return Err(()); // Indicate failure
-                                    }
-                                }
-                            }
-                            // Fix error logging for offer creation
-                            Err(e) => {
-                                state_log_clone
-                                    .lock()
-                                    .unwrap()
-                                    .log
-                                    .push(format!("Offer Task [{}]: Error creating offer: {}", peer_id_clone, e)); // Restored log
-                                return Err(()); // Indicate failure
-                            }
-                        }
-                        Ok(()) // Indicate success
-                    }.await;
-
-                    // --- Clear making_offer flag regardless of success/failure ---
-                    // Log success/failure based on offer_result
-                    let outcome = if offer_result.is_ok() { "succeeded" } else { "failed" };
-                    state_log_clone.lock().unwrap().log.push(format!(
-                        "Offer Task [{}] {} negotiation.", peer_id_clone, outcome
-                    ));
-                    state_log_clone.lock().unwrap().making_offer.insert(peer_id_clone.clone(), false);
-                    state_log_clone.lock().unwrap().log.push(format!("Set making_offer=false for {}", peer_id_clone));
-
-                }); // End of spawned task
-
-            } else {
-                state_log.lock().unwrap().log.push(format!(
-                    "Should initiate offer to {}, but connection object not found!", peer_id // Log remains valid
-                ));
-            }
-        }
-    }
-    // peer_conns lock dropped here
-    state_log
-        .lock()
-        .unwrap()
-        .log
-        .push("Finished WebRTC offers check.".to_string()); // Added log
-}
-
-// Apply any pending ICE candidates for a peer
-async fn apply_pending_candidates(
-    peer_id: &str,
-    pc: Arc<RTCPeerConnection>,
-    state_log: Arc<StdMutex<AppState>>,
-) {
-    // Take the pending candidates for this peer
-    let candidates = {
-        let mut state_guard = state_log.lock().unwrap();
-        let pending = state_guard.pending_ice_candidates.remove(peer_id);
-        if let Some(candidates) = &pending {
-            if !candidates.is_empty() {
-                state_guard.log.push(format!(
-                    "Applying {} stored ICE candidate(s) for {}",
-                    candidates.len(), peer_id
-                ));
-            }
-        }
-        pending
-    };
-
-    // If there are pending candidates, apply them
-    if let Some(candidates) = candidates {
-        // Apply each candidate
-        for candidate in candidates {
-            match pc.add_ice_candidate(candidate.clone()).await {
-                Ok(_) => {
-                    if let Ok(mut state_guard) = state_log.lock() {
-                        state_guard.log.push(format!("Applied stored ICE candidate for {}", peer_id));
-                    }
-                }
-                Err(e) => {
-                    if let Ok(mut state_guard) = state_log.lock() {
-                        state_guard.log.push(format!(
-                            "Error applying stored ICE candidate for {}: {}", peer_id, e
-                        ));
-                    }
-                }
-            }
-        }
-    }
-}
+// --- State, Signal, Peer, Negotiation structs/enums/functions moved to respective modules ---
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -835,7 +145,8 @@ async fn main() -> anyhow::Result<()> {
         peer_statuses: HashMap::new(),                               // Initialize peer statuses
         reconnection_tracker: ReconnectionTracker::new(),
         keep_alive_peers: HashSet::new(),
-        cmd_tx: Some(cmd_tx.clone()), // 存储一个命令发送器副本
+        // Remove cmd_tx field as it's unused in AppState
+        // cmd_tx: Some(cmd_tx.clone()), // 存储一个命令发送器副本
         // --- Initialize Perfect Negotiation Flags ---
         making_offer: HashMap::new(),
         ignore_offer: HashMap::new(),
@@ -853,41 +164,43 @@ async fn main() -> anyhow::Result<()> {
     // Add periodic connection status checker task
     let state_for_checker = state.clone();
     let peer_connections_for_checker = peer_connections_arc_net.clone();
-    
+
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
-        
+
         loop {
             interval.tick().await;
-            
+
             // Check and update all connection statuses
             let peer_conns = {
                 let lock = peer_connections_for_checker.lock().await;
                 lock.clone()
             };
-            
+
             // Check each connection and update status
             for (peer_id, pc) in peer_conns.iter() {
                 let current_state = pc.connection_state();
-                
+
                 // Update the status in AppState
                 if let Ok(mut guard) = state_for_checker.try_lock() {
                     // Only update if we're in a session with this peer
                     if let Some(session) = &guard.session {
                         if session.participants.contains(peer_id) {
                             let old_status = guard.peer_statuses.get(peer_id).cloned();
-                            
+
                             // Update status
                             guard.peer_statuses.insert(peer_id.clone(), current_state);
-                            
+
                             // Log significant status changes
                             if old_status != Some(current_state) {
                                 guard.log.push(format!(
                                     "Status updated for {}: {:?} → {:?}",
-                                    peer_id, old_status.unwrap_or(RTCPeerConnectionState::New), current_state
+                                    peer_id,
+                                    old_status.unwrap_or(RTCPeerConnectionState::New),
+                                    current_state
                                 ));
                             }
-                            
+
                             // For Connected status, perform an extra check for data channels
                             if current_state == RTCPeerConnectionState::Connected {
                                 // This connection is functional - ensure we're not showing misleading status
@@ -901,7 +214,6 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tokio::spawn(async move {
-    
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         // Request peer list on start
         let _ = ws_sink
@@ -997,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
                                                 // FIX: Iterate over a slice to avoid moving participants_clone
                                                 for peer_id in &participants_clone {
                                                     if *peer_id != self_peer_id_clone {
+                                                        // Use function from peer module
                                                         let _ = create_and_setup_peer_connection(
                                                             peer_id.clone(),
                                                             self_peer_id_clone.clone(),
@@ -1007,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
                                                     }
                                                 }
                                                 // Initiate offers after creating connections
+                                                // Use function from negotiation module
                                                 initiate_offers_for_session(
                                                     participants_clone, // Pass the original Vec here
                                                     self_peer_id_clone,
@@ -1017,16 +331,16 @@ async fn main() -> anyhow::Result<()> {
                                             }); // End of spawned task
                                         }
                                         ServerMsg::Relay { ref from, ref data } => {
-                                            // ...existing log...
+                                            state_net.lock().unwrap().log.push(format!("Relay from {}: {:?}", from, data)); // Log raw data
                                             match serde_json::from_value::<WebRTCSignal>(data.clone()) {
                                                 Ok(signal) => {
-                                                    // ...existing log...
+                                                    state_net.lock().unwrap().log.push(format!("Parsed WebRTC signal from {}: {:?}", from, signal)); // Log parsed signal
                                                     // Clone necessary Arcs and data FOR the spawned task
                                                     let pc_arc_net_clone = peer_connections_arc_net.clone();
                                                     let from_clone = from.clone();
                                                     let cmd_tx_clone = cmd_tx_net.clone();
                                                     let state_log_clone = state_net.clone();
-                                                    let signal_clone = signal.clone();
+                                                    let signal_clone = signal.clone(); // Clone the parsed signal
                                                     let self_peer_id_clone = self_peer_id.clone();
 
                                                     tokio::spawn(async move { // Spawn signal handling
@@ -1046,6 +360,7 @@ async fn main() -> anyhow::Result<()> {
                                                                     from_clone
                                                                 ));
                                                                 // Call create_and_setup_peer_connection. It handles "already exists" internally.
+                                                                // Use function from peer module
                                                                 create_and_setup_peer_connection(
                                                                     from_clone.clone(),
                                                                     self_peer_id_clone.clone(), // Pass self_peer_id
@@ -1169,6 +484,7 @@ async fn main() -> anyhow::Result<()> {
                                                                                         "Set remote description (offer) from {}. Creating answer...", from_clone
                                                                                     ));
                                                                                     // Apply any pending ICE candidates now that the remote description is set
+                                                                                    // Use function from peer module
                                                                                     apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
 
                                                                                     // Create data channel before answering (optional)
@@ -1244,7 +560,7 @@ async fn main() -> anyhow::Result<()> {
                                                                         }
                                                                     }
                                                                     WebRTCSignal::Answer(answer_info) => {
-                                                                        
+
                                                                         state_log_clone.lock().unwrap().log.push(format!(
                                                                             "Processing answer from {}...", from_clone
                                                                         ));
@@ -1262,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
                                                                                         "Set remote description (answer) from {}", from_clone
                                                                                     ));
                                                                                     // Apply any pending ICE candidates now that the remote description is set
+                                                                                    // Use function from peer module
                                                                                     apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
                                                                                 }
                                                                             },
@@ -1278,7 +595,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             "Processing candidate from {}...", from_clone
                                                                         ));
                                                                         // FIX: Use RTCIceCandidateInit directly with add_ice_candidate
-                                                                        let candidate_init = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+                                                                        let candidate_init = RTCIceCandidateInit { // Use imported RTCIceCandidateInit
                                                                             candidate: candidate_info.candidate,
                                                                             sdp_mid: candidate_info.sdp_mid,
                                                                             sdp_mline_index: candidate_info.sdp_mline_index,
@@ -1350,7 +667,30 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        _ => {} // Ignore other events like Mouse, Resize etc.
+                        // FIX: Handle other message types like Close, Ping, Pong if necessary
+                        Ok(Message::Close(_)) => {
+                            state_net.lock().unwrap().log.push("WebSocket connection closed by server.".to_string());
+                            break; // Exit the network loop
+                        }
+                        Ok(Message::Ping(ping_data)) => {
+                            // Respond with Pong
+                            let _ = ws_sink.send(Message::Pong(ping_data)).await;
+                        }
+                        Ok(Message::Pong(_)) => {
+                            // Pong received, maybe reset a keep-alive timer if you implement one
+                        }
+                        Ok(Message::Binary(_)) => {
+                             state_net.lock().unwrap().log.push("Received unexpected binary message.".to_string());
+                        }
+                        // Add catch-all for Frame and potential future variants
+                        Ok(Message::Frame(_)) => {
+                            // Low-level frames are usually handled by the library, ignore them.
+                            // state_net.lock().unwrap().log.push("Received WebSocket frame.".to_string());
+                        }
+                        Err(e) => {
+                             state_net.lock().unwrap().log.push(format!("WebSocket read error: {}", e));
+                             break; // Exit loop on error
+                        }
                     }
                 }
             }
@@ -1369,122 +709,12 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         // Lock state for drawing (Use StdMutex for TUI state)
-        let app_guard = state.lock().unwrap();
-        terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints([
-                    Constraint::Length(3), // Title
-                    Constraint::Length(5), // Peers
-                    Constraint::Min(5),    // Log
-                    Constraint::Length(3), // Session/Invites
-                    Constraint::Length(3), // Input Area
-                ])
-                .split(f.area());
-
-            let title = format!("Peer ID: {}", app_guard.peer_id);
-
-            // Determine which peers *should* be connected based on the session
-            let session_participants: HashSet<String> = app_guard
-                .session
-                .as_ref()
-                .map(|s| s.participants.iter().cloned().collect())
-                .unwrap_or_default();
-
-            // Update the TUI rendering logic for peer statuses to be more accurate
-            let peer_list_items = app_guard
-                .peers // Peers known via signaling
-                .iter()
-                .filter(|p| !p.trim().eq_ignore_ascii_case(app_guard.peer_id.trim()))
-                .map(|p| {
-                    let status = if session_participants.contains(p) {
-                        // First check if there's an explicit status
-                        if let Some(s) = app_guard.peer_statuses.get(p) {
-                            // For clarity, add connection role in the status display
-                            let role_prefix = if app_guard.peer_id < p.to_string() {
-                                "→" // Initiator (outgoing connection)
-                            } else {
-                                "←" // Responder (incoming connection)
-                            };
-                            format!("{}{:?}", role_prefix, s)
-                        } else {
-                            // Default for session members not yet reported
-                            "Pending".to_string()
-                        }
-                    } else {
-                        // If not in session, they shouldn't be connected via WebRTC
-                        "N/A".to_string()
-                    };
-                    ListItem::new(format!("{} ({})", p, status))
-                })
-                .collect::<Vec<_>>();
-
-            let peers_widget =
-                List::new(peer_list_items) // Use the formatted list
-                    .block(Block::default().title("Peers").borders(Borders::ALL));
-
-            let log = Paragraph::new(
-                app_guard
-                    .log
-                    .iter()
-                    .rev()
-                    .take(chunks[2].height.saturating_sub(2) as usize) // Adjust log lines based on available height
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-            .block(Block::default().title("Log").borders(Borders::ALL));
-            let session = if let Some(sess) = &app_guard.session {
-                format!(
-                    "Session: {} ({} of {}, threshold {})",
-                    sess.session_id,
-                    sess.participants.len(),
-                    sess.total,
-                    sess.threshold
-                )
-            } else {
-                "No session".to_string()
-            };
-            // FIX: Use is_empty()
-            let invites = if !app_guard.invites.is_empty() {
-                format!(
-                    "Invites: {}",
-                    app_guard
-                        .invites
-                        .iter()
-                        .map(|s| s.session_id.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            } else {
-                "No invites".to_string()
-            };
-
-            // Input box rendering based on mode
-            let input_display_text = if input_mode {
-                format!("> {}", input)
-            } else {
-                "Press 'i' to input, 'o' to accept invite, 'q' to quit".to_string()
-            };
-            let input_box = Paragraph::new(input_display_text)
-                .block(Block::default().title("Input").borders(Borders::ALL));
-
-            f.render_widget(
-                Block::default().title(title).borders(Borders::ALL),
-                chunks[0],
-            );
-            f.render_widget(peers_widget, chunks[1]); // Render the updated peers widget
-            f.render_widget(log, chunks[2]);
-            f.render_widget(
-                Paragraph::new(format!("{}\n{}", session, invites)), // Keep original for now
-                chunks[3],
-            );
-            // Render input box in its own chunk
-            f.render_widget(input_box, chunks[4]);
-        })?;
-        // Drop the drawing lock before handling input
-        drop(app_guard);
+        {
+            // Scope for the lock guard
+            let app_guard = state.lock().unwrap();
+            // Use function from tui module
+            draw_main_ui(&mut terminal, &app_guard, &input, input_mode)?;
+        } // Drop the drawing lock before handling input
 
         // Handle input
         if event::poll(Duration::from_millis(100))? {
@@ -1492,334 +722,18 @@ async fn main() -> anyhow::Result<()> {
                 Event::Key(key) => {
                     // Lock TUI state for input handling
                     let mut app_guard = state.lock().unwrap();
-                    if input_mode {
-                        match key.code {
-                            KeyCode::Enter => {
-                                let cmd_str = input.trim().to_string();
-                                input.clear();
-                                input_mode = false; // Exit input mode immediately
-                                app_guard.log.push("Exited input mode.".to_string());
-                                drop(app_guard); // Drop lock before potentially sending command
+                    // Call the handler function from the tui module
+                    let continue_loop = handle_key_event(
+                        key,
+                        &mut app_guard,  // Pass mutable reference to state
+                        &mut input,      // Pass mutable reference to input
+                        &mut input_mode, // Pass mutable reference to input_mode
+                        &cmd_tx,         // Pass command sender
+                    )?;
+                    // No need to explicitly drop app_guard here, it goes out of scope
 
-                                // Parse and handle command
-                                // FIX: Use starts_with()
-                                if cmd_str.starts_with("/list") {
-                                    let _ = cmd_tx.send(ClientMsg::ListPeers);
-                                // FIX: Use starts_with()
-                                } else if cmd_str.starts_with("/create") {
-                                    // ... existing /create logic ...
-                                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                                    if parts.len() == 5 {
-                                        if let (Ok(total), Ok(threshold)) =
-                                            (parts[2].parse(), parts[3].parse())
-                                        {
-                                            let session_id = parts[1].to_string();
-                                            let participants = parts[4]
-                                                .split(',')
-                                                .map(|s| s.to_string())
-                                                .collect();
-                                            let _ = cmd_tx.send(ClientMsg::CreateSession {
-                                                session_id,
-                                                total,
-                                                threshold,
-                                                participants,
-                                            });
-                                        } else {
-                                            // Re-acquire lock to log error
-                                            state.lock().unwrap().log.push(
-                                                "Invalid total/threshold for /create.".to_string(),
-                                            );
-                                        }
-                                    } else {
-                                        // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push("Invalid /create format. Use: /create <id> <total> <threshold> <p1,p2,...>".to_string());
-                                    }
-                                // FIX: Use starts_with()
-                                } else if cmd_str.starts_with("/join") {
-                                    // ... existing /join logic ...
-                                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                                    if parts.len() == 2 {
-                                        let session_id = parts[1].to_string();
-                                        let _ = cmd_tx.send(ClientMsg::JoinSession { session_id });
-                                    } else {
-                                        // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push(
-                                            "Invalid /join format. Use: /join <session_id>"
-                                                .to_string(),
-                                        );
-                                    }
-                                // FIX: Use starts_with()
-                                } else if cmd_str.starts_with("/invite") {
-                                    // Need to re-acquire lock to check invites
-                                    let app_guard_check = state.lock().unwrap();
-                                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                                    if parts.len() == 2 {
-                                        let session_id_to_join = parts[1].to_string();
-                                        let invite_found = app_guard_check
-                                            .invites
-                                            .iter()
-                                            .any(|s| s.session_id == session_id_to_join);
-                                        drop(app_guard_check); // Drop lock before sending
-
-                                        if invite_found {
-                                            let _ = cmd_tx.send(ClientMsg::JoinSession {
-                                                session_id: session_id_to_join,
-                                            });
-                                        } else {
-                                            // Re-acquire lock to log error
-                                            state.lock().unwrap().log.push(format!(
-                                                "Invite '{}' not found.",
-                                                session_id_to_join
-                                            ));
-                                        }
-                                    } else {
-                                        // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push(
-                                            "Invalid /invite format. Use: /invite <session_id>"
-                                                .to_string(),
-                                        );
-                                    }
-                                // FIX: Use starts_with()
-                                } else if cmd_str.starts_with("/relay") {
-                                    // ... existing /relay logic ...
-                                    let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();
-                                    if parts.len() == 3 {
-                                        let target_peer_id = parts[1].to_string();
-                                        let json_str = parts[2];
-                                        match serde_json::from_str::<serde_json::Value>(json_str) {
-                                            Ok(data) => {
-                                                let _ = cmd_tx.send(ClientMsg::Relay {
-                                                    to: target_peer_id.clone(),
-                                                    data,
-                                                });
-                                                // Re-acquire lock to log
-                                                state.lock().unwrap().log.push(format!(
-                                                    "Relaying message to {}",
-                                                    target_peer_id
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                // Re-acquire lock to log error
-                                                state.lock().unwrap().log.push(format!(
-                                                    "Invalid JSON for /relay: {}",
-                                                    e
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push("Invalid /relay format. Use: /relay <peer_id> <json_data>".to_string());
-                                    }
-                                // FIX: Use starts_with()
-                                } else if cmd_str.starts_with("/send") {
-                                    let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();
-                                    if parts.len() >= 3 {
-                                        let target_peer_id = parts[1].to_string();
-                                        let message = parts[2].to_string();
-                                        
-                                        // 记录发送消息的尝试
-                                        state.lock().unwrap().log.push(format!(
-                                            "尝试发送消息到 {}: {}", 
-                                            target_peer_id, message
-                                        ));
-                                        
-                                        let state_clone = state.clone();
-                                        let peer_connections_arc = state.lock().unwrap().peer_connections.clone();
-                                        
-                                        // 在单独的任务中发送消息
-                                        tokio::spawn(async move {
-                                            let pc_result = {
-                                                let peer_conns = peer_connections_arc.lock().await;
-                                                peer_conns.get(&target_peer_id).cloned()
-                                            };
-                                            
-                                            if let Some(pc) = pc_result {
-                                                // 检查连接状态
-                                                let conn_state = pc.connection_state();
-                                                
-                                                if conn_state != RTCPeerConnectionState::Connected {
-                                                    if let Ok(mut guard) = state_clone.try_lock() {
-                                                        guard.log.push(format!(
-                                                            "警告：与 {} 的连接处于 {:?} 状态，可能无法发送消息",
-                                                            target_peer_id, conn_state
-                                                        ));
-                                                    }
-                                                }
-                                                
-                                                // 改进方法: 直接创建一个专用的消息通道
-                                                let channel_name = format!("msg-{}", SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .unwrap_or_default()
-                                                    .as_millis());
-                                                
-                                                match pc.create_data_channel(&channel_name, None).await {
-                                                    Ok(dc) => {
-                                                        let dc_arc = Arc::new(dc);
-                                                        let message_clone = message.clone();
-                                                        let target_clone = target_peer_id.clone();
-                                                        let state_log_clone = state_clone.clone();
-                                                        
-                                                        // 在on_open前克隆dc_arc以避免所有权问题
-                                                        let dc_for_callback = dc_arc.clone();
-                                                        
-                                                        // 设置on_open处理器来发送消息
-                                                        dc_arc.on_open(Box::new(move || {
-                                                            let dc_ref = dc_for_callback;
-                                                            let msg = message_clone.clone();
-                                                            let target = target_clone.clone();
-                                                            let state_log = state_log_clone.clone();
-                                                            
-                                                            tokio::spawn(async move {
-                                                                if let Err(e) = dc_ref.send_text(msg.clone()).await {
-                                                                    if let Ok(mut guard) = state_log.try_lock() {
-                                                                        guard.log.push(format!(
-                                                                            "发送消息到 {} 失败: {}",
-                                                                            target, e
-                                                                        ));
-                                                                    }
-                                                                } else {
-                                                                    if let Ok(mut guard) = state_log.try_lock() {
-                                                                        guard.log.push(format!("已成功发送消息到 {}: {}", target, msg));
-                                                                    }
-                                                                }
-                                                                
-                                                                // 消息发送后等待一会儿再关闭通道
-                                                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                                                
-                                                                // 通知远端我们已经完成消息发送
-                                                                let _ = dc_ref.send_text("__COMPLETE__").await;
-                                                            });
-                                                            
-                                                            Box::pin(async {})
-                                                        }));
-                                                        
-                                                        // 添加消息接收处理以便记录确认等
-                                                        dc_arc.on_message(Box::new(move |msg: DataChannelMessage| {
-                                                            let msg_str = String::from_utf8(msg.data.to_vec())
-                                                                .unwrap_or_else(|_| "Non-UTF8 data".to_string());
-                                                            
-                                                            if let Ok(mut guard) = state_clone.try_lock() {
-                                                                guard.log.push(format!(
-                                                                    "收到 {} 的消息通道回应: {}",
-                                                                    target_peer_id, msg_str
-                                                                ));
-                                                            }
-                                                            
-                                                            Box::pin(async {})
-                                                        }));
-                                                    },
-                                                    Err(e) => {
-                                                        if let Ok(mut guard) = state_clone.try_lock() {
-                                                            guard.log.push(format!(
-                                                                "为发送到 {} 的消息创建数据通道出错: {}", 
-                                                                target_peer_id, e
-                                                            ));
-                                                            guard.log.push("尝试重新建立连接...".to_string());
-                                                        }
-                                                        
-                                                        // 如果创建通道失败，尝试发送重连请求
-                                                        let timestamp = SystemTime::now()
-                                                            .duration_since(UNIX_EPOCH)
-                                                            .unwrap_or_default()
-                                                            .as_secs();
-                                                        
-                                                        let recon_msg = serde_json::json!({
-                                                            "type": "reconnect_request",
-                                                            "timestamp": timestamp,
-                                                            "from_send_command": true
-                                                        });
-                                                        
-                                                        // 回到主线程发送重连请求
-                                                        let state_clone_for_task = state_clone.clone();
-                                                        tokio::spawn(async move {
-                                                            let state_guard = state_clone_for_task.lock().unwrap();
-                                                            let cmd_tx_clone = state_guard.cmd_tx.clone();
-                                                            drop(state_guard); // Drop lock after modifying input
-                                                            
-                                                            if let Some(cmd_tx) = cmd_tx_clone {
-                                                                let _ = cmd_tx.send(ClientMsg::Relay {
-                                                                    to: target_peer_id.clone(),
-                                                                    data: recon_msg,
-                                                                });
-                                                            }
-                                                        });
-                                                    }
-                                                }
-                                            } else {
-                                                if let Ok(mut guard) = state_clone.try_lock() {
-                                                    guard.log.push(format!(
-                                                        "没有与 {} 的WebRTC连接存在",
-                                                        target_peer_id
-                                                    ));
-                                                }
-                                            }
-                                        });
-                                    } else {
-                                        // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push("无效的 /send 格式。请使用: /send <peer_id> <message>".to_string());
-                                    }
-                                } else if !cmd_str.is_empty() {
-                                    // Re-acquire lock to log unknown command
-                                    state.lock().unwrap().log.push(format!(
-                                        "Unknown command: {}", cmd_str
-                                    ));
-                                }
-                            }
-                            KeyCode::Char(c) => {
-                                input.push(c);
-                                drop(app_guard); // Drop lock after modifying input
-                            }
-                            KeyCode::Backspace => {
-                                input.pop();
-                                drop(app_guard); // Drop lock after modifying input
-                            }
-                            KeyCode::Esc => {
-                                input_mode = false;
-                                input.clear();
-                                app_guard.log.push("Exited input mode (Esc).".to_string());
-                                drop(app_guard); // Drop lock
-                            }
-                            _ => {
-                                drop(app_guard);
-                            } // Drop lock if no action taken
-                        }
-                    } else {
-                        // Not in input mode
-                        match key.code {
-                            KeyCode::Char('i') => {
-                                input_mode = true;
-                                app_guard.log.push("Entered input mode.".to_string());
-                                drop(app_guard); // Drop lock
-                            }
-                            KeyCode::Char('q') => {
-                                app_guard.log.push("Quitting...".to_string());
-                                drop(app_guard); // Drop lock
-                                break; // Exit loop
-                            }
-                            KeyCode::Char('o') => {
-                                // Lock only to check invites
-                                let session_to_join = {
-                                    // app_guard is already held
-                                    app_guard.invites.first().map(|inv| inv.session_id.clone())
-                                };
-
-                                if let Some(session_id) = session_to_join {
-                                    app_guard
-                                        .log
-                                        .push("Attempting to accept first invite...".to_string());
-                                    drop(app_guard); // Drop lock before sending command
-                                    let _ = cmd_tx.send(ClientMsg::JoinSession { session_id });
-                                } else {
-                                    app_guard
-                                        .log
-                                        .push("No invites to accept with 'o'".to_string());
-                                    drop(app_guard); // Drop lock
-                                }
-                            }
-                            _ => {
-                                drop(app_guard);
-                            } // Drop lock if no action taken
-                        }
+                    if !continue_loop {
+                        break; // Exit loop if handler signals quit
                     }
                 }
                 _ => {} // Ignore other events like Mouse, Resize etc.
