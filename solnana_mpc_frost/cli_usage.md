@@ -99,28 +99,28 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
         /create wallet_2of3 3 2 mpc-1,mpc-2,mpc-3
         ```
     *   Press `Enter`.
-    *   Node `mpc-1`'s log will show session info, and the session status line will update.
+    *   Node `mpc-1`'s log will show session info, and the session status line will update. Node `mpc-1` is now considered "in" the session.
     *   Nodes `mpc-2` and `mpc-3` will receive an invite: "Invites: wallet_2of3" will appear, and the log will show "Session invite from mpc-1...".
 
 5.  **Join Session (Nodes `mpc-2` and `mpc-3`):**
     *   On node `mpc-2`, press `o` to accept the first invite (or use `/join wallet_2of3`).
     *   On node `mpc-3`, press `o` to accept the first invite (or use `/join wallet_2of3`).
     *   As each node joins, all *already joined* participants (including the joiner) will receive an updated `SessionInfo` message via the server. The log will show "Session info received/updated...".
-    *   Once all participants have joined, the WebRTC connection process (offers, answers, candidates) will begin between peers, visible in the logs.
+    *   Once the *last* participant joins (`mpc-3` in this case), all participants (`mpc-1`, `mpc-2`, `mpc-3`) will have the complete `SessionInfo`. At this point, the WebRTC connection process (offers, answers, candidates) should begin automatically between peers, visible in the logs.
 
 6.  **(Optional) Relay Test Message (e.g., Node `mpc-1` to `mpc-2`):**
     *   On node `mpc-1`, press `i`.
     *   Type: `/relay mpc-2 {"msg":"hello from mpc-1"}`
     *   Press `Enter`.
     *   Node `mpc-1` logs "Relaying message to mpc-2".
-    *   Node `mpc-2` logs `Relay from mpc-1: (Non-WebRTC JSON or invalid format): {"msg":"hello from mpc-1"}` (as it's not a standard WebRTC signal).
+    *   Node `mpc-2` logs `Received non-WebRTC signal JSON via Relay from mpc-1: ...` (or similar, as it's not a standard WebRTC signal).
 
 7.  **Send Direct WebRTC Messages (after connections are established):**
-    *   Once WebRTC connections are established (you see "Connected" and "Data channel opened" messages), you can send messages directly between peers.
+    *   Once WebRTC connections are established (you see "Connected" and "Data channel opened" messages in the logs for the relevant peers), you can send messages directly between peers.
     *   On node `mpc-1`, press `i`.
     *   Type: `/send mpc-2 Hello, this is a direct P2P message!`
     *   Press `Enter`.
-    *   Node `mpc-1` logs "Sending WebRTC message to mpc-2".
-    *   Node `mpc-2` logs "Received WebRTC message from mpc-1: Hello, this is a direct P2P message!"
+    *   Node `mpc-1` logs "尝试发送消息到 mpc-2...".
+    *   Node `mpc-2` logs "Receiver: Message from mpc-1: Hello, this is a direct P2P message!" (or similar, depending on exact logging).
 
 *(Note: This example covers session setup, signaling, basic WebRTC connection establishment, and direct peer-to-peer communication. The actual MPC protocol exchange over the established WebRTC data channels would build upon this direct communication capability.)*

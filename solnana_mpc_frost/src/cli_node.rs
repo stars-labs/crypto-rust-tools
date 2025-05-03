@@ -28,14 +28,15 @@ use webrtc::api::media_engine::MediaEngine;
 // Uncomment imports
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate};
 // Correct the import path for RTCIceCredentialType
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription; // Import RTCDataChannel // Import DataChannelMessage
+// Remove unused import RTCSessionDescription
+// use webrtc::peer_connection::sdp::session_description::RTCSessionDescription; // Import RTCDataChannel // Import DataChannelMessage
 
 // Add these imports for WebRTC policies
 use webrtc::peer_connection::policy::{
@@ -81,11 +82,15 @@ struct AppState {
     // Store connection status for TUI display (under StdMutex)
     peer_statuses: HashMap<String, RTCPeerConnectionState>,
     // Flag to track if WebRTC setup has started for the current session
-    webrtc_connections_initiated: bool,
     reconnection_tracker: ReconnectionTracker,
     keep_alive_peers: HashSet<String>, // To track which peers are receiving keep-alives
     // 添加一个可选的命令发送器字段
     cmd_tx: Option<mpsc::UnboundedSender<ClientMsg>>,
+    // --- Perfect Negotiation Flags ---
+    making_offer: HashMap<String, bool>, // Track if we are currently making an offer TO a specific peer
+    ignore_offer: HashMap<String, bool>, // Track if we should ignore the next offer FROM a specific peer
+    // Add a field to store pending ICE candidates
+    pending_ice_candidates: HashMap<String, Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>>,
 }
 
 // --- WebRTC API Setup ---
@@ -524,170 +529,272 @@ async fn create_and_setup_peer_connection(
 }
 
 // --- REFACTORED Helper Function: Initiate Offers ---
-// Only initiates offers for peers where self_peer_id < peer_id.
-// Assumes PeerConnection objects already exist.
-// ADDED: Checks connection state before initiating.
+// Implements Perfect Negotiation logic (initiator side)
 async fn initiate_offers_for_session(
     participants: Vec<String>,
     self_peer_id: String,
     peer_connections_arc: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     cmd_tx: mpsc::UnboundedSender<ClientMsg>,
-    state_log: Arc<StdMutex<AppState>>,
+    state_log: Arc<StdMutex<AppState>>, // Use state_log which is Arc<StdMutex<AppState>>
 ) {
     state_log
         .lock()
         .unwrap()
         .log
-        .push("Checking which peers need offers...".to_string());
-    let peer_conns = peer_connections_arc.lock().await; // Lock once
+        .push("Initiating WebRTC offers check...".to_string()); // Renamed log
+
+    // Lock connections once
+    let peer_conns = peer_connections_arc.lock().await;
+    state_log
+        .lock()
+        .unwrap()
+        .log
+        .push(format!("Found {} peer connection objects.", peer_conns.len()));
+
 
     for peer_id in participants {
-        if peer_id == self_peer_id {
+        if peer_id == self_peer_id { // Removed unnecessary parentheses
             continue;
         }
 
-        // Only initiator (lexicographically smaller ID) creates offer
-        if self_peer_id < peer_id {
-            if let Some(pc_arc) = peer_conns.get(&peer_id) {
-                let current_state = pc_arc.connection_state();
-                let signaling_state = pc_arc.signaling_state(); // Check signaling state too
+        // --- Perfect Negotiation Role Check ---
+        let should_initiate = self_peer_id < peer_id; // Impolite peer initiates
 
-                // Check if connection is already established or an offer is already in progress
-                // Avoid sending new offers if already Connected, Connecting, or HaveLocalOffer/HaveRemoteOffer
-                if current_state == RTCPeerConnectionState::Connected ||
-                   current_state == RTCPeerConnectionState::Connecting ||
-                   signaling_state == webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalOffer ||
-                   signaling_state == webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
-                   // Consider adding Stable state check if absolutely sure no offer needed
-                   {
-                    state_log.lock().unwrap().log.push(format!(
-                        "Skipping offer initiation for {}: State is {:?}/{:?}",
-                        peer_id, current_state, signaling_state
-                    ));
-                    continue; // Skip to next peer
+        state_log.lock().unwrap().log.push(format!(
+            "Checking peer {}: Should initiate? {}", peer_id, should_initiate
+        ));
+
+        if should_initiate {
+            if let Some(pc_arc) = peer_conns.get(&peer_id) {
+                state_log.lock().unwrap().log.push(format!(
+                    "Found PC object for peer {}", peer_id
+                ));
+                let current_state = pc_arc.connection_state();
+                let signaling_state = pc_arc.signaling_state();
+
+                // Check if negotiation is needed based on state
+                let negotiation_needed = match current_state {
+                    RTCPeerConnectionState::New |
+                    RTCPeerConnectionState::Closed |
+                    RTCPeerConnectionState::Disconnected |
+                    RTCPeerConnectionState::Failed => true, // Need to negotiate if not connected/connecting
+                    _ => match signaling_state {
+                        webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => false, // Assume stable means no immediate need
+                        _ => false, // If already negotiating, don't start another one
+                    }
+                };
+
+                state_log.lock().unwrap().log.push(format!(
+                    "Peer {}: Negotiation needed? {} (State: {:?}/{:?})",
+                    peer_id, negotiation_needed, current_state, signaling_state
+                ));
+
+
+                if !negotiation_needed {
+                    // Log already exists, skipping continue
+                    continue;
                 }
 
+                // --- Check making_offer flag ---
+                let is_already_making_offer = state_log.lock().unwrap()
+                                            .making_offer.get(&peer_id).copied().unwrap_or(false);
 
-                // If state is New, Closed, Disconnected, or Failed, proceed with offer
+                state_log.lock().unwrap().log.push(format!(
+                    "Peer {}: Already making offer? {}", peer_id, is_already_making_offer
+                ));
+
+
+                if is_already_making_offer {
+                    // Log already exists, skipping continue
+                    continue;
+                }
+
+                // --- Proceed to make offer ---
+                state_log.lock().unwrap().log.push(format!(
+                    "Proceeding to spawn offer task for peer {}", peer_id // Added log
+                ));
                 let pc_arc_clone = pc_arc.clone();
                 let peer_id_clone = peer_id.clone();
-                let state_log_clone = state_log.clone();
+                let state_log_clone = state_log.clone(); // Clone the Arc<StdMutex<AppState>>
                 let cmd_tx_clone = cmd_tx.clone();
 
-                tokio::spawn(async move {
-                    // Spawn task for each offer
-                    state_log_clone
-                        .lock()
-                        .unwrap()
-                        .log
-                        .push(format!("Initiating connection offer to {} (State: {:?}/{:?})",
-                                     peer_id_clone, current_state, signaling_state)); // Log current state
+                tokio::spawn(async move { // Spawn task for actual offer creation
+                    // --- Set making_offer flag ---
+                    state_log_clone.lock().unwrap().making_offer.insert(peer_id_clone.clone(), true);
+                    state_log_clone.lock().unwrap().log.push(format!("Set making_offer=true for {}", peer_id_clone));
 
-                    // --- Create Data Channel (Initiator side) ---
-                    // Attempt to create only if one doesn't seem to exist or negotiation is fresh
-                    match pc_arc_clone.create_data_channel("mpc-channel", None).await {
-                        Ok(dc) => {
-                            // ... setup on_open/on_message for initiator ...
-                            let dc_arc = Arc::new(dc);
-                            state_log_clone.lock().unwrap().log.push(format!(
-                                "Initiator: Created data channel for {}",
-                                peer_id_clone
-                            ));
-                            let state_log_open_init = state_log_clone.clone();
-                            let peer_id_open_init = peer_id_clone.clone();
-                            dc_arc.on_open(Box::new(move || {
-                                state_log_open_init.lock().unwrap().log.push(format!(
-                                    "Initiator: Data channel open confirmed with {}",
-                                    peer_id_open_init
-                                ));
-                                Box::pin(async {})
-                            }));
-                            let state_log_msg_init = state_log_clone.clone();
-                            let peer_id_msg_init = peer_id_clone.clone();
-                            dc_arc.on_message(Box::new(move |msg: DataChannelMessage| {
-                                let msg_str = String::from_utf8(msg.data.to_vec())
-                                    .unwrap_or_else(|_| "Non-UTF8 data".to_string());
-                                state_log_msg_init.lock().unwrap().log.push(format!(
-                                    "Initiator: Message from {}: {}",
-                                    peer_id_msg_init, msg_str
-                                ));
-                                Box::pin(async {})
-                            }));
-                        }
-                        Err(e) => {
-                            state_log_clone.lock().unwrap().log.push(format!(
-                                "Error creating data channel for {}: {} (may already exist or negotiation issue)", // Adjusted log
-                                peer_id_clone, e
-                            ));
-                            // Continue to create offer anyway, maybe the channel exists from previous attempt
-                        }
-                    }
 
-                    // --- Create and Send Offer ---
-                    match pc_arc_clone.create_offer(None).await {
-                        Ok(offer) => {
-                            // Check signaling state *before* setting local description
-                            let sig_state_before_set = pc_arc_clone.signaling_state();
-                            state_log_clone.lock().unwrap().log.push(format!(
-                                "Signaling state before setLocal(offer) for {}: {:?}",
-                                peer_id_clone, sig_state_before_set
-                            ));
-
-                            // Set Local Description
-                            if let Err(e) = pc_arc_clone.set_local_description(offer.clone()).await
-                            {
+                    // Prefix offer_result with _ to mark it as intentionally unused
+                    let offer_result = async { // Wrap offer logic in an async block for easier cleanup
+                        // ... (Create Data Channel logic remains the same) ...
+                        // Add log before creating data channel
+                        state_log_clone.lock().unwrap().log.push(format!(
+                            "Offer Task [{}]: Creating data channel...", peer_id_clone
+                        ));
+                        // Example: Create a default data channel if none exists
+                        // Note: This might interfere if the other side also tries to create it.
+                        // Consider creating channels only *after* connection is stable, or use negotiation.
+                        // For now, let's assume a default channel is needed for testing.
+                        match pc_arc_clone.create_data_channel("data", None).await {
+                            Ok(dc) => {
                                 state_log_clone.lock().unwrap().log.push(format!(
-                                    "Error setting local description (offer) for {}: {}",
-                                    peer_id_clone, e
+                                    "Offer Task [{}]: Created data channel '{}'. Setting up callbacks.", peer_id_clone, dc.label()
                                 ));
-                                return;
+                                let dc_arc = Arc::new(dc);
+                                // Setup basic logging callbacks for the created channel
+                                let state_log_dc = state_log_clone.clone();
+                                let peer_id_dc = peer_id_clone.clone();
+                                dc_arc.on_open(Box::new(move || {
+                                    state_log_dc.lock().unwrap().log.push(format!(
+                                        "Offer Task [{}]: Data channel opened!", peer_id_dc
+                                    ));
+                                    Box::pin(async {})
+                                }));
+                                let state_log_dc_msg = state_log_clone.clone();
+                                let peer_id_dc_msg = peer_id_clone.clone();
+                                dc_arc.on_message(Box::new(move |msg: DataChannelMessage| {
+                                     let msg_str = String::from_utf8(msg.data.to_vec()).unwrap_or_else(|_| "Non-UTF8 data".to_string());
+                                     state_log_dc_msg.lock().unwrap().log.push(format!(
+                                         "Offer Task [{}]: Received message: {}", peer_id_dc_msg, msg_str
+                                     ));
+                                    Box::pin(async {})
+                                }));
                             }
-                            state_log_clone.lock().unwrap().log.push(format!(
-                                "Set local description (offer) for {}",
-                                peer_id_clone
-                            ));
+                            Err(e) => {
+                                 state_log_clone.lock().unwrap().log.push(format!(
+                                    "Offer Task [{}]: Error creating data channel: {}", peer_id_clone, e
+                                )); // Fixed: added missing closing parenthesis
+                                // Decide if this is fatal for the offer attempt
+                                // return Err(()); // Maybe don't fail the whole offer just for the data channel?
+                            }
+                        }
 
-                            // Send the offer via signaling server
-                            let signal = WebRTCSignal::Offer(SDPInfo { sdp: offer.sdp });
-                            match serde_json::to_value(signal) {
-                                Ok(json_val) => {
-                                    let _ = cmd_tx_clone.send(ClientMsg::Relay {
-                                        to: peer_id_clone.clone(),
-                                        data: json_val,
-                                    });
-                                    state_log_clone
-                                        .lock()
-                                        .unwrap()
-                                        .log
-                                        .push(format!("Sent offer to {}", peer_id_clone));
-                                }
-                                Err(e) => {
+
+                        // --- Create and Send Offer ---
+                        state_log_clone.lock().unwrap().log.push(format!(
+                            "Offer Task [{}]: Creating offer...", peer_id_clone // Added log
+                        ));
+                        match pc_arc_clone.create_offer(None).await {
+                            Ok(offer) => {
+                                state_log_clone.lock().unwrap().log.push(format!(
+                                    "Offer Task [{}]: Created offer. Setting local description...", peer_id_clone // Added log
+                                ));
+                                // Fix error logging for setting local description
+                                if let Err(e) = pc_arc_clone.set_local_description(offer.clone()).await {
                                     state_log_clone.lock().unwrap().log.push(format!(
-                                        "Error serializing offer for {}: {}",
+                                        "Offer Task [{}]: Error setting local description (offer): {}", // Restored log
                                         peer_id_clone, e
                                     ));
+                                    return Err(()); // Indicate failure
+                                }
+                                state_log_clone.lock().unwrap().log.push(format!(
+                                    "Offer Task [{}]: Set local description (offer). Serializing and sending...", // Restored log
+                                    peer_id_clone
+                                ));
+
+                                let signal = WebRTCSignal::Offer(SDPInfo { sdp: offer.sdp });
+                                match serde_json::to_value(signal) {
+                                    Ok(json_val) => {
+                                        // Fix ClientMsg::Relay initialization
+                                        let _ = cmd_tx_clone.send(ClientMsg::Relay {
+                                            to: peer_id_clone.clone(), // Restored field
+                                            data: json_val,            // Restored field
+                                        });
+                                        state_log_clone
+                                            .lock()
+                                            .unwrap()
+                                            .log
+                                            .push(format!("Offer Task [{}]: Sent offer.", peer_id_clone)); // Restored log
+                                    }
+                                    // Fix error logging for offer serialization
+                                    Err(e) => {
+                                        state_log_clone.lock().unwrap().log.push(format!(
+                                            "Offer Task [{}]: Error serializing offer: {}", peer_id_clone, e
+                                        ));
+                                        return Err(()); // Indicate failure
+                                    }
                                 }
                             }
+                            // Fix error logging for offer creation
+                            Err(e) => {
+                                state_log_clone
+                                    .lock()
+                                    .unwrap()
+                                    .log
+                                    .push(format!("Offer Task [{}]: Error creating offer: {}", peer_id_clone, e)); // Restored log
+                                return Err(()); // Indicate failure
+                            }
                         }
-                        Err(e) => {
-                            state_log_clone
-                                .lock()
-                                .unwrap()
-                                .log
-                                .push(format!("Error creating offer for {}: {}", peer_id_clone, e));
-                        }
-                    }
-                });
+                        Ok(()) // Indicate success
+                    }.await;
+
+                    // --- Clear making_offer flag regardless of success/failure ---
+                    // Log success/failure based on offer_result
+                    let outcome = if offer_result.is_ok() { "succeeded" } else { "failed" };
+                    state_log_clone.lock().unwrap().log.push(format!(
+                        "Offer Task [{}] {} negotiation.", peer_id_clone, outcome
+                    ));
+                    state_log_clone.lock().unwrap().making_offer.insert(peer_id_clone.clone(), false);
+                    state_log_clone.lock().unwrap().log.push(format!("Set making_offer=false for {}", peer_id_clone));
+
+                }); // End of spawned task
+
             } else {
-                // This case should ideally not happen if create_and_setup_peer_connection ran successfully before
                 state_log.lock().unwrap().log.push(format!(
-                    "Should initiate offer to {}, but connection object not found!",
-                    peer_id
+                    "Should initiate offer to {}, but connection object not found!", peer_id // Log remains valid
                 ));
             }
         }
     }
     // peer_conns lock dropped here
+    state_log
+        .lock()
+        .unwrap()
+        .log
+        .push("Finished WebRTC offers check.".to_string()); // Added log
+}
+
+// Apply any pending ICE candidates for a peer
+async fn apply_pending_candidates(
+    peer_id: &str,
+    pc: Arc<RTCPeerConnection>,
+    state_log: Arc<StdMutex<AppState>>,
+) {
+    // Take the pending candidates for this peer
+    let candidates = {
+        let mut state_guard = state_log.lock().unwrap();
+        let pending = state_guard.pending_ice_candidates.remove(peer_id);
+        if let Some(candidates) = &pending {
+            if !candidates.is_empty() {
+                state_guard.log.push(format!(
+                    "Applying {} stored ICE candidate(s) for {}",
+                    candidates.len(), peer_id
+                ));
+            }
+        }
+        pending
+    };
+
+    // If there are pending candidates, apply them
+    if let Some(candidates) = candidates {
+        // Apply each candidate
+        for candidate in candidates {
+            match pc.add_ice_candidate(candidate.clone()).await {
+                Ok(_) => {
+                    if let Ok(mut state_guard) = state_log.lock() {
+                        state_guard.log.push(format!("Applied stored ICE candidate for {}", peer_id));
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut state_guard) = state_log.lock() {
+                        state_guard.log.push(format!(
+                            "Error applying stored ICE candidate for {}: {}", peer_id, e
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -726,15 +833,15 @@ async fn main() -> anyhow::Result<()> {
         invites: vec![],
         peer_connections: Arc::new(TokioMutex::new(HashMap::new())), // WebRTC state uses TokioMutex
         peer_statuses: HashMap::new(),                               // Initialize peer statuses
-        webrtc_connections_initiated: false,                         // Initialize flag
         reconnection_tracker: ReconnectionTracker::new(),
         keep_alive_peers: HashSet::new(),
         cmd_tx: Some(cmd_tx.clone()), // 存储一个命令发送器副本
+        // --- Initialize Perfect Negotiation Flags ---
+        making_offer: HashMap::new(),
+        ignore_offer: HashMap::new(),
+        // Initialize the pending_ice_candidates field
+        pending_ice_candidates: HashMap::new(),
     }));
-
-    // Channel for TUI to send commands to network
-    // Remove mut from cmd_rx
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ClientMsg>();
 
     // Spawn network task
     let state_net = state.clone();
@@ -818,11 +925,10 @@ async fn main() -> anyhow::Result<()> {
                 Some(msg) = ws_stream.next() => {
                     match msg {
                         Ok(Message::Text(txt)) => {
-
                             match serde_json::from_str::<ServerMsg>(&txt) {
                                 Ok(server_msg) => {
                                     // Handle simple state updates first, keep lock brief
-                                    match server_msg {
+                                    match server_msg { // Restore missing arms here
                                         ServerMsg::Peers { ref peers } => {
                                             // --- Lock StdMutex ---
                                             let mut state_guard = state_net.lock().unwrap();
@@ -833,6 +939,7 @@ async fn main() -> anyhow::Result<()> {
                                         ServerMsg::SessionInvite { ref session_id, ref from, total, threshold, ref participants } => {
                                             // ... (SessionInvite handling remains the same) ...
                                             let mut state_guard = state_net.lock().unwrap();
+                                            // FIX: Remove unnecessary parentheses
                                             if !state_guard.invites.iter().any(|inv| inv.session_id == *session_id) {
                                                 state_guard.invites.push(SessionInfo { session_id: session_id.clone(), total, threshold, participants: participants.clone() });
                                                 state_guard.log.push(format!("Session invite from {} for session {}", from, session_id));
@@ -852,14 +959,13 @@ async fn main() -> anyhow::Result<()> {
                                         // Handle complex cases involving async operations separately
                                         ServerMsg::SessionInfo { session_id, total, threshold, participants } => {
                                             // --- Lock StdMutex, update state, drop lock ---
-                                            // Only update session info and reset the flag here
+                                            // ... (existing SessionInfo handling) ...
                                             { // New scope for StdMutexGuard
                                                 let mut state_guard = state_net.lock().unwrap();
                                                 let session_info = SessionInfo { session_id: session_id.clone(), total, threshold, participants: participants.clone() };
                                                 state_guard.session = Some(session_info.clone());
                                                 state_guard.log.push(format!("Session info received/updated: {}. Waiting for all participants.", session_info.session_id));
                                                 // Reset the flag as we have new session info (or updated participants)
-                                                state_guard.webrtc_connections_initiated = false;
                                                 // FIX: Selectively update peer_statuses instead of clearing
                                                 let new_participants_set: HashSet<String> = participants.iter().cloned().collect();
                                                 state_guard.peer_statuses.retain(|peer_id, _| new_participants_set.contains(peer_id));
@@ -874,7 +980,7 @@ async fn main() -> anyhow::Result<()> {
                                             } // Drop StdMutexGuard
 
                                             // --- Spawn Task to Create PeerConnection Objects for NEW Peers ---
-                                            // ... existing connection object creation logic (no changes needed here) ...
+                                            // ... (existing connection object creation logic) ...
                                             let pc_arc_clone = peer_connections_arc_net.clone();
                                             let cmd_tx_clone = cmd_tx_net.clone();
                                             let state_log_clone = state_net.clone();
@@ -883,120 +989,45 @@ async fn main() -> anyhow::Result<()> {
                                             let session_id_clone = session_id.clone(); // Clone session_id for logging
 
                                             tokio::spawn(async move {
-                                                let mut created_count = 0;
-                                                let mut existing_count = 0;
-                                                // FIX: Check existing connections before calling create_and_setup
-                                                let current_conns = pc_arc_clone.lock().await; // Lock once to check
-                                                let mut peers_to_setup = Vec::new();
-                                                for p_id in &participants_clone {
-                                                    if *p_id != self_peer_id_clone && !current_conns.contains_key(p_id) {
-                                                        peers_to_setup.push(p_id.clone());
-                                                    } else if *p_id != self_peer_id_clone {
-                                                        existing_count += 1; // Count existing ones we're skipping
+                                                // ... (existing peer connection setup and offer initiation logic) ...
+                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                    "SessionInfo Task: Creating peer connections for session {}...",
+                                                    session_id_clone
+                                                ));
+                                                // FIX: Iterate over a slice to avoid moving participants_clone
+                                                for peer_id in &participants_clone {
+                                                    if *peer_id != self_peer_id_clone {
+                                                        let _ = create_and_setup_peer_connection(
+                                                            peer_id.clone(),
+                                                            self_peer_id_clone.clone(),
+                                                            pc_arc_clone.clone(),
+                                                            cmd_tx_clone.clone(),
+                                                            state_log_clone.clone(),
+                                                        ).await;
                                                     }
                                                 }
-                                                drop(current_conns); // Drop lock before iterating setup
-
-                                                if existing_count > 0 {
-                                                     state_log_clone.lock().unwrap().log.push(format!("Skipping setup for {} existing peer connections.", existing_count));
-                                                }
-
-                                                for p_id in peers_to_setup { // Iterate only over peers needing setup
-                                                    if p_id == self_peer_id_clone { continue; } // Should be redundant, but safe
-
-                                                    match create_and_setup_peer_connection(
-                                                        p_id.clone(),
-                                                        self_peer_id_clone.clone(),
-                                                        pc_arc_clone.clone(), // Clone Arc for each call
-                                                        cmd_tx_clone.clone(),
-                                                        state_log_clone.clone(),
-                                                    ).await {
-                                                        // Ok(_) implies either new creation or finding existing was successful
-                                                        Ok(_) => { created_count += 1; }
-                                                        Err(e) => { // This Err should now only happen on actual creation failure
-                                                            state_log_clone.lock().unwrap().log.push(format!("Failed to setup connection for {}: {}", p_id, e));
-                                                        }
-                                                    }
-                                                }
-                                                state_log_clone.lock().unwrap().log.push(format!("Finished checking/setting up {} connection objects for session {}", created_count, session_id_clone));
-
-                                                // --- Optional: Trigger Peer List Request ---
-                                                let _ = cmd_tx_clone.send(ClientMsg::ListPeers);
-                                                state_log_clone.lock().unwrap().log.push("Requested peer list after connection object creation.".to_string());
-
-                                                // FIX: Check for offer initiation *after* setup is complete
-                                                let mut should_initiate_offers = false;
-                                                let mut participants_for_offers: Vec<String> = Vec::new();
-                                                { // Lock AppState briefly to check conditions
-                                                    let mut state_guard = state_log_clone.lock().unwrap(); // Use state_log_clone which is Arc<StdMutex<AppState>>
-                                                    if let Some(session) = &state_guard.session {
-                                                        // Ensure we're checking against the *current* session participants
-                                                        if session.session_id == session_id_clone { // Check if session is still the same one we are processing
-                                                            if !state_guard.webrtc_connections_initiated {
-                                                                let required_participants: HashSet<String> = session.participants.iter().cloned().collect();
-                                                                let current_peers: HashSet<String> = state_guard.peers.iter().cloned().collect(); // Use peers from AppState
-
-                                                                if required_participants.is_subset(&current_peers) {
-                                                                    participants_for_offers = session.participants.clone();
-                                                                    state_guard.webrtc_connections_initiated = true; // Set flag
-                                                                    should_initiate_offers = true;
-                                                                    state_guard.log.push(format!(
-                                                                        "All session participants ({}) present after setup. Triggering offer initiation.",
-                                                                        participants_for_offers.join(", ")
-                                                                    ));
-                                                                } else {
-                                                                    // FIX: Clone data needed for log message before mutable borrow
-                                                                    let session_participants_str = session.participants.join(", ");
-                                                                    let current_peers_str = state_guard.peers.join(", ");
-                                                                    state_guard.log.push(format!(
-                                                                        "Participant setup finished, but not all session participants ({}) are in the current peer list ({}) yet. Offer initiation deferred.",
-                                                                        session_participants_str, current_peers_str // Use cloned strings
-                                                                    ));
-                                                                }
-                                                            }
-                                                        } else {
-                                                             state_guard.log.push("Session changed during peer connection setup. Skipping offer initiation for old session.".to_string());
-                                                        }
-                                                    }
-                                                } // Drop AppState lock
-
-                                                // Initiate offers outside the lock if conditions met
-                                                if should_initiate_offers {
-                                                    // We need pc_arc_clone, cmd_tx_clone, state_log_clone, self_peer_id_clone again
-                                                    // These were moved into the task, so they are available.
-                                                    initiate_offers_for_session(
-                                                        participants_for_offers,
-                                                        self_peer_id_clone,
-                                                        pc_arc_clone,
-                                                        cmd_tx_clone,
-                                                        state_log_clone,
-                                                    ).await;
-                                                } else {
-                                                    // Request peer list again to re-trigger checks later if needed
-                                                    let _ = cmd_tx_clone.send(ClientMsg::ListPeers);
-                                                    state_log_clone.lock().unwrap().log.push("Requested peer list as offer initiation was deferred.".to_string());
-                                                }
+                                                // Initiate offers after creating connections
+                                                initiate_offers_for_session(
+                                                    participants_clone, // Pass the original Vec here
+                                                    self_peer_id_clone,
+                                                    pc_arc_clone,
+                                                    cmd_tx_clone,
+                                                    state_log_clone,
+                                                ).await;
                                             }); // End of spawned task
                                         }
-                                        ServerMsg::Relay { ref from, ref data } => { // Use ref here
-                                            // +++ Log parsed Relay message +++
-                                            state_net.lock().unwrap().log.push(format!("Parsed Relay from {}", from));
-
-                                            // --- Relay handling ---
-                                            // Attempt to parse as WebRTCSignal first
-                                            match serde_json::from_value::<WebRTCSignal>(data.clone()) { // Clone data here for parsing
+                                        ServerMsg::Relay { ref from, ref data } => {
+                                            // ...existing log...
+                                            match serde_json::from_value::<WebRTCSignal>(data.clone()) {
                                                 Ok(signal) => {
-                                                    // Log reception (brief lock)
-                                                    state_net.lock().unwrap().log.push(format!("Parsed WebRTC signal from {}: {:?}", from, signal));
-
-                                                    // --- Handle WebRTC Signal ---
-                                                    // Clone necessary Arcs and data for the spawned task
+                                                    // ...existing log...
+                                                    // Clone necessary Arcs and data FOR the spawned task
                                                     let pc_arc_net_clone = peer_connections_arc_net.clone();
                                                     let from_clone = from.clone();
                                                     let cmd_tx_clone = cmd_tx_net.clone();
                                                     let state_log_clone = state_net.clone();
                                                     let signal_clone = signal.clone();
-                                                    let self_peer_id_clone = self_peer_id.clone(); // Needed for create_and_setup
+                                                    let self_peer_id_clone = self_peer_id.clone();
 
                                                     tokio::spawn(async move { // Spawn signal handling
                                                         // --- Get or Create Peer Connection ---
@@ -1005,7 +1036,8 @@ async fn main() -> anyhow::Result<()> {
                                                             peer_conns.get(&from_clone).cloned() // Try to get existing
                                                         };
 
-                                                        let pc_to_use = match pc_result {
+                                                        // Restructure: Define the result explicitly first
+                                                        let pc_to_use_result: Result<Arc<RTCPeerConnection>, String> = match pc_result {
                                                             Some(pc) => Ok(pc), // Use existing
                                                             None => {
                                                                 // If not found, try to create it now
@@ -1027,194 +1059,303 @@ async fn main() -> anyhow::Result<()> {
 
 
                                                         // --- Process Signal if PC is available ---
-                                                        match pc_to_use {
+                                                        // Match on the explicitly defined result
+                                                        match pc_to_use_result {
                                                             Ok(pc_clone) => { // Use the obtained (existing or newly created) Arc
-                                                                // state_log_clone.lock().unwrap().log.push(format!("Using connection object for {} to process signal.", from_clone)); // Optional debug log
                                                                 match signal_clone {
                                                                     WebRTCSignal::Offer(offer_info) => {
-                                                                        state_log_clone.lock().unwrap().log.push(format!("Processing Offer from {}", from_clone));
-                                                                        // Fix error logging for offer creation
-                                                                        let offer = match RTCSessionDescription::offer(offer_info.sdp) { 
-                                                                            Ok(o) => o, 
-                                                                            Err(e) => { 
-                                                                                state_log_clone.lock().unwrap().log.push(format!(
-                                                                                    "Error creating offer from SDP for {}: {}", 
-                                                                                    from_clone, e
-                                                                                ));
-                                                                                return; 
-                                                                            } 
-                                                                        };
+                                                                        use webrtc::peer_connection::signaling_state::RTCSignalingState;
 
-                                                                        let current_state = pc_clone.signaling_state();
-                                                                        state_log_clone.lock().unwrap().log.push(format!(
-                                                                            "Signaling state before setRemote(offer) for {}: {:?}", 
-                                                                            from_clone, current_state
-                                                                        ));
+                                                                        // --- Perfect Negotiation & State Check (Read Only under Lock) ---
+                                                                        // FIX: Remove mut and initial assignment for proceed_with_offer
+                                                                        let proceed_with_offer;
+                                                                        let mut should_abort_due_to_race = false;
+                                                                        // FIX: Remove is_stable_or_closed variable declaration here
+                                                                        let current_signaling_state_read;
 
-                                                                        // Fix error logging for setting remote description
-                                                                        if let Err(e) = pc_clone.set_remote_description(offer).await { 
-                                                                            state_log_clone.lock().unwrap().log.push(format!(
-                                                                                "Error setting remote description (offer) from {}: {}", 
-                                                                                from_clone, e
+                                                                        { // Scope for AppState lock (read-only phase)
+                                                                            let mut state_guard = state_log_clone.lock().unwrap();
+                                                                            let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
+                                                                            let ignoring = state_guard.ignore_offer.get(&from_clone).copied().unwrap_or(false);
+                                                                            let is_polite = self_peer_id_clone > from_clone;
+                                                                            current_signaling_state_read = pc_clone.signaling_state();
+
+                                                                            state_guard.log.push(format!(
+                                                                                "Offer from {}: making={}, ignoring={}, is_polite={}, state={:?}",
+                                                                                from_clone, making, ignoring, is_polite, current_signaling_state_read
                                                                             ));
-                                                                            return; 
-                                                                        }
 
-                                                                        state_log_clone.lock().unwrap().log.push(format!(
-                                                                            "Set remote description (offer) from {}", from_clone
-                                                                        ));
+                                                                            // --- Glare Handling logic ---
+                                                                            let collision = making;
+                                                                            // FIX: Calculate proceed_with_offer directly here
+                                                                            proceed_with_offer = if collision && is_polite {
+                                                                                true // Polite peer yields, but will process this offer
+                                                                            } else if collision && !is_polite {
+                                                                                false // Impolite peer ignores incoming offer during collision
+                                                                            } else if ignoring {
+                                                                                false // Explicitly ignoring
+                                                                            } else {
+                                                                                true // No collision or ignoring, proceed
+                                                                            };
 
-                                                                        match pc_clone.create_answer(None).await {
-                                                                            Ok(answer) => {
-                                                                                // Fix error logging for setting local description
-                                                                                if let Err(e) = pc_clone.set_local_description(answer.clone()).await { 
-                                                                                    state_log_clone.lock().unwrap().log.push(format!(
-                                                                                        "Error setting local description (answer) for {}: {}", 
-                                                                                        from_clone, e
-                                                                                    ));
-                                                                                    return; 
-                                                                                }
-                                                                                
-                                                                                state_log_clone.lock().unwrap().log.push(format!(
-                                                                                    "Set local description (answer) for {}", from_clone
-                                                                                ));
-                                                                                
-                                                                                let answer_signal = WebRTCSignal::Answer(SDPInfo { sdp: answer.sdp });
-                                                                                match serde_json::to_value(answer_signal) {
-                                                                                    Ok(json_val) => {
-                                                                                        let _ = cmd_tx_clone.send(ClientMsg::Relay { 
-                                                                                            to: from_clone.clone(), 
-                                                                                            data: json_val 
-                                                                                        });
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
-                                                                                            "Sent answer to {}", from_clone
-                                                                                        ));
-                                                                                    }
-                                                                                    // Fix error logging for answer serialization
-                                                                                    Err(e) => {
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
-                                                                                            "Error serializing answer to JSON for {}: {}", 
-                                                                                            from_clone, e
-                                                                                        ));
-                                                                                    }
-                                                                                }
+
+                                                                            // --- Abort Check (Safeguard) ---
+                                                                            // FIX: Check against the calculated proceed_with_offer
+                                                                            if proceed_with_offer && making {
+                                                                                should_abort_due_to_race = true;
+                                                                                // proceed_with_offer = false; // Let the next block handle this
                                                                             }
-                                                                            // Fix error logging for answer creation
-                                                                            Err(e) => {
-                                                                                state_log_clone.lock().unwrap().log.push(format!(
-                                                                                    "Error creating answer for {}: {}", 
-                                                                                    from_clone, e
+
+                                                                        } // --- AppState lock dropped ---
+
+                                                                        // --- Update State based on decisions (Brief lock) ---
+                                                                        // FIX: Re-evaluate proceed_with_offer based on state checks inside this block
+                                                                        let mut final_proceed_with_offer = proceed_with_offer; // Start with initial decision
+                                                                        {
+                                                                            let mut state_guard = state_log_clone.lock().unwrap();
+                                                                            let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
+                                                                            let is_polite = self_peer_id_clone > from_clone;
+                                                                            let collision = making;
+
+                                                                            if should_abort_due_to_race {
+                                                                                 state_guard.log.push(format!(
+                                                                                    "Aborting offer from {}: Detected making_offer=true just before async operation (Race?)",
+                                                                                    from_clone
                                                                                 ));
+                                                                                final_proceed_with_offer = false; // Abort
+                                                                            } else if collision && is_polite {
+                                                                                state_guard.log.push(format!("Glare detected with {}: Polite peer yielding (state update).", from_clone));
+                                                                                state_guard.making_offer.insert(from_clone.clone(), false);
+                                                                                // final_proceed_with_offer remains true (polite peer processes)
+                                                                            } else if collision && !is_polite {
+                                                                                state_guard.log.push(format!("Glare detected with {}: Impolite peer ignoring incoming offer (state update).", from_clone));
+                                                                                state_guard.ignore_offer.insert(from_clone.clone(), true);
+                                                                                final_proceed_with_offer = false; // Impolite peer ignores
+                                                                            } else if state_guard.ignore_offer.get(&from_clone).copied().unwrap_or(false) {
+                                                                                state_guard.log.push(format!("Ignoring offer from {} as previously decided (state update).", from_clone));
+                                                                                state_guard.ignore_offer.insert(from_clone.clone(), false); // Reset ignore flag
+                                                                                final_proceed_with_offer = false; // Ignore this time
+                                                                            }
+
+                                                                            // FIX: Perform state check directly here using current_signaling_state_read
+                                                                            let is_invalid_state = !(current_signaling_state_read == RTCSignalingState::Stable || current_signaling_state_read == RTCSignalingState::Closed);
+                                                                            if final_proceed_with_offer && is_invalid_state {
+                                                                                state_guard.log.push(format!(
+                                                                                    "Aborting offer from {}: Invalid signaling state {:?} (expected Stable or Closed)",
+                                                                                    from_clone, current_signaling_state_read
+                                                                                ));
+                                                                                final_proceed_with_offer = false; // Cannot proceed in this state
+                                                                            }
+                                                                        } // --- AppState lock dropped ---
+
+                                                                        // --- Perform Async Operations (No AppState lock held) ---
+                                                                        // FIX: Use final_proceed_with_offer for the decision
+                                                                        if final_proceed_with_offer {
+                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                "Processing offer from {}...", from_clone
+                                                                            ));
+                                                                            // FIX: Use RTCSessionDescription::offer
+                                                                            match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
+                                                                                offer_info.sdp.clone()
+                                                                            ) {
+                                                                                Ok(offer) => {
+                                                                                    if let Err(e) = pc_clone.set_remote_description(offer).await {
+                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                            "Error setting remote description (offer) from {}: {}", from_clone, e
+                                                                                        ));
+                                                                                        return;
+                                                                                    }
+                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        "Set remote description (offer) from {}. Creating answer...", from_clone
+                                                                                    ));
+                                                                                    // Apply any pending ICE candidates now that the remote description is set
+                                                                                    apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
+
+                                                                                    // Create data channel before answering (optional)
+                                                                                    // This helps ensure both sides have a data channel
+                                                                                    match pc_clone.create_data_channel("respond-data", None).await {
+                                                                                        Ok(dc) => {
+                                                                                            let dc_arc = Arc::new(dc);
+                                                                                            let peer_id_dc = from_clone.clone();
+                                                                                            let state_log_dc = state_log_clone.clone();
+
+                                                                                            dc_arc.on_open(Box::new(move || {
+                                                                                                state_log_dc.lock().unwrap().log.push(format!(
+                                                                                                    "Responder: Data channel opened with {}", peer_id_dc
+                                                                                                ));
+                                                                                                Box::pin(async {})
+                                                                                            }));
+
+                                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                "Created responder data channel for {}", from_clone
+                                                                                            ));
+                                                                                        },
+                                                                                        Err(e) => {
+                                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                "Error creating responder data channel for {}: {} (continuing anyway)",
+                                                                                                from_clone, e
+                                                                                            ));
+                                                                                            // Don't return/fail here, as we can still answer without our own channel
+                                                                                        }
+                                                                                    }
+
+                                                                                    match pc_clone.create_answer(None).await {
+                                                                                        Ok(answer) => {
+                                                                                            if let Err(e) = pc_clone.set_local_description(answer.clone()).await {
+                                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                    "Error setting local description (answer) for {}: {}", from_clone, e
+                                                                                                ));
+                                                                                                return;
+                                                                                            }
+                                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                "Set local description (answer) for {}. Sending answer...", from_clone
+                                                                                            ));
+                                                                                            let signal = WebRTCSignal::Answer(SDPInfo { sdp: answer.sdp });
+                                                                                            match serde_json::to_value(signal) {
+                                                                                                Ok(json_val) => {
+                                                                                                    let _ = cmd_tx_clone.send(ClientMsg::Relay {
+                                                                                                        to: from_clone.clone(),
+                                                                                                        data: json_val,
+                                                                                                    });
+                                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                        "Sent answer to {}", from_clone
+                                                                                                    ));
+                                                                                                },
+                                                                                                Err(e) => {
+                                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                        "Error serializing answer for {}: {}", from_clone, e
+                                                                                                    ));
+                                                                                                }
+                                                                                            }
+                                                                                        },
+                                                                                        Err(e) => {
+                                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                "Error creating answer for {}: {}", from_clone, e
+                                                                                            ));
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                Err(e) => {
+                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        "Error parsing offer from {}: {}", from_clone, e
+                                                                                    ));
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
                                                                     WebRTCSignal::Answer(answer_info) => {
-                                                                        state_log_clone.lock().unwrap().log.push(format!("Processing Answer from {}", from_clone));
                                                                         
-                                                                        let current_state = pc_clone.signaling_state();
                                                                         state_log_clone.lock().unwrap().log.push(format!(
-                                                                            "Signaling state before setRemote(answer) for {}: {:?}", 
-                                                                            from_clone, current_state
+                                                                            "Processing answer from {}...", from_clone
                                                                         ));
-
-                                                                        // Fix error logging for answer parsing
-                                                                        let answer = match RTCSessionDescription::answer(answer_info.sdp) { 
-                                                                            Ok(a) => a, 
-                                                                            Err(e) => { 
+                                                                        // FIX: Use RTCSessionDescription::answer
+                                                                        match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(
+                                                                            answer_info.sdp.clone()
+                                                                        ) {
+                                                                            Ok(answer) => {
+                                                                                if let Err(e) = pc_clone.set_remote_description(answer).await {
+                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        "Error setting remote description (answer) from {}: {}", from_clone, e
+                                                                                    ));
+                                                                                } else {
+                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        "Set remote description (answer) from {}", from_clone
+                                                                                    ));
+                                                                                    // Apply any pending ICE candidates now that the remote description is set
+                                                                                    apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
+                                                                                }
+                                                                            },
+                                                                            Err(e) => {
                                                                                 state_log_clone.lock().unwrap().log.push(format!(
-                                                                                    "Error creating answer from SDP for {}: {}", 
-                                                                                    from_clone, e
+                                                                                    "Error parsing answer from {}: {}", from_clone, e
                                                                                 ));
-                                                                                return; 
-                                                                            } 
-                                                                        };
-
-                                                                        // Fix error logging for setting remote description
-                                                                        if let Err(e) = pc_clone.set_remote_description(answer).await {
-                                                                            state_log_clone.lock().unwrap().log.push(format!(
-                                                                                "Error setting remote description (answer) from {}: {}", 
-                                                                                from_clone, e
-                                                                            ));
-                                                                        } else {
-                                                                            state_log_clone.lock().unwrap().log.push(format!(
-                                                                                "Set remote description (answer) from {}", from_clone
-                                                                            ));
+                                                                            }
                                                                         }
                                                                     }
                                                                     WebRTCSignal::Candidate(candidate_info) => {
-                                                                        state_log_clone.lock().unwrap().log.push(format!("Processing Candidate from {}", from_clone));
-                                                                        // FIX: Fill in RTCIceCandidateInit fields correctly
-                                                                        let candidate_init = RTCIceCandidateInit {
+                                                                        // ... (existing Candidate handling) ...
+                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                            "Processing candidate from {}...", from_clone
+                                                                        ));
+                                                                        // FIX: Use RTCIceCandidateInit directly with add_ice_candidate
+                                                                        let candidate_init = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
                                                                             candidate: candidate_info.candidate,
                                                                             sdp_mid: candidate_info.sdp_mid,
                                                                             sdp_mline_index: candidate_info.sdp_mline_index,
-                                                                            username_fragment: None, // Usually None for candidates received this way
+                                                                            username_fragment: None, // Add username_fragment field
                                                                         };
-                                                                        if let Err(e) = pc_clone.add_ice_candidate(candidate_init).await {
-                                                                            state_log_clone.lock().unwrap().log.push(format!("Error adding ICE candidate from {}: {}", from_clone, e));
+
+                                                                        // Check if remote description is set before adding ICE candidate
+                                                                        let current_state = pc_clone.signaling_state();
+                                                                        let remote_description_set = match current_state {
+                                                                            webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer |
+                                                                            webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalPranswer |
+                                                                            webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemotePranswer |
+                                                                            webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => true,
+                                                                            _ => false,
+                                                                        };
+
+                                                                        if remote_description_set {
+                                                                            // If remote description is set, add the candidate directly
+                                                                            if let Err(e) = pc_clone.add_ice_candidate(candidate_init.clone()).await {
+                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                    "Error adding ICE candidate from {}: {}", from_clone, e
+                                                                                ));
+                                                                            } else {
+                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                    "Added ICE candidate from {}", from_clone
+                                                                                ));
+                                                                            }
                                                                         } else {
-                                                                            state_log_clone.lock().unwrap().log.push(format!("Added ICE candidate from {}", from_clone));
+                                                                            // If remote description is not set, store the candidate for later
+                                                                            let mut state_guard = state_log_clone.lock().unwrap();
+                                                                            state_guard.log.push(format!(
+                                                                                "Storing ICE candidate from {} for later (remote description not set yet)",
+                                                                                from_clone
+                                                                            ));
+                                                                            let candidates = state_guard.pending_ice_candidates
+                                                                                .entry(from_clone.clone())
+                                                                                .or_insert_with(Vec::new);
+                                                                            candidates.push(candidate_init);
+                                                                            drop(state_guard);
                                                                         }
                                                                     }
                                                                 }
                                                             }
                                                             Err(e) => {
-                                                                // This error comes from create_and_setup_peer_connection if it failed
+                                                                // Log the error from pc_to_use_result
                                                                 state_log_clone.lock().unwrap().log.push(format!(
                                                                     "Failed to create/retrieve connection object for {} to handle signal: {}",
                                                                     from_clone, e
                                                                 ));
                                                             }
                                                         }
-                                                        // --- End Process Signal ---
                                                     }); // End of spawned task for signal handling
                                                 }
-                                                Err(_) => { 
-                                                    // If it's not a WebRTCSignal, check if it's any other known JSON structure
-                                                    // REMOVE the specific check for "reconnect_request"
-                                                    if let Ok(val) = serde_json::from_value::<serde_json::Value>(data.clone()) {
-                                                        // Log any other valid JSON received via relay
-                                                        state_net.lock().unwrap().log.push(format!(
-                                                            "Received non-WebRTC JSON message via Relay from {}: {:?}", 
-                                                            from, val
-                                                        ));
-                                                    } else {
-                                                        // Log if the data wasn't valid JSON at all
-                                                        state_net.lock().unwrap().log.push(format!(
-                                                            "Received non-JSON or unparseable data via Relay from {}", 
-                                                            from
-                                                        ));
-                                                    }
+                                                Err(e) => {
+                                                    // ... (existing Err handling for WebRTCSignal parsing) ...
+                                                    state_net.lock().unwrap().log.push(format!(
+                                                        "Error parsing WebRTC signal from {}: {}", from, e
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                Err(e) => { 
+                                Err(e) => {
+                                    // ... (existing Err handling for websocket message reading) ...
                                     state_net.lock().unwrap().log.push(format!(
-                                        "Failed to parse server message: {}", 
-                                        e
+                                        "Error reading websocket message: {}", e
                                     ));
                                 }
                             }
                         }
-                        Ok(Message::Close(_)) | Err(_) => {
-                            // ... existing Close/Err handling ...
-                            let mut state_guard = state_net.lock().unwrap(); // Lock TUI state
-                            state_guard.log.push("Disconnected from server".to_string());
-                            // Drop guard immediately
-                            drop(state_guard);
-                            break; // Exit loop
-                        }
-                        _ => {
-                            // Log other message types if necessary
-                            state_net.lock().unwrap().log.push(format!("Received non-text WS message: {:?}", msg));
-                        }
+                        _ => {} // Ignore other events like Mouse, Resize etc.
                     }
                 }
             }
         }
-    });
+    }); // End of main network task
 
     // TUI setup
     enable_raw_mode()?;
@@ -1264,7 +1405,7 @@ async fn main() -> anyhow::Result<()> {
                             let role_prefix = if app_guard.peer_id < p.to_string() {
                                 "→" // Initiator (outgoing connection)
                             } else {
-                                "←" // Responder (incoming connection) 
+                                "←" // Responder (incoming connection)
                             };
                             format!("{}{:?}", role_prefix, s)
                         } else {
@@ -1503,9 +1644,8 @@ async fn main() -> anyhow::Result<()> {
                                                             target_peer_id, conn_state
                                                         ));
                                                     }
-                                                }                               
-                                            
-                    
+                                                }
+                                                
                                                 // 改进方法: 直接创建一个专用的消息通道
                                                 let channel_name = format!("msg-{}", SystemTime::now()
                                                     .duration_since(UNIX_EPOCH)
@@ -1575,40 +1715,40 @@ async fn main() -> anyhow::Result<()> {
                                                                 target_peer_id, e
                                                             ));
                                                             guard.log.push("尝试重新建立连接...".to_string());
-                                                            
-                                                            // 如果创建通道失败，尝试发送重连请求
-                                                            let timestamp = SystemTime::now()
-                                                                .duration_since(UNIX_EPOCH)
-                                                                .unwrap_or_default()
-                                                                .as_secs();
-                                                            
-                                                            let recon_msg = serde_json::json!({
-                                                                "type": "reconnect_request",
-                                                                "timestamp": timestamp,
-                                                                "from_send_command": true
-                                                            });
-                                                            
-                                                            // 回到主线程发送重连请求
-                                                            let state_clone_for_task = state_clone.clone();
-                                                            tokio::spawn(async move {
-                                                                let state_guard = state_clone_for_task.lock().unwrap();
-                                                                let cmd_tx_clone = state_guard.cmd_tx.clone();
-                                                                drop(state_guard);
-                                                                
-                                                                if let Some(cmd_tx) = cmd_tx_clone {
-                                                                    let _ = cmd_tx.send(ClientMsg::Relay {
-                                                                        to: target_peer_id.clone(),
-                                                                        data: recon_msg,
-                                                                    });
-                                                                }
-                                                            });
                                                         }
+                                                        
+                                                        // 如果创建通道失败，尝试发送重连请求
+                                                        let timestamp = SystemTime::now()
+                                                            .duration_since(UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_secs();
+                                                        
+                                                        let recon_msg = serde_json::json!({
+                                                            "type": "reconnect_request",
+                                                            "timestamp": timestamp,
+                                                            "from_send_command": true
+                                                        });
+                                                        
+                                                        // 回到主线程发送重连请求
+                                                        let state_clone_for_task = state_clone.clone();
+                                                        tokio::spawn(async move {
+                                                            let state_guard = state_clone_for_task.lock().unwrap();
+                                                            let cmd_tx_clone = state_guard.cmd_tx.clone();
+                                                            drop(state_guard); // Drop lock after modifying input
+                                                            
+                                                            if let Some(cmd_tx) = cmd_tx_clone {
+                                                                let _ = cmd_tx.send(ClientMsg::Relay {
+                                                                    to: target_peer_id.clone(),
+                                                                    data: recon_msg,
+                                                                });
+                                                            }
+                                                        });
                                                     }
                                                 }
                                             } else {
                                                 if let Ok(mut guard) = state_clone.try_lock() {
                                                     guard.log.push(format!(
-                                                        "没有与 {} 的WebRTC连接存在", 
+                                                        "没有与 {} 的WebRTC连接存在",
                                                         target_peer_id
                                                     ));
                                                 }
@@ -1616,17 +1756,13 @@ async fn main() -> anyhow::Result<()> {
                                         });
                                     } else {
                                         // Re-acquire lock to log error
-                                        state.lock().unwrap().log.push(
-                                            "无效的 /send 格式。请使用: /send <peer_id> <message>".to_string(),
-                                        );
+                                        state.lock().unwrap().log.push("无效的 /send 格式。请使用: /send <peer_id> <message>".to_string());
                                     }
                                 } else if !cmd_str.is_empty() {
-                                    // Re-acquire lock to log unknown command  
-                                    state
-                                        .lock()
-                                        .unwrap()
-                                        .log
-                                        .push(format!("Unknown command: {}", cmd_str));
+                                    // Re-acquire lock to log unknown command
+                                    state.lock().unwrap().log.push(format!(
+                                        "Unknown command: {}", cmd_str
+                                    ));
                                 }
                             }
                             KeyCode::Char(c) => {
@@ -1665,7 +1801,7 @@ async fn main() -> anyhow::Result<()> {
                                 let session_to_join = {
                                     // app_guard is already held
                                     app_guard.invites.first().map(|inv| inv.session_id.clone())
-                                }; // Keep lock until after potential send
+                                };
 
                                 if let Some(session_id) = session_to_join {
                                     app_guard
