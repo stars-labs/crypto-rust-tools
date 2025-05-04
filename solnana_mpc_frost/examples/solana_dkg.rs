@@ -26,10 +26,10 @@ use std::fs::{self}; // Removed File
 // Removed unused BufRead import
 use std::io::{self, Read, Write, stdin}; // Removed unused BufWriter
 use std::net::{TcpListener, TcpStream};
-// Removed unused Path import
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant; // Re-add Instant
 
 // --- DKG Message Types ---
 #[derive(Serialize, Deserialize, Clone)] // Add Clone
@@ -123,18 +123,27 @@ fn parse_args() -> (u16, u16, u16, bool) {
 // Simple send/recv helpers for TCP
 fn send_to(addr: &str, msg: &MessageWrapper) {
     let data = encode_to_vec(msg, bincode::config::standard()).unwrap();
-    let mut stream = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_e) => {
-                // Mark e as unused
-                // Add a small delay and print error if connection fails immediately
-                // eprintln!("Failed to connect to {}: {}. Retrying...", addr, e);
-                thread::sleep(Duration::from_millis(100));
+    // Use connect_timeout instead of looping indefinitely
+    match TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)) {
+        // 5 second timeout
+        Ok(mut stream) => {
+            // Set a write timeout as well? Optional, but can prevent hangs if receiver is slow/stuck
+            // stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap_or_else(|e| {
+            //     eprintln!("Failed to set write timeout for {}: {}", addr, e);
+            // });
+            if let Err(e) = stream.write_all(&data) {
+                eprintln!("Failed to write to {}: {}", addr, e);
             }
+            // Explicitly shut down the write side? Might help ensure data is sent before drop.
+            // stream.shutdown(std::net::Shutdown::Write).unwrap_or_else(|e| {
+            //      eprintln!("Failed to shutdown write stream for {}: {}", addr, e);
+            // });
         }
-    };
-    stream.write_all(&data).unwrap();
+        Err(e) => {
+            eprintln!("Failed to connect to {} within timeout: {}", addr, e);
+            // Don't panic or loop, just log and continue (message to this peer is lost)
+        }
+    }
 }
 
 // Broadcast to all peers except self
@@ -149,56 +158,126 @@ fn broadcast(index: u16, total: u16, msg: &MessageWrapper) {
     }
 }
 
-// Receive a specific number of messages of a certain type (blocking)
+// Receive messages with optional timeout
 fn receive_messages<T>(
     listener: &TcpListener,
-    count: usize,
+    expected_count: usize,
+    timeout: Option<Duration>, // Use Option<Duration>
     extract_fn: fn(MessageWrapper) -> Option<T>,
 ) -> Result<Vec<T>, Box<dyn Error>> {
-    let mut messages = Vec::with_capacity(count);
+    let mut messages = Vec::with_capacity(expected_count);
+    let start_time = Instant::now();
 
-    // Loop until 'count' messages of the correct type are received
-    while messages.len() < count {
-        // Block until a connection is accepted
-        let (mut stream, addr) = listener.accept()?;
-        println!("Accepted connection from {}", addr);
+    if let Some(duration) = timeout {
+        // --- Timeout Logic ---
+        listener.set_nonblocking(true)?;
+        while messages.len() < expected_count && start_time.elapsed() < duration {
+            match listener.accept() {
+                Ok((mut stream, addr)) => {
+                    listener.set_nonblocking(false)?; // Set back to blocking for read
+                    println!("Accepted connection from {}", addr);
+                    // Set read timeout relative to overall timeout
+                    let remaining_time = duration.saturating_sub(start_time.elapsed());
+                    if remaining_time == Duration::ZERO {
+                        println!("Timeout expired before reading from {}", addr);
+                        listener.set_nonblocking(true)?;
+                        continue;
+                    }
+                    stream.set_read_timeout(Some(remaining_time))?;
 
-        let mut buf = Vec::new();
-        // Block until the entire message is read
-        match stream.read_to_end(&mut buf) {
-            Ok(_) => {
-                if buf.is_empty() {
-                    println!("Received empty message from {}", addr);
-                    continue; // Skip empty messages
-                }
-                let wrapped_msg: MessageWrapper =
-                    match decode_from_slice(&buf, bincode::config::standard()) {
-                        Ok((msg, _)) => msg,
+                    let mut buf = Vec::new();
+                    match stream.read_to_end(&mut buf) {
+                        Ok(_) => {
+                            if buf.is_empty() {
+                                println!("Received empty message from {}", addr);
+                            } else {
+                                let wrapped_msg: MessageWrapper =
+                                    match decode_from_slice(&buf, bincode::config::standard()) {
+                                        Ok((msg, _)) => msg,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Failed to decode message from {}: {}",
+                                                addr, e
+                                            );
+                                            // Continue listening after decode error
+                                            listener.set_nonblocking(true)?;
+                                            continue;
+                                        }
+                                    };
+                                if let Some(msg) = extract_fn(wrapped_msg.clone()) {
+                                    messages.push(msg);
+                                } else {
+                                    // Handle unexpected types if needed
+                                    println!(
+                                        "Received unexpected message type from {} (ignoring)",
+                                        addr
+                                    );
+                                }
+                            }
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            println!("Read timeout from {}", addr);
+                        }
                         Err(e) => {
-                            eprintln!("Failed to decode message from {}: {}", addr, e);
-                            continue; // Skip malformed messages
-                        }
-                    };
-
-                if let Some(msg) = extract_fn(wrapped_msg.clone()) {
-                    messages.push(msg);
-                } else {
-                    // Handle unexpected but valid message types if necessary
-                    match wrapped_msg {
-                        MessageWrapper::SignAggregated(_) | MessageWrapper::SignerSelection(_) => {
-                            println!(
-                                "Received unexpected but valid message type while waiting (ignoring)"
-                            );
-                        }
-                        _ => {
-                            eprintln!("Received unexpected message type from {}", addr);
+                            eprintln!("Error reading from stream {}: {}", addr, e);
+                            // Consider if this should be fatal; for now, continue listening
                         }
                     }
+                    listener.set_nonblocking(true)?; // Set back to non-blocking
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // No incoming connection, wait briefly
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Err(e) => {
+                    listener.set_nonblocking(false)?; // Ensure blocking on error
+                    eprintln!("Error accepting connection: {}", e);
+                    return Err(e.into());
                 }
             }
-            Err(e) => {
-                // Handle stream read errors (other than timeout, which is removed)
-                eprintln!("Error reading from stream {}: {}", addr, e);
+        }
+        listener.set_nonblocking(false)?; // Ensure blocking on exit
+
+        if messages.len() < expected_count {
+            println!(
+                "Warning: Timed out waiting for messages. Expected {}, got {}.",
+                expected_count,
+                messages.len()
+            );
+        }
+    } else {
+        // --- Blocking Logic ---
+        while messages.len() < expected_count {
+            let (mut stream, addr) = listener.accept()?; // Blocks here
+            println!("Accepted connection from {}", addr);
+            let mut buf = Vec::new();
+            match stream.read_to_end(&mut buf) {
+                // Blocks here
+                Ok(_) => {
+                    if buf.is_empty() {
+                        println!("Received empty message from {}", addr);
+                        continue;
+                    }
+                    let wrapped_msg: MessageWrapper =
+                        match decode_from_slice(&buf, bincode::config::standard()) {
+                            Ok((msg, _)) => msg,
+                            Err(e) => {
+                                eprintln!("Failed to decode message from {}: {}", addr, e);
+                                continue;
+                            }
+                        };
+                    if let Some(msg) = extract_fn(wrapped_msg.clone()) {
+                        messages.push(msg);
+                    } else {
+                        println!("Received unexpected message type from {} (ignoring)", addr);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error reading from stream {}: {}", addr, e);
+                    // Consider returning error for blocking case
+                    // return Err(e.into());
+                }
             }
         }
     }
@@ -211,6 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (index, total, threshold, is_initiator) = parse_args();
     let my_addr = format!("127.0.0.1:1000{}", index);
     let mut rng = OsRng;
+    let network_timeout = Duration::from_secs(15); // Define timeout duration
 
     // My Identifier
     let my_identifier = Identifier::try_from(index).expect("Invalid identifier");
@@ -254,10 +334,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         broadcast(index, total, &wrapped_r1_msg);
 
-        // Receive Round 1 Packages (blocking)
+        // Receive Round 1 Packages (blocking - DKG requires all)
         println!("Node {} receiving DKG Round 1 packages...", index);
         let received_r1_messages =
-            receive_messages(&listener, (total - 1) as usize, |msg| match msg {
+            receive_messages(&listener, (total - 1) as usize, None, |msg| match msg {
+                // Timeout = None
                 MessageWrapper::DkgRound1(m) => Some(m),
                 _ => None,
             })?;
@@ -313,10 +394,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // Receive Round 2 Packages (blocking)
+        // Receive Round 2 Packages (blocking - DKG requires all)
         println!("Node {} receiving DKG Round 2 packages...", index);
         let received_r2_messages =
-            receive_messages(&listener, (total - 1) as usize, |msg| match msg {
+            receive_messages(&listener, (total - 1) as usize, None, |msg| match msg {
+                // Timeout = None
                 MessageWrapper::DkgRound2(m) => Some(m),
                 _ => None,
             })?;
@@ -453,7 +535,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Node {} waiting for transaction message from initiator...",
             index
         );
-        let received_tx_msgs = receive_messages(&listener, 1, |msg| match msg {
+        let received_tx_msgs = receive_messages(&listener, 1, None, |msg| match msg {
+            // Timeout = None
             MessageWrapper::SignTx(m) => Some(m),
             _ => None,
         })?;
@@ -463,7 +546,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // --- FROST Signing Rounds ---
-    println!("Node {} starting FROST Round 1 (Commit)...", index);
     let (my_nonce, my_commitment) = frost_round1::commit(key_package.signing_share(), &mut rng);
 
     // Broadcast commitment
@@ -474,13 +556,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let wrapped_commit_msg = MessageWrapper::SignCommitment(commitment_message);
     broadcast(index, total, &wrapped_commit_msg);
 
-    // Receive commitments from others (blocking)
-    println!("Node {} receiving commitments...", index);
-    let received_commit_msgs =
-        receive_messages(&listener, (total - 1) as usize, |msg| match msg {
+    // Receive commitments from others (with timeout)
+    println!(
+        "Node {} receiving commitments (timeout: {:?})...",
+        index, network_timeout
+    );
+    let received_commit_msgs = receive_messages(
+        &listener,
+        (total - 1) as usize, // Still *expect* total-1, but timeout will limit wait
+        Some(network_timeout), // Apply timeout here
+        |msg| match msg {
             MessageWrapper::SignCommitment(m) => Some(m),
             _ => None,
-        })?;
+        },
+    )?;
 
     let mut commitments_map = BTreeMap::new();
     commitments_map.insert(my_identifier, my_commitment); // Add self
@@ -651,7 +740,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Node {} waiting for signer selection from initiator...", // Removed timeout mention
             index
         );
-        let received_selection = receive_messages(&listener, 1, |msg| match msg {
+        let received_selection = receive_messages(&listener, 1, None, |msg| match msg {
+            // Timeout = None
             MessageWrapper::SignerSelection(m) => Some(m),
             _ => None,
         })?;
@@ -709,10 +799,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
 
             if shares_to_receive > 0 {
-                // Receive shares (blocking)
+                // Receive shares (blocking - selected signers *must* respond)
                 let received_share_msgs = receive_messages(
                     &listener,
                     shares_to_receive, // Expect shares only from other selected signers
+                    None,              // Timeout = None
                     |msg| match msg {
                         MessageWrapper::SignShare(m) => Some(m),
                         _ => None,
@@ -781,7 +872,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 // ... (rest of initiator transaction sending unchanged) ...
                 let solana_signature = Signature::try_from(group_signature_bytes)
                     .map_err(|e| format!("Failed to create Solana signature: {:?}", e))?;
-                if !final_tx.signatures.is_empty() {
+                if (!final_tx.signatures.is_empty()) {
                     final_tx.signatures[0] = solana_signature;
                 } else {
                     final_tx.signatures.push(solana_signature);
@@ -838,7 +929,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "Node {} waiting for aggregated signature from initiator...", // Removed timeout mention
                 index
             );
-            let received_agg_sig = receive_messages(&listener, 1, |msg| match msg {
+            let received_agg_sig = receive_messages(&listener, 1, None, |msg| match msg {
+                // Timeout = None
                 MessageWrapper::SignAggregated(m) => Some(m),
                 _ => None,
             })?;
@@ -862,7 +954,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Node {} waiting for aggregated signature from initiator...", // Removed timeout mention
             index
         );
-        let received_agg_sig = receive_messages(&listener, 1, |msg| match msg {
+        let received_agg_sig = receive_messages(&listener, 1, None, |msg| match msg {
+            // Timeout = None
             MessageWrapper::SignAggregated(m) => Some(m),
             _ => None,
         })?;
