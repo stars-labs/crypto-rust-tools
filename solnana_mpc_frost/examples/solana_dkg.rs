@@ -68,6 +68,12 @@ struct AggregatedSignatureMessage {
     signature_bytes: Vec<u8>,
 }
 
+// --- New Message Type for Signer Selection ---
+#[derive(Serialize, Deserialize, Clone)]
+struct SignerSelectionMessage {
+    selected_identifiers: Vec<Identifier>,
+}
+
 // --- Generic Message Wrapper ---
 #[derive(Serialize, Deserialize, Clone)]
 enum MessageWrapper {
@@ -76,7 +82,8 @@ enum MessageWrapper {
     SignTx(TxMessage),
     SignCommitment(CommitmentMessage),
     SignShare(ShareMessage),
-    SignAggregated(AggregatedSignatureMessage), // New variant
+    SignAggregated(AggregatedSignatureMessage),
+    SignerSelection(SignerSelectionMessage), // New variant
 }
 
 fn parse_args() -> (u16, u16, u16, bool) {
@@ -142,55 +149,60 @@ fn broadcast(index: u16, total: u16, msg: &MessageWrapper) {
     }
 }
 
-// Receive a specific number of messages of a certain type
+// Receive a specific number of messages of a certain type (blocking)
 fn receive_messages<T>(
     listener: &TcpListener,
     count: usize,
     extract_fn: fn(MessageWrapper) -> Option<T>,
 ) -> Result<Vec<T>, Box<dyn Error>> {
     let mut messages = Vec::with_capacity(count);
-    let mut received_count = 0; // Track received messages matching the type
-    while received_count < count {
+
+    // Loop until 'count' messages of the correct type are received
+    while messages.len() < count {
+        // Block until a connection is accepted
         let (mut stream, addr) = listener.accept()?;
         println!("Accepted connection from {}", addr);
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf)?; // Read entire message
-        if buf.is_empty() {
-            println!("Received empty message from {}", addr);
-            continue; // Or handle error
-        }
-        // Extract the message (.0) from the tuple returned by decode_from_slice
-        let wrapped_msg: MessageWrapper = match decode_from_slice(&buf, bincode::config::standard())
-        {
-            Ok((msg, _)) => msg,
-            Err(e) => {
-                eprintln!("Failed to decode message from {}: {}", addr, e);
-                continue; // Skip malformed messages
-            }
-        };
 
-        if let Some(msg) = extract_fn(wrapped_msg.clone()) {
-            // Clone wrapped_msg here
-            messages.push(msg);
-            received_count += 1;
-        } else {
-            // Handle unexpected but valid message types if necessary
-            // e.g., log it, store it for later, or ignore it
-            match wrapped_msg {
-                MessageWrapper::SignAggregated(_) => {
-                    println!(
-                        "Node {} received aggregated signature (ignoring for now)",
-                        addr
-                    );
+        let mut buf = Vec::new();
+        // Block until the entire message is read
+        match stream.read_to_end(&mut buf) {
+            Ok(_) => {
+                if buf.is_empty() {
+                    println!("Received empty message from {}", addr);
+                    continue; // Skip empty messages
                 }
-                _ => {
-                    eprintln!("Received unexpected message type from {}", addr);
-                    // Decide if this should be a hard error or just ignored
-                    // return Err("Received unexpected message type".into());
+                let wrapped_msg: MessageWrapper =
+                    match decode_from_slice(&buf, bincode::config::standard()) {
+                        Ok((msg, _)) => msg,
+                        Err(e) => {
+                            eprintln!("Failed to decode message from {}: {}", addr, e);
+                            continue; // Skip malformed messages
+                        }
+                    };
+
+                if let Some(msg) = extract_fn(wrapped_msg.clone()) {
+                    messages.push(msg);
+                } else {
+                    // Handle unexpected but valid message types if necessary
+                    match wrapped_msg {
+                        MessageWrapper::SignAggregated(_) | MessageWrapper::SignerSelection(_) => {
+                            println!(
+                                "Received unexpected but valid message type while waiting (ignoring)"
+                            );
+                        }
+                        _ => {
+                            eprintln!("Received unexpected message type from {}", addr);
+                        }
+                    }
                 }
+            }
+            Err(e) => {
+                // Handle stream read errors (other than timeout, which is removed)
+                eprintln!("Error reading from stream {}: {}", addr, e);
             }
         }
     }
+
     Ok(messages)
 }
 
@@ -242,7 +254,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         broadcast(index, total, &wrapped_r1_msg);
 
-        // Receive Round 1 Packages
+        // Receive Round 1 Packages (blocking)
         println!("Node {} receiving DKG Round 1 packages...", index);
         let received_r1_messages =
             receive_messages(&listener, (total - 1) as usize, |msg| match msg {
@@ -261,9 +273,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
 
-        if received_round1_packages.len() != total as usize {
+        // DKG requires all participants, check if we received enough R1 packages
+        if received_round1_packages.len() < total as usize {
             return Err(format!(
-                "Error: Incorrect number of Round 1 packages. Got {}, expected {}",
+                "Error: Not enough Round 1 packages received for DKG. Got {}, expected {}",
                 received_round1_packages.len(),
                 total
             )
@@ -286,18 +299,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Send Round 2 Packages
         println!("Node {} sending DKG Round 2 packages...", index);
         for (receiver_id, package) in round2_packages {
-            let id_bytes = receiver_id.serialize();
-            let receiver_idx = u16::from_le_bytes(id_bytes[0..2].try_into()?);
-            let round2_message = Round2Message {
-                participant_index: index,
-                package,
-            };
-            let wrapped_r2_msg = MessageWrapper::DkgRound2(round2_message);
-            let peer_addr = format!("127.0.0.1:1000{}", receiver_idx);
-            send_to(&peer_addr, &wrapped_r2_msg);
+            // Only send to participants from whom we received R1 package
+            if received_round1_packages_from_others.contains_key(&receiver_id) {
+                let id_bytes = receiver_id.serialize();
+                let receiver_idx = u16::from_le_bytes(id_bytes[0..2].try_into()?);
+                let round2_message = Round2Message {
+                    participant_index: index,
+                    package,
+                };
+                let wrapped_r2_msg = MessageWrapper::DkgRound2(round2_message);
+                let peer_addr = format!("127.0.0.1:1000{}", receiver_idx);
+                send_to(&peer_addr, &wrapped_r2_msg);
+            }
         }
 
-        // Receive Round 2 Packages
+        // Receive Round 2 Packages (blocking)
         println!("Node {} receiving DKG Round 2 packages...", index);
         let received_r2_messages =
             receive_messages(&listener, (total - 1) as usize, |msg| match msg {
@@ -308,16 +324,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut received_round2_packages = BTreeMap::new();
         for msg in received_r2_messages {
             let sender_id = Identifier::try_from(msg.participant_index)?;
-            received_round2_packages.insert(sender_id, msg.package);
-            println!(
-                "Node {} received DKG R2 package from participant {}",
-                index, msg.participant_index
-            );
+            // Only accept from participants from whom we received R1 package
+            if received_round1_packages_from_others.contains_key(&sender_id) {
+                received_round2_packages.insert(sender_id, msg.package);
+                println!(
+                    "Node {} received DKG R2 package from participant {}",
+                    index, msg.participant_index
+                );
+            }
         }
 
-        if received_round2_packages.len() != (total - 1) as usize {
+        // DKG requires all participants, check if we received enough R2 packages
+        if received_round2_packages.len() < (total - 1) as usize {
             return Err(format!(
-                "Error: Incorrect number of Round 2 packages. Got {}, expected {}",
+                "Error: Not enough Round 2 packages received for DKG. Got {}, expected {}",
                 received_round2_packages.len(),
                 total - 1
             )
@@ -329,7 +349,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Node {} starting DKG Finalize (Part 3)...", index);
         let (kp, pkp) = frost::keys::dkg::part3(
             &round2_secret_package,
-            &received_round1_packages_from_others,
+            &received_round1_packages_from_others, // Use the original map here
             &received_round2_packages,
         )
         .expect("DKG part 3 failed");
@@ -428,7 +448,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let wrapped_tx_msg = MessageWrapper::SignTx(tx_message);
         broadcast(index, total, &wrapped_tx_msg);
     } else {
-        // Participant Node
+        // Participant Node waits for TX message (blocking)
         println!(
             "Node {} waiting for transaction message from initiator...",
             index
@@ -437,9 +457,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             MessageWrapper::SignTx(m) => Some(m),
             _ => None,
         })?;
-        if received_tx_msgs.is_empty() {
-            return Err("Node {} did not receive transaction message".into());
-        }
+        // No need to check is_empty, receive_messages blocks until 1 is received or errors
         message_bytes = received_tx_msgs[0].message_bytes.clone();
         println!("Node {} received transaction message.", index);
     }
@@ -456,7 +474,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let wrapped_commit_msg = MessageWrapper::SignCommitment(commitment_message);
     broadcast(index, total, &wrapped_commit_msg);
 
-    // Receive commitments from others
+    // Receive commitments from others (blocking)
     println!("Node {} receiving commitments...", index);
     let received_commit_msgs =
         receive_messages(&listener, (total - 1) as usize, |msg| match msg {
@@ -474,191 +492,326 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    if commitments_map.len() != total as usize {
+    // Check if we have at least threshold commitments to proceed with signing
+    if commitments_map.len() < threshold as usize {
         return Err(format!(
-            "Error: Incorrect number of commitments received. Got {}, expected {}",
+            "Error: Not enough commitments received to meet threshold. Got {}, expected at least {}",
             commitments_map.len(),
-            total
+            threshold
         )
         .into());
     }
-    println!("Node {} collected all commitments.", index);
+    println!(
+        "Node {} collected {} commitments (threshold is {}).",
+        index,
+        commitments_map.len(),
+        threshold
+    );
 
-    // Create SigningPackage
-    // For demo: allow all nodes to send shares, Node 1 will aggregate first `threshold` shares received.
-    let mut signing_commitments = BTreeMap::new();
-    let mut signer_identifiers = Vec::new();
-    for (identifier, commitment) in commitments_map.iter() {
-        signing_commitments.insert(*identifier, commitment.clone());
-        signer_identifiers.push(*identifier);
-    }
-    // Sort signer_identifiers for deterministic threshold selection
-    signer_identifiers.sort();
+    // --- Signer Selection Phase ---
+    let selected_signer_identifiers: Vec<Identifier>;
 
-    // Node <initiator_index> (Initiator) logic
     if is_initiator {
-        println!("Node {} creating SigningPackage...", index); // Node initiator always creates package to aggregate
-        // Only use the first `threshold` identifiers for aggregation
-        let threshold_signers: Vec<_> = signer_identifiers
-            .iter()
-            .take(threshold as usize)
-            .cloned()
-            .collect();
-        let mut signing_commitments_threshold = BTreeMap::new();
-        for id in &threshold_signers {
-            if let Some(commitment) = signing_commitments.get(id) {
-                signing_commitments_threshold.insert(*id, commitment.clone());
+        // Initiator selects signers MANUALLY, automatically including self
+        let mut manually_selected_ids = Vec::with_capacity(threshold as usize);
+        manually_selected_ids.push(my_identifier); // Automatically include self
+
+        let needed_others = threshold.saturating_sub(1); // Number of *other* participants needed
+
+        if needed_others > 0 {
+            let available_other_signer_ids: Vec<_> = commitments_map
+                .keys()
+                .filter(|&&id| id != my_identifier) // Exclude self
+                .cloned()
+                .collect();
+
+            if available_other_signer_ids.len() < needed_others as usize {
+                return Err(format!(
+                    "Error: Not enough other participants ({}) available to meet threshold ({}). Need {} more.",
+                    available_other_signer_ids.len(), threshold, needed_others
+                ).into());
+            }
+
+            println!("Available other participants (who sent commitments):");
+            for id in &available_other_signer_ids {
+                let id_bytes = id.serialize();
+                let idx = u16::from_le_bytes(id_bytes[0..2].try_into()?);
+                println!(" - Node {}", idx);
+            }
+
+            loop {
+                print!(
+                    "Enter {} other participant indices (comma-separated) to select for signing: ",
+                    needed_others
+                );
+                io::stdout().flush()?;
+                let mut input_str = String::new();
+                stdin().read_line(&mut input_str)?;
+
+                let parts: Vec<&str> = input_str.trim().split(',').collect();
+                if parts.len() != needed_others as usize {
+                    eprintln!(
+                        "Error: Expected {} indices, but got {}. Please try again.",
+                        needed_others,
+                        parts.len()
+                    );
+                    continue;
+                }
+
+                let mut temp_selected_others = Vec::with_capacity(needed_others as usize);
+                let mut input_valid = true;
+                for part in parts {
+                    match part.trim().parse::<u16>() {
+                        Ok(idx) => match Identifier::try_from(idx) {
+                            Ok(id) => {
+                                // Check if it's one of the *other* available participants
+                                if available_other_signer_ids.contains(&id) {
+                                    if !temp_selected_others.contains(&id) {
+                                        temp_selected_others.push(id);
+                                    } else {
+                                        eprintln!(
+                                            "Error: Index {} entered more than once. Please try again.",
+                                            idx
+                                        );
+                                        input_valid = false;
+                                        break;
+                                    }
+                                } else if id == my_identifier {
+                                    eprintln!(
+                                        "Error: Initiator (Node {}) is already included. Please select other participants.",
+                                        index
+                                    );
+                                    input_valid = false;
+                                    break;
+                                } else {
+                                    eprintln!(
+                                        "Error: Participant with index {} is not available or did not send a commitment. Please try again.",
+                                        idx
+                                    );
+                                    input_valid = false;
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Error: Invalid index {} entered. Please try again.",
+                                    idx
+                                );
+                                input_valid = false;
+                                break;
+                            }
+                        },
+                        Err(_) => {
+                            eprintln!(
+                                "Error: Invalid input '{}'. Please enter numbers separated by commas.",
+                                part
+                            );
+                            input_valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if input_valid {
+                    manually_selected_ids.extend(temp_selected_others);
+                    break; // Exit loop on valid input
+                }
+            }
+        } else {
+            println!("Node {} is the only signer required (threshold 1).", index);
+        }
+
+        // Sort the final list for deterministic broadcast message
+        manually_selected_ids.sort();
+        selected_signer_identifiers = manually_selected_ids;
+
+        // Check is redundant now due to input validation loop, but keep as safeguard
+        if selected_signer_identifiers.len() != threshold as usize {
+            return Err(format!(
+                "Internal Error: Selection process resulted in {} signers, expected {}.",
+                selected_signer_identifiers.len(),
+                threshold
+            )
+            .into());
+        }
+
+        println!(
+            "Node {} (Initiator) selected signers: {:?}",
+            index, selected_signer_identifiers
+        );
+
+        // Broadcast the selection
+        let selection_msg = MessageWrapper::SignerSelection(SignerSelectionMessage {
+            selected_identifiers: selected_signer_identifiers.clone(),
+        });
+        broadcast(index, total, &selection_msg);
+    } else {
+        // Participants wait for selection message (blocking)
+        println!(
+            "Node {} waiting for signer selection from initiator...", // Removed timeout mention
+            index
+        );
+        let received_selection = receive_messages(&listener, 1, |msg| match msg {
+            MessageWrapper::SignerSelection(m) => Some(m),
+            _ => None,
+        })?;
+
+        // No need to check is_empty
+        selected_signer_identifiers = received_selection[0].selected_identifiers.clone();
+        println!(
+            "Node {} received selected signers: {:?}",
+            index, selected_signer_identifiers
+        );
+    }
+
+    // --- Signing Round 2 (Conditional based on selection) ---
+    let i_am_selected = selected_signer_identifiers.contains(&my_identifier);
+
+    if i_am_selected {
+        // Create SigningPackage using ONLY commitments from SELECTED signers
+        let mut final_commitments = BTreeMap::new();
+        for id in &selected_signer_identifiers {
+            if let Some(commitment) = commitments_map.get(id) {
+                final_commitments.insert(*id, commitment.clone());
+            } else {
+                // This should not happen if initiator selected correctly
+                return Err(
+                    format!("Error: Commitment missing for selected signer {:?}", id).into(),
+                );
             }
         }
-        let signing_package =
-            SigningPackage::new(signing_commitments_threshold.clone(), &message_bytes);
-
-        let mut signature_shares_map = BTreeMap::new();
+        println!(
+            "Node {} (Selected) creating SigningPackage for selected signers ({})...",
+            index,
+            final_commitments.len()
+        );
+        let signing_package = SigningPackage::new(final_commitments.clone(), &message_bytes); // Use final_commitments
 
         println!("Node {} starting FROST Round 2 (Sign)...", index);
         let my_signature_share = frost_round2::sign(&signing_package, &my_nonce, &key_package)?;
         println!("Node {} generated signature share.", index);
 
-        // Only add own share if this node is in the threshold set
-        if threshold_signers.contains(&my_identifier) {
+        if is_initiator {
+            // Initiator logic (continues from here)
+            let mut signature_shares_map = BTreeMap::new();
             signature_shares_map.insert(my_identifier, my_signature_share.clone());
             println!("Node {} added its own share to map.", index);
-        }
 
-        // Only need threshold-1 shares in addition to own (from threshold set)
-        let shares_to_receive = if threshold_signers.contains(&my_identifier) {
-            threshold as usize - 1
-        } else {
-            threshold as usize
-        };
+            // Calculate how many shares to receive from *other* selected signers
+            let shares_to_receive = selected_signer_identifiers
+                .iter()
+                .filter(|&&id| id != my_identifier)
+                .count();
 
-        println!(
-            "Node {} waiting for signature shares from {} participants...",
-            index, shares_to_receive
-        );
-
-        if shares_to_receive > 0 {
-            let received_share_msgs =
-                receive_messages(&listener, shares_to_receive, |msg| match msg {
-                    MessageWrapper::SignShare(m) => Some(m),
-                    _ => None,
-                })?;
-
-            for msg in received_share_msgs {
-                // Only accept shares from expected threshold signers
-                if threshold_signers.contains(&msg.sender_identifier) {
-                    signature_shares_map.insert(msg.sender_identifier, msg.share);
-                    println!(
-                        "Node {} received and added share from {:?}",
-                        index, msg.sender_identifier
-                    );
-                } else {
-                    println!(
-                        "Node {} received share from unknown identifier {:?} (ignored)",
-                        index, msg.sender_identifier
-                    );
-                }
-            }
-        } else if threshold == 0 {
-            println!("Warning: Threshold is 0, no shares needed.");
-        } else if threshold == 1 {
             println!(
-                "Node {} is the only signer (threshold 1), no shares to receive.",
-                index
+                "Node {} waiting for signature shares from {} selected participants...", // Removed timeout mention
+                index, shares_to_receive
             );
-        }
 
-        if signature_shares_map.len() != threshold as usize {
-            return Err(format!(
-                "Error: Incorrect number of signature shares collected for aggregation. Got {}, expected {}",
-                signature_shares_map.len(),
-                threshold
-            )
-            .into());
-        }
-        println!(
-            "Node {} collected all required signature shares for threshold {}.",
-            index, threshold
-        );
+            if shares_to_receive > 0 {
+                // Receive shares (blocking)
+                let received_share_msgs = receive_messages(
+                    &listener,
+                    shares_to_receive, // Expect shares only from other selected signers
+                    |msg| match msg {
+                        MessageWrapper::SignShare(m) => Some(m),
+                        _ => None,
+                    },
+                )?;
 
-        // Aggregation (only by Initiator)
-        println!("Node {} aggregating partial signatures...", index);
-        let group_signature =
-            frost::aggregate(&signing_package, &signature_shares_map, &pubkey_package)?;
-        println!("Node {} aggregation successful!", index);
-
-        let group_signature_bytes = group_signature.serialize()?;
-        println!(
-            "Node {} final aggregated signature ({} bytes): {}",
-            index,
-            group_signature_bytes.len(),
-            hex::encode(&group_signature_bytes)
-        );
-
-        // Broadcast the aggregated signature to all participants
-        let agg_sig_msg = MessageWrapper::SignAggregated(AggregatedSignatureMessage {
-            signature_bytes: group_signature_bytes.clone(), // Clone bytes
-        });
-        broadcast(index, total, &agg_sig_msg);
-
-        // Add signature to transaction and send
-        if let Some(mut final_tx) = transaction {
-            let solana_signature = Signature::try_from(group_signature_bytes)
-                .map_err(|e| format!("Failed to create Solana signature: {:?}", e))?;
-            if !final_tx.signatures.is_empty() {
-                final_tx.signatures[0] = solana_signature;
-            } else {
-                final_tx.signatures.push(solana_signature);
+                for msg in received_share_msgs {
+                    // Accept share only if the sender is in the selected list
+                    if selected_signer_identifiers.contains(&msg.sender_identifier) {
+                        signature_shares_map.insert(msg.sender_identifier, msg.share);
+                        println!(
+                            "Node {} received and added share from selected signer {:?}",
+                            index, msg.sender_identifier
+                        );
+                    } else {
+                        println!(
+                            "Node {} received share from non-selected identifier {:?} (ignored)",
+                            index, msg.sender_identifier
+                        );
+                    }
+                }
             }
-            println!("Aggregated signature added to Solana transaction.");
 
-            println!("\n--- Transaction Prepared ---");
-            println!("Transaction details: {:?}", final_tx);
-            println!("Attempting to send (expected to fail verification on-chain)...");
+            // Check if all selected signers provided shares
+            if signature_shares_map.len() != threshold as usize {
+                // Check against threshold, which is the size of selected_signer_identifiers
+                return Err(format!(
+                    "Error: Not enough signature shares collected from selected signers. Got {}, expected {}",
+                    signature_shares_map.len(),
+                    threshold // or selected_signer_identifiers.len()
+                )
+                .into());
+            }
+            println!(
+                "Node {} collected all {} required signature shares from selected signers.",
+                index,
+                signature_shares_map.len()
+            );
 
-            let rpc_client = RpcClient::new_with_commitment(
-                "https://api.testnet.solana.com".to_string(),
-                CommitmentConfig::confirmed(),
-            ); // Recreate client if needed
-            match rpc_client.send_and_confirm_transaction_with_spinner(&final_tx) {
-                Ok(sig) => {
-                    println!("Transaction successfully sent! Signature: {}", sig);
-                    println!(
-                        "(Note: Success here might indicate the testnet didn't fully verify, or used a different verification path. Standard Solana verification would fail.)"
-                    );
+            // Aggregation (only by Initiator)
+            println!("Node {} aggregating partial signatures...", index);
+            // Use the signing_package created earlier with selected commitments
+            let group_signature = frost::aggregate(
+                &signing_package,
+                &signature_shares_map, // Contains shares only from selected signers
+                &pubkey_package,
+            )?;
+            println!("Node {} aggregation successful!", index);
+
+            let group_signature_bytes = group_signature.serialize()?;
+            println!(
+                "Node {} final aggregated signature ({} bytes): {}",
+                index,
+                group_signature_bytes.len(),
+                hex::encode(&group_signature_bytes)
+            );
+
+            // Broadcast the aggregated signature to all participants
+            let agg_sig_msg = MessageWrapper::SignAggregated(AggregatedSignatureMessage {
+                signature_bytes: group_signature_bytes.clone(), // Clone bytes
+            });
+            broadcast(index, total, &agg_sig_msg); // Broadcast to original 'total'
+
+            // Add signature to transaction and send
+            if let Some(mut final_tx) = transaction {
+                // ... (rest of initiator transaction sending unchanged) ...
+                let solana_signature = Signature::try_from(group_signature_bytes)
+                    .map_err(|e| format!("Failed to create Solana signature: {:?}", e))?;
+                if !final_tx.signatures.is_empty() {
+                    final_tx.signatures[0] = solana_signature;
+                } else {
+                    final_tx.signatures.push(solana_signature);
                 }
-                Err(e) => {
-                    println!("Transaction failed to send or confirm (as expected): {}", e);
+                println!("Aggregated signature added to Solana transaction.");
+
+                println!("\n--- Transaction Prepared ---");
+                println!("Transaction details: {:?}", final_tx);
+                println!("Attempting to send (expected to fail verification on-chain)...");
+
+                let rpc_client = RpcClient::new_with_commitment(
+                    "https://api.testnet.solana.com".to_string(),
+                    CommitmentConfig::confirmed(),
+                ); // Recreate client if needed
+                match rpc_client.send_and_confirm_transaction_with_spinner(&final_tx) {
+                    Ok(sig) => {
+                        println!("Transaction successfully sent! Signature: {}", sig);
+                        println!(
+                            "(Note: Success here might indicate the testnet didn't fully verify, or used a different verification path. Standard Solana verification would fail.)"
+                        );
+                    }
+                    Err(e) => {
+                        println!("Transaction failed to send or confirm (as expected): {}", e);
+                    }
                 }
+            } else {
+                return Err(format!("Node {} transaction object was lost", index).into());
             }
         } else {
-            return Err(format!("Node {} transaction object was lost", index).into());
-        }
-    } else {
-        // Participant Node logic
-
-        // Determine the threshold signers deterministically (same as initiator)
-        let threshold_signers: Vec<_> = signer_identifiers
-            .iter()
-            .take(threshold as usize)
-            .cloned()
-            .collect();
-        let mut signing_commitments_threshold = BTreeMap::new();
-        for id in &threshold_signers {
-            if let Some(commitment) = signing_commitments.get(id) {
-                signing_commitments_threshold.insert(*id, commitment.clone());
-            }
-        }
-
-        // Only generate and send share if this node is part of the threshold set
-        if threshold_signers.contains(&my_identifier) {
-            println!("Node {} creating SigningPackage (threshold)...", index);
-            let signing_package =
-                SigningPackage::new(signing_commitments_threshold.clone(), &message_bytes);
-
-            println!("Node {} starting FROST Round 2 (Sign)...", index);
-            let my_signature_share = frost_round2::sign(&signing_package, &my_nonce, &key_package)?;
-            println!("Node {} generated signature share.", index);
+            // Participant Node logic (Selected)
 
             // --- Send share to initiator ---
             println!("\n--- Node {} Action Required ---", index);
@@ -675,13 +828,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 share: my_signature_share,
             };
             let wrapped_share_msg = MessageWrapper::SignShare(share_message);
+            // TODO: Determine initiator address dynamically if not always node 1
             let initiator_addr = "127.0.0.1:10001"; // Default to 10001 for initiator
             send_to(&initiator_addr, &wrapped_share_msg);
             println!("Node {} sent share.", index);
 
-            // Optionally wait for and verify the aggregated signature broadcasted by the initiator
+            // Wait for aggregated signature from initiator (blocking)
             println!(
-                "Node {} waiting for aggregated signature from initiator...",
+                "Node {} waiting for aggregated signature from initiator...", // Removed timeout mention
                 index
             );
             let received_agg_sig = receive_messages(&listener, 1, |msg| match msg {
@@ -689,44 +843,36 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => None,
             })?;
 
-            if let Some(agg_sig_msg) = received_agg_sig.first() {
-                println!(
-                    "Node {} received aggregated signature: {}",
-                    index,
-                    hex::encode(&agg_sig_msg.signature_bytes)
-                );
-                // Here you could potentially verify the aggregated signature against the pubkey_package
-                // let agg_sig = frost::Signature::deserialize(&agg_sig_msg.signature_bytes)?;
-                // pubkey_package.verify(&message_bytes, &agg_sig)?;
-                // println!("Node {} successfully verified aggregated signature.", index);
-            } else {
-                eprintln!("Node {} did not receive aggregated signature.", index);
-            }
-        } else {
+            // No need to check is_empty
             println!(
-                "Node {} is not part of the threshold signing set, skipping share generation/sending.",
-                index
+                "Node {} received aggregated signature: {}",
+                index,
+                hex::encode(&received_agg_sig[0].signature_bytes)
             );
-            // Participant still needs to wait or exit gracefully.
-            // Optionally wait for the aggregated signature broadcast
-            println!(
-                "Node {} waiting for aggregated signature from initiator (as non-signer)...",
-                index
-            );
-            let received_agg_sig = receive_messages(&listener, 1, |msg| match msg {
-                MessageWrapper::SignAggregated(m) => Some(m),
-                _ => None,
-            })?;
-            if let Some(agg_sig_msg) = received_agg_sig.first() {
-                println!(
-                    "Node {} received aggregated signature: {}",
-                    index,
-                    hex::encode(&agg_sig_msg.signature_bytes)
-                );
-            } else {
-                eprintln!("Node {} did not receive aggregated signature.", index);
-            }
+            // Optionally verify signature
+            // let agg_sig = frost::Signature::deserialize(&received_agg_sig[0].signature_bytes)?;
+            // pubkey_package.verify(&message_bytes, &agg_sig)?;
+            // println!("Node {} successfully verified aggregated signature.", index);
         }
+    } else {
+        // Node was NOT selected for signing
+        println!("Node {} was not selected for signing.", index);
+        // Wait for aggregated signature from initiator (blocking)
+        println!(
+            "Node {} waiting for aggregated signature from initiator...", // Removed timeout mention
+            index
+        );
+        let received_agg_sig = receive_messages(&listener, 1, |msg| match msg {
+            MessageWrapper::SignAggregated(m) => Some(m),
+            _ => None,
+        })?;
+
+        // No need to check is_empty
+        println!(
+            "Node {} received aggregated signature: {}",
+            index,
+            hex::encode(&received_agg_sig[0].signature_bytes)
+        );
     }
 
     println!("\nProcess completed for Node {}.", index);
