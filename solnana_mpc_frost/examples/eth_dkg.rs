@@ -6,11 +6,6 @@ use frost_core::{Identifier, SigningPackage, round1, round2};
 use frost_ed25519::Ed25519Sha512;
 use frost_ed25519::rand_core::OsRng;
 use hex;
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::{
-    commitment_config::CommitmentConfig, message::Message, pubkey::Pubkey, signature::Signature,
-    system_instruction::transfer, transaction::Transaction,
-};
 use std::collections::{BTreeMap, HashMap}; // <-- Add BTreeMap
 use std::error::Error;
 use std::fs::File;
@@ -132,28 +127,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     // --- End Deserialize ---
 
-    // Convert FROST group public key to Solana Pubkey
-    let group_verifying_key_bytes = group_verifying_key.serialize()?; // Serialize the VerifyingKey
-    let mut pubkey_arr = [0u8; 32];
-    // Ensure the key bytes are exactly 32 bytes long for Solana Pubkey
-    if group_verifying_key_bytes.len() == 32 {
-        pubkey_arr.copy_from_slice(&group_verifying_key_bytes);
-    } else {
-        // Handle error or pad/truncate if necessary and appropriate for the ciphersuite
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "FROST verifying key size ({}) is not 32 bytes",
-                group_verifying_key_bytes.len()
-            ),
-        )));
-    }
-    let solana_pubkey = Pubkey::new_from_array(pubkey_arr);
-
-    println!(
-        "FROST group public key as Solana address: {}",
-        solana_pubkey
-    );
 
     // Prompt for target address
     print!("Enter target Solana address: ");

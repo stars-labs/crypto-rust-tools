@@ -1929,6 +1929,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "frost-secp256k1"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4890a0cdd6897a4af81016ec3299e4eb3a459d6468933d2a385302241662b5"
+dependencies = [
+ "document-features",
+ "frost-core",
+ "frost-rerandomized",
+ "k256",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2225,6 +2239,9 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "hidapi"
@@ -2723,6 +2740,16 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+]
+
+[[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "elliptic-curve",
 ]
 
 [[package]]
@@ -6728,18 +6755,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",
+ "bs58",
  "crossterm 0.29.0",
  "curve25519-dalek 4.1.3",
  "frost-core",
  "frost-ed25519",
+ "frost-secp256k1",
  "futures-util",
  "hex",
  "lazy_static",
- "rand 0.9.1",
+ "rand 0.8.5",
  "rand_core 0.9.3",
  "ratatui",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "solana-client",
  "solana-sdk",
  "tokio",

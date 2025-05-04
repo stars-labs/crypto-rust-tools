@@ -22,9 +22,10 @@ The CLI node presents a terminal user interface (TUI) with the following section
 1.  **Peer ID:** Displays the unique ID you entered for this node.
 2.  **Peers:** Lists other peers currently connected to the signaling server (excluding yourself).
 3.  **Log:** Shows recent events, received messages (including raw JSON for debugging), and errors.
-4.  **Session/Invites/Input:**
+4.  **Session/Invites/DKG/Input:**
     *   Displays information about the current MPC session if joined.
     *   Lists pending session invites by `session_id`.
+    *   Shows the current status of the Distributed Key Generation (DKG) process.
     *   Shows the input prompt `>` when in input mode.
 
 ## Commands and Keybindings
@@ -76,6 +77,16 @@ After all participants have joined the session, the WebRTC connection establishm
     *   Console: `Peer Connection State has changed: Connected`
 Seeing both the `Connected` state and the `Data channel opened` message for a specific peer indicates that the WebRTC connection mesh is successfully established with that peer, allowing for direct peer-to-peer communication. If you see `Failed` states or don't see the "Connected" / "Data channel opened" messages after a reasonable time, there might be network issues (like firewalls blocking UDP) preventing the P2P connection. In such cases, a TURN server (which relays traffic) might be necessary; this example includes a public TURN server configuration for better NAT traversal compatibility.
 
+## Distributed Key Generation (DKG)
+
+Once all participants have joined the session and the WebRTC connections are established (status `Connected` for all peers in the session), the DKG process should start automatically.
+
+1.  **DKG Start:** The log will show messages like "All peers connected and session ready! Triggering DKG Round 1...".
+2.  **Rounds:** The DKG involves multiple rounds (Round 1, Round 2, Part 3 Finalization). You will see log messages indicating the progress through these rounds, including sending and receiving packages.
+3.  **Status Update:** The "DKG Status" line in the TUI will update: `Idle` -> `Round1InProgress` -> `Round1Complete` -> `Round2InProgress` -> `Complete` or `Failed`.
+4.  **Completion:** If successful, the status will show `Complete`, and the "Key Share" and "Group Public Key" fields will be populated (showing `Some(...)`).
+5.  **Failure:** If an error occurs (e.g., network issues, incorrect packages), the status will show `Failed` with an error message.
+
 ## Example Workflow (Creating a 2-of-3 MPC Wallet Session)
 
 This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`, `mpc-3`) where any 2 of them are required to sign (`threshold = 2`).
@@ -107,6 +118,8 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
     *   On node `mpc-3`, press `o` to accept the first invite (or use `/join wallet_2of3`).
     *   As each node joins, all *already joined* participants (including the joiner) will receive an updated `SessionInfo` message via the server. The log will show "Session info received/updated...".
     *   Once the *last* participant joins (`mpc-3` in this case), all participants (`mpc-1`, `mpc-2`, `mpc-3`) will have the complete `SessionInfo`. At this point, the WebRTC connection process (offers, answers, candidates) should begin automatically between peers, visible in the logs.
+    *   **Wait for Connections:** Observe the logs until all peer connections show as `Connected`.
+    *   **DKG Starts:** The DKG process should then begin automatically. Monitor the logs and the "DKG Status" in the TUI.
 
 6.  **(Optional) Relay Test Message (e.g., Node `mpc-1` to `mpc-2`):**
     *   On node `mpc-1`, press `i`.
@@ -120,7 +133,7 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
     *   On node `mpc-1`, press `i`.
     *   Type: `/send mpc-2 Hello, this is a direct P2P message!`
     *   Press `Enter`.
-    *   Node `mpc-1` logs "尝试发送消息到 mpc-2...".
-    *   Node `mpc-2` logs "Receiver: Message from mpc-1: Hello, this is a direct P2P message!" (or similar, depending on exact logging).
+    *   Node `mpc-1` logs "Sent direct message to mpc-2".
+    *   Node `mpc-2` logs "Received WebRTC message from mpc-1: SimpleMessage { text: \"Hello, this is a direct P2P message!\" }" (or similar).
 
-*(Note: This example covers session setup, signaling, basic WebRTC connection establishment, and direct peer-to-peer communication. The actual MPC protocol exchange over the established WebRTC data channels would build upon this direct communication capability.)*
+*(Note: This example covers session setup, signaling, WebRTC connection establishment, DKG, and direct peer-to-peer communication.)*
