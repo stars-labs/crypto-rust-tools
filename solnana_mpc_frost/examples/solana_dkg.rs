@@ -290,7 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (index, total, threshold, is_initiator) = parse_args();
     let my_addr = format!("127.0.0.1:1000{}", index);
     let mut rng = OsRng;
-    let network_timeout = Duration::from_secs(15); // Define timeout duration
+    let network_timeout = Duration::from_secs(1); // Define timeout duration
 
     // My Identifier
     let my_identifier = Identifier::try_from(index).expect("Invalid identifier");
