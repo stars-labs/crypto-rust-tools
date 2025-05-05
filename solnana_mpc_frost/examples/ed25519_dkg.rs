@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use frost_ed25519 as frost;
+use frost_ed25519::rand_core::OsRng;
 
 fn main() -> Result<(), frost::Error> {
     // This example uses the Ed25519Sha512 ciphersuite.
@@ -9,7 +10,7 @@ fn main() -> Result<(), frost::Error> {
 
     // Create a random number generator.
     // In practice, you should use a secure random number generator.
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = OsRng;
 
     let max_signers = 3;
     let min_signers = 2;

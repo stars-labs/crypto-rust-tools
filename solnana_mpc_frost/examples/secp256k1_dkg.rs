@@ -2,6 +2,14 @@
 use std::collections::BTreeMap;
 
 use frost_secp256k1 as frost;
+// Add Debug derive to DKG packages if not already present in the library
+// (Assuming they might not have it based on the print statements)
+// If they already derive Debug, this change is not needed.
+// Example (conceptual - apply if needed in frost_secp256k1 library or locally if possible):
+// #[derive(Clone, Debug, Serialize, Deserialize)] pub struct Round1Package { ... }
+// #[derive(Clone, Debug, Serialize, Deserialize)] pub struct Round2Package { ... }
+// #[derive(Clone, Debug, Serialize, Deserialize)] pub struct KeyPackage { ... }
+// #[derive(Clone, Debug, Serialize, Deserialize)] pub struct PublicKeyPackage { ... }
 
 fn main() -> Result<(), frost::Error> {
     let mut rng = rand::rngs::OsRng;
