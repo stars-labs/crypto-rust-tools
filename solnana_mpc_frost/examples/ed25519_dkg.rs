@@ -1,13 +1,8 @@
-use std::collections::BTreeMap;
-
 use frost_ed25519 as frost;
 use frost_ed25519::rand_core::OsRng;
+use std::collections::BTreeMap;
 
 fn main() -> Result<(), frost::Error> {
-    // This example uses the Ed25519Sha512 ciphersuite.
-    // In practice, you can use any ciphersuite that implements the required traits.
-    let ciphersuite = frost::Ed25519Sha512;
-
     // Create a random number generator.
     // In practice, you should use a secure random number generator.
     let mut rng = OsRng;

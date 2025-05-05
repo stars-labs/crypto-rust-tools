@@ -3,12 +3,11 @@ use crate::{InternalCommand, SharedClientMsg}; // Import necessary types
 use crossterm::event::{KeyCode, KeyEvent};
 use frost_ed25519::Ed25519Sha512; // Keep for AppState generic
 use ratatui::{
-    Frame, // Use Frame directly
     Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+    style::{Color, Style},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap}, // Keep Wrap
 };
 use std::collections::HashSet;
@@ -204,90 +203,11 @@ pub fn draw_main_ui<B: Backend>(
             // Add 2 for the "> " prefix
             let cursor_x = main_chunks[4].x + input.chars().count() as u16 + 2;
             let cursor_y = main_chunks[4].y + 1; // Inside the input box border
-            f.set_cursor(cursor_x, cursor_y);
+            let position = Rect::new(cursor_x, cursor_y, 1, 1);
+            f.set_cursor_position(position);
         }
     })?;
     Ok(())
-}
-
-// --- Helper functions to draw UI components ---
-
-// Remove <B> from Frame
-fn draw_peer_id(
-    f: &mut Frame, // Use Frame directly
-    area: Rect,
-    app: &AppState<Ed25519Sha512>,
-) {
-    // ...existing code...
-}
-
-// Remove <B> from Frame
-fn draw_peers(
-    f: &mut Frame, // Use Frame directly
-    area: Rect,
-    app: &AppState<Ed25519Sha512>,
-) {
-    // ...existing code...
-}
-
-// Remove <B> from Frame
-fn draw_log(
-    f: &mut Frame, // Use Frame directly
-    area: Rect,
-    app: &AppState<Ed25519Sha512>,
-) {
-    // ...existing code...
-}
-
-// Remove <B> from Frame
-fn draw_status(
-    f: &mut Frame, // Use Frame directly
-    area: Rect,
-    app: &AppState<Ed25519Sha512>,
-) {
-    let mut status_items = vec![
-        // ... existing status items ...
-    ];
-
-    // --- Move Key Info Display INSIDE the vec! block or push afterwards ---
-    // Display Key Package info if available
-    if let Some(key_pkg) = &app.key_package {
-        status_items.push(Line::from(Span::styled(
-            format!("Key Share: Identifier {:?}", key_pkg.identifier()), // Display identifier
-            Style::default().fg(Color::Green),
-        )));
-    } else {
-        status_items.push(Line::from(Span::styled(
-            "Key Share: None",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Display Group Public Key info if available
-    if let Some(group_pk) = &app.group_public_key {
-        // Instead of using .as_bytes() which doesn't exist, use .serialize()
-        let pk_bytes = group_pk.verifying_key().serialize().unwrap_or_default();
-        // Convert the serialized bytes to hex string
-        let solana_pubkey = bs58::encode(pk_bytes).into_string();
-        status_items.push(Line::from(Span::styled(
-            format!(
-                "Group Public Key: {}...", // Show truncated hex
-                solana_pubkey.chars().take(16).collect::<String>()
-            ),
-            Style::default().fg(Color::Green),
-        )));
-    } else {
-        status_items.push(Line::from(Span::styled(
-            "Group Public Key: None",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    // --- End Key Info Display ---
-
-    let status_list = List::new(status_items)
-        .block(Block::default().borders(Borders::ALL).title("Status"))
-        .style(Style::default().fg(Color::White));
-    f.render_widget(status_list, area);
 }
 
 // Returns Ok(true) to continue, Ok(false) to quit, Err on error.

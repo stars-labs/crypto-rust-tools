@@ -10,7 +10,7 @@ use frost_core::{
 use frost_ed25519::Ed25519Sha512; // Keep this for AppState generic default if needed elsewhere, or specifically in cli_node.rs
 use std::sync::Arc; // Use TokioMutex for peer_connections
 use std::time::{Duration, Instant}; // Import Duration and Instant
-use tokio::sync::{Mutex as TokioMutex, mpsc}; // Use TokioMutex for async WebRTC state
+use tokio::sync::Mutex as TokioMutex; // Use TokioMutex for async WebRTC state
 use webrtc::{
     data_channel::RTCDataChannel, ice_transport::ice_candidate::RTCIceCandidateInit,
     peer_connection::RTCPeerConnection,
@@ -117,29 +117,5 @@ impl ReconnectionTracker {
     pub fn record_success(&mut self, peer_id: &str) {
         self.attempts.remove(peer_id);
         self.last_attempt.remove(peer_id);
-    }
-}
-
-impl<C: Ciphersuite> AppState<C> {
-    // If you have a `new` function, initialize the new field:
-    // pub fn new(peer_id: String, /* other args */) -> Self {
-    //     Self {
-    //         // ... other initializations ...
-    //         received_dkg_round2_packages: BTreeMap::new(),
-    //         // ... other initializations ...
-    //     }
-    // }
-
-    // Add helper if needed, e.g., to clear DKG state
-    pub fn clear_dkg_state(&mut self) {
-        self.dkg_state = DkgState::Idle;
-        self.identifier_map = None;
-        self.local_dkg_part1_data = None;
-        self.received_dkg_packages.clear();
-        self.round2_secret_package = None;
-        self.received_dkg_round2_packages.clear(); // Clear the new field
-        self.key_package = None;
-        self.group_public_key = None;
-        self.queued_dkg_round1.clear();
     }
 }

@@ -21,7 +21,7 @@ use std::{
     io,
 };
 
-use tokio::sync::{Mutex as TokioMutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -44,7 +44,6 @@ use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand, ServerMsg
 // Fix WebRTCMessage import
 // Remove unused SessionInfo import
 use crate::signal::{/*SessionInfo,*/ WebRTCMessage};
-
 // --- Declare Modules ---
 mod negotiation;
 mod peer;
@@ -274,10 +273,10 @@ async fn main() -> anyhow::Result<()> {
                                     InternalCommand::SendDirect { to, message } => {
                                         // Handle sending direct WebRTC message
                                         let state_clone = state_main_net.clone();
-                                        let pc_arc_clone = peer_connections_arc_main_net.clone();
+
                                         tokio::spawn(async move {
                                             let webrtc_msg = WebRTCMessage::SimpleMessage { text: message };
-                                            if let Err(e) = send_webrtc_message(&to, &webrtc_msg, pc_arc_clone, state_clone.clone()).await {
+                                            if let Err(e) = send_webrtc_message(&to, &webrtc_msg,state_clone.clone()).await {
                                                  state_clone.lock().unwrap().log.push(format!("Error sending direct message to {}: {}", to, e));
                                             } else {
                                                  state_clone.lock().unwrap().log.push(format!("Sent direct message to {}", to));
@@ -287,7 +286,7 @@ async fn main() -> anyhow::Result<()> {
                                     InternalCommand::TriggerDkgRound1 => { // Handle internal DKG trigger
                                         // --- Start DKG Round 1 ---
                                         let state_clone = state_main_net.clone();
-                                        let pc_arc_clone = peer_connections_arc_main_net.clone();
+
                                         let self_peer_id_clone = self_peer_id_main_net.clone();
                                         // No need to clone internal_cmd_tx here unless the spawned task sends more internal commands
 
@@ -354,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
                                                 // Iterate by reference to avoid moving String
                                                 for target_peer_id in &participants {
                                                     if target_peer_id != &self_peer_id_clone { // Compare with reference
-                                                        if let Err(e) = send_webrtc_message(target_peer_id, &dkg_msg, pc_arc_clone.clone(), state_clone.clone()).await {
+                                                        if let Err(e) = send_webrtc_message(target_peer_id, &dkg_msg, state_clone.clone()).await {
                                                             // Log error without holding lock for long
                                                             state_clone.lock().unwrap().log.push(format!(
                                                                 "Error sending DKG Round 1 package to {}: {}", target_peer_id, e
@@ -517,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
                                                     guard.log.push("Broadcasting DKG Round 2 packages...".to_string());
                                                     let identifier_map_clone = guard.identifier_map.clone().unwrap(); // Assumed safe due to earlier checks
                                                     let state_clone = state_main_net.clone();
-                                                    let pc_arc_clone = peer_connections_arc_main_net.clone();
+
                                                     let self_peer_id_clone = guard.peer_id.clone(); // Use guard.peer_id
 
                                                     let mut broadcast_count = 0;
@@ -536,14 +535,13 @@ async fn main() -> anyhow::Result<()> {
                                                                 // --- End Log ---
                                                                 let dkg_msg = WebRTCMessage::DkgRound2Package { package: round2_package };
                                                                 let state_task_clone = state_clone.clone();
-                                                                let pc_arc_task_clone = pc_arc_clone.clone();
+
                                                                 let target_peer_id_task = target_peer_id.clone();
 
                                                                 tokio::spawn(async move {
                                                                     if let Err(e) = send_webrtc_message(
                                                                         &target_peer_id_task,
                                                                         &dkg_msg,
-                                                                        pc_arc_task_clone,
                                                                         state_task_clone.clone(),
                                                                     ).await {
                                                                         state_task_clone.lock().unwrap().log.push(format!(
@@ -935,7 +933,7 @@ async fn main() -> anyhow::Result<()> {
 
                                                                     // Take queued packages for processing outside the lock
                                                                     let queued = std::mem::take(&mut guard.queued_dkg_round1);
-                                                                    if (!queued.is_empty()) {
+                                                                    if !queued.is_empty() {
                                                                         guard.log.push(format!(
                                                                             "Processing {} queued DKG Round 1 packages after session/identifier_map ready.",
                                                                             queued.len()

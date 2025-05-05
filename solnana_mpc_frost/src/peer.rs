@@ -25,7 +25,6 @@ use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand}; // Add E
 // --- Constants ---
 // Make constant public
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; // Label for the main data channel
-pub const KEEP_ALIVE_CHANNEL_LABEL: &str = "keep-alive";
 
 // Only use one data channel per peer (DATA_CHANNEL_LABEL), and use a message envelope for all messages.
 
@@ -39,7 +38,6 @@ pub struct DataChannelEnvelope {
 pub async fn send_webrtc_message(
     target_peer_id: &str,
     message: &WebRTCMessage,
-    peer_connections_arc: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     state_log: Arc<StdMutex<AppState<Ed25519Sha512>>>,
 ) -> Result<(), String> {
     // Check if data channel exists in app state
@@ -222,13 +220,12 @@ pub async fn create_and_setup_peer_connection(
             let peer_id_on_state = peer_id.clone();
             let cmd_tx_on_state = cmd_tx.clone(); // Clones the sender for internal ClientMsg
             let pc_arc_for_state = pc_arc.clone();
-            let self_peer_id_on_state = self_peer_id.clone(); // Capture self_peer_id
+
             pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
                 let state_log = state_log_on_state.clone();
                 let peer_id = peer_id_on_state.clone();
                 let cmd_tx_local = cmd_tx_on_state.clone();
                 let pc_weak = Arc::downgrade(&pc_arc_for_state);
-                let self_peer_id = self_peer_id_on_state.clone();
 
                 println!("Peer Connection State with {} has changed: {}", peer_id, s);
 

@@ -268,18 +268,3 @@ pub async fn initiate_offers_for_session(
         .log
         .push("Finished WebRTC offers check.".to_string()); // Added log
 }
-
-// Add underscore prefix to unused variables
-async fn check_and_initiate_offer(
-    _peer_id: &str,                                  // Prefixed with _
-    _self_peer_id: &str,                             // Prefixed with _
-    _pc: Arc<RTCPeerConnection>,                     // Prefixed with _
-    _cmd_tx: mpsc::UnboundedSender<InternalCommand>, // Prefixed with _
-    _state: Arc<StdMutex<AppState<Ed25519Sha512>>>,  // Prefixed with _
-) {
-    // TODO: Implement the logic for checking if an offer needs to be initiated
-    // This function seems to be a placeholder currently.
-    // If it's meant to be used, remove the underscores and implement the body.
-    // Example placeholder log:
-    // state.lock().unwrap().log.push(format!("Placeholder: Check offer for {}", peer_id));
-}
