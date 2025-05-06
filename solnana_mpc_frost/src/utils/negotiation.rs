@@ -1,5 +1,5 @@
-use crate::signal::{SDPInfo, WebRTCSignal};
-use crate::state::AppState;
+use crate::utils::signal::{SDPInfo, WebRTCSignal};
+use crate::utils::state::AppState;
 use frost_ed25519::Ed25519Sha512;
 use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
 use std::{

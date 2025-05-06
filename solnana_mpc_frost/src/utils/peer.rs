@@ -1,5 +1,5 @@
-use crate::signal::*;
-use crate::state::{AppState, DkgState};
+use crate::utils::signal::*;
+use crate::utils::state::{AppState, DkgState};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};

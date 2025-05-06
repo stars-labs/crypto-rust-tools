@@ -1,4 +1,4 @@
-use crate::signal::SessionInfo;
+use crate::utils::signal::SessionInfo;
 use frost_core::{
     Ciphersuite, Identifier,
     keys::{
@@ -7,7 +7,7 @@ use frost_core::{
         dkg::{round1, round2}, // Import the specific DKG types
     },
 };
-use frost_ed25519::Ed25519Sha512; // Keep this for AppState generic default if needed elsewhere, or specifically in cli_node.rs
+
 use std::sync::Arc; // Use TokioMutex for peer_connections
 use std::time::{Duration, Instant}; // Import Duration and Instant
 use tokio::sync::Mutex as TokioMutex; // Use TokioMutex for async WebRTC state
@@ -54,7 +54,7 @@ pub struct AppState<C: Ciphersuite> {
     pub pending_ice_candidates: HashMap<String, Vec<RTCIceCandidateInit>>,
     // --- DKG State ---
     pub dkg_state: DkgState,
-    pub identifier_map: Option<BTreeMap<String, Identifier<Ed25519Sha512>>>, // peer_id -> FROST Identifier
+    pub identifier_map: Option<BTreeMap<String, Identifier<C>>>, // peer_id -> FROST Identifier
     // pub identifier_to_index_map: Option<BTreeMap<Identifier<C>, u16>>, // Removed field
     // Fix: Use proper round1::SecretPackage and round1::Package types
     pub local_dkg_part1_data: Option<(round1::SecretPackage<C>, round1::Package<C>)>,
@@ -87,8 +87,8 @@ impl ReconnectionTracker {
         ReconnectionTracker {
             attempts: HashMap::new(),
             last_attempt: HashMap::new(),
-            cooldown: Duration::from_secs(5),  // Reduced from 10 to 5 seconds for faster recovery
-            max_attempts: 10,                  // Increased from 5 to 10 for more persistent reconnection
+            cooldown: Duration::from_secs(5), // Reduced from 10 to 5 seconds for faster recovery
+            max_attempts: 10, // Increased from 5 to 10 for more persistent reconnection
         }
     }
 
@@ -108,9 +108,11 @@ impl ReconnectionTracker {
             }
         } else if *attempts >= self.max_attempts {
             // Use exponential backoff with a cap after max attempts
-            let backoff = self.cooldown.mul_f32(1.5_f32.powi(*attempts as i32 - self.max_attempts as i32));
+            let backoff = self
+                .cooldown
+                .mul_f32(1.5_f32.powi(*attempts as i32 - self.max_attempts as i32));
             let capped_backoff = std::cmp::min(backoff, Duration::from_secs(60)); // Cap at 1 minute
-            
+
             if now.duration_since(*last) < capped_backoff {
                 return false; // Still in cooldown
             }

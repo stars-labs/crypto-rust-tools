@@ -1,4 +1,4 @@
-use crate::state::{AppState, DkgState};
+use crate::utils::state::{AppState, DkgState};
 use crate::{InternalCommand, SharedClientMsg}; // Import necessary types
 use crossterm::event::{KeyCode, KeyEvent};
 use frost_ed25519::Ed25519Sha512; // Keep for AppState generic

@@ -17,7 +17,7 @@ use solana_sdk::{
 };
 use std::collections::BTreeMap; // Removed HashMap
 use std::convert::TryInto;
-use std::env;
+
 use std::error::Error;
 use std::fs::{self}; // Removed File
 use std::io::{self, Read, Write, stdin}; // Removed unused BufWriter
