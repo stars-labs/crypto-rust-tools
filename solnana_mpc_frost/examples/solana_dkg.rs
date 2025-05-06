@@ -1,4 +1,5 @@
 use bincode::serde::{decode_from_slice, encode_to_vec};
+use clap::Parser; // Add this import
 use frost::Identifier; // Keep only the needed import
 use frost::rand_core::OsRng;
 use frost_core::SigningPackage;
@@ -25,6 +26,24 @@ use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant; // Re-add Instant
+
+/// Solana DKG Example CLI
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct CliArgs {
+    /// Your node index (1-based)
+    #[arg(long)]
+    index: u16,
+    /// Total number of participants
+    #[arg(long)]
+    total: u16,
+    /// Threshold for signing
+    #[arg(long)]
+    threshold: u16,
+    /// Is this node the initiator?
+    #[arg(long, default_value_t = false)]
+    is_initiator: bool,
+}
 
 // --- DKG Message Types ---
 #[derive(Serialize, Deserialize, Clone, Debug)] // Add Debug
@@ -81,39 +100,8 @@ enum MessageWrapper {
     SignerSelection(SignerSelectionMessage), // New variant
 }
 
-fn parse_args() -> (u16, u16, u16, bool) {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 4 || args.len() > 6 {
-        eprintln!(
-            "Usage: {} <index> <total> <threshold> [--isInitiator <true|false>]",
-            args[0]
-        );
-        std::process::exit(1);
-    }
-    let index = args[1].parse().expect("Invalid index");
-    let total = args[2].parse().expect("Invalid total");
-    let threshold = args[3].parse().expect("Invalid threshold");
-    let mut is_initiator = false;
-    if args.len() == 6 {
-        if args[4] == "--isInitiator" {
-            is_initiator = match args[5].as_str() {
-                "true" => true,
-                "false" => false,
-                _ => {
-                    eprintln!("Expected --isInitiator <true|false>");
-                    std::process::exit(1);
-                }
-            };
-        } else {
-            eprintln!(
-                "Usage: {} <index> <total> <threshold> [--isInitiator <true|false>]",
-                args[0]
-            );
-            std::process::exit(1);
-        }
-    }
-    (index, total, threshold, is_initiator)
-}
+// Remove parse_args function
+// fn parse_args() -> (u16, u16, u16, bool) { ... }
 
 // Simple send/recv helpers for TCP
 fn send_to(addr: &str, msg: &MessageWrapper) -> bool {
@@ -346,7 +334,12 @@ fn receive_messages<T>(
 
 // Main function becomes a simple state machine driver
 fn main() -> Result<(), Box<dyn Error>> {
-    let (index, total, threshold, is_initiator) = parse_args();
+    // let (index, total, threshold, is_initiator) = parse_args();
+    let args = CliArgs::parse();
+    let index = args.index;
+    let total = args.total;
+    let threshold = args.threshold;
+    let is_initiator = args.is_initiator;
 
     // Create initial context
     let mut context = NodeContext::new(index, total, threshold, is_initiator)?;

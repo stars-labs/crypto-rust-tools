@@ -1,4 +1,5 @@
 use bincode::serde::{decode_from_slice, encode_to_vec};
+use clap::Parser;
 use elliptic_curve::point::AffineCoordinates; // Import for .x() on AffinePoint
 use ethers_core::types::{
     Address,
@@ -32,7 +33,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::time::timeout; // Use tokio's timeout
+use tokio::time::timeout; // Use tokio's timeout // Add this import
 
 // --- DKG Message Types ---
 #[derive(Serialize, Deserialize, Clone, Debug)] // Add Debug
@@ -95,39 +96,22 @@ enum MessageWrapper {
     SignerSelection(SignerSelectionMessage),
 }
 
-fn parse_args() -> (u16, u16, u16, bool) {
-    // ... (same as before) ...
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 4 || args.len() > 6 {
-        eprintln!(
-            "Usage: {} <index> <total> <threshold> [--isInitiator <true|false>]",
-            args[0]
-        );
-        std::process::exit(1);
-    }
-    let index = args[1].parse().expect("Invalid index");
-    let total = args[2].parse().expect("Invalid total");
-    let threshold = args[3].parse().expect("Invalid threshold");
-    let mut is_initiator = false;
-    if args.len() == 6 {
-        if args[4] == "--isInitiator" {
-            is_initiator = match args[5].as_str() {
-                "true" => true,
-                "false" => false,
-                _ => {
-                    eprintln!("Expected --isInitiator <true|false>");
-                    std::process::exit(1);
-                }
-            };
-        } else {
-            eprintln!(
-                "Usage: {} <index> <total> <threshold> [--isInitiator <true|false>]",
-                args[0]
-            );
-            std::process::exit(1);
-        }
-    }
-    (index, total, threshold, is_initiator)
+/// Ethereum DKG Example CLI
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct CliArgs {
+    /// Your node index (1-based)
+    #[arg(long)]
+    index: u16,
+    /// Total number of participants
+    #[arg(long)]
+    total: u16,
+    /// Threshold for signing
+    #[arg(long)]
+    threshold: u16,
+    /// Is this node the initiator?
+    #[arg(long, default_value_t = false)]
+    is_initiator: bool,
 }
 
 // Async send_to using tokio with retry logic
@@ -527,7 +511,11 @@ impl NodeContext {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (index, total, threshold, is_initiator) = parse_args();
+    let args = CliArgs::parse();
+    let index = args.index;
+    let total = args.total;
+    let threshold = args.threshold;
+    let is_initiator = args.is_initiator;
 
     // Create initial context
     let mut context = NodeContext::new(index, total, threshold, is_initiator)?;

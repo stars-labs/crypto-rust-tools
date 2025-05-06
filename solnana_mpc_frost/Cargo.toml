@@ -32,6 +32,8 @@ ethers-providers = "*"
 ethers-signers = "*"
 k256 = "*"
 elliptic-curve = "*"
+clap = { version = "*", features = ["derive"] }
+
 
 [[bin]]
 name = "signal_server"
