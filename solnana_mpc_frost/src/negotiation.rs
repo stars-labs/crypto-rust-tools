@@ -1,24 +1,20 @@
+use crate::signal::{SDPInfo, WebRTCSignal};
+use crate::state::AppState;
+use frost_ed25519::Ed25519Sha512;
+use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex as StdMutex},
 };
 use tokio::sync::{Mutex as TokioMutex, mpsc};
-use webrtc::peer_connection::RTCPeerConnection;
-
-// Import InternalCommand and ClientMsg (aliased as SharedClientMsg) from lib.rs
-use crate::signal::{SDPInfo, WebRTCSignal};
-use crate::state::AppState;
-use frost_ed25519::Ed25519Sha512;
-use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState; // Import the specific Ciphersuite
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
-// Implements Perfect Negotiation logic (initiator side)
 pub async fn initiate_offers_for_session(
     participants: Vec<String>,
     self_peer_id: String,
     peer_connections: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    // Sender type is already InternalCommand
     cmd_tx: mpsc::UnboundedSender<InternalCommand>,
     state: Arc<StdMutex<AppState<Ed25519Sha512>>>,
 ) {
@@ -37,12 +33,10 @@ pub async fn initiate_offers_for_session(
 
     for peer_id in participants {
         if peer_id == self_peer_id {
-            // Removed unnecessary parentheses
             continue;
         }
 
-        // --- Perfect Negotiation Role Check ---
-        let should_initiate = self_peer_id < peer_id; // Impolite peer initiates
+        let should_initiate = self_peer_id < peer_id;
 
         state.lock().unwrap().log.push(format!(
             "Checking peer {}: Should initiate? {}",
@@ -59,17 +53,16 @@ pub async fn initiate_offers_for_session(
                 let current_state = pc_arc.connection_state();
                 let signaling_state = pc_arc.signaling_state();
 
-                // Check if negotiation is needed based on state
                 let negotiation_needed = match current_state {
                     RTCPeerConnectionState::New
                     | RTCPeerConnectionState::Closed
                     | RTCPeerConnectionState::Disconnected
-                    | RTCPeerConnectionState::Failed => true, // Need to negotiate if not connected/connecting
+                    | RTCPeerConnectionState::Failed => true,
                     _ => match signaling_state {
                         webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => {
                             false
-                        } // Assume stable means no immediate need
-                        _ => false, // If already negotiating, don't start another one
+                        }
+                        _ => false,
                     },
                 };
 
@@ -79,11 +72,9 @@ pub async fn initiate_offers_for_session(
                 ));
 
                 if !negotiation_needed {
-                    // Log already exists, skipping continue
                     continue;
                 }
 
-                // --- Check making_offer flag ---
                 let is_already_making_offer = state
                     .lock()
                     .unwrap()
@@ -98,23 +89,19 @@ pub async fn initiate_offers_for_session(
                 ));
 
                 if is_already_making_offer {
-                    // Log already exists, skipping continue
                     continue;
                 }
 
-                // --- Proceed to make offer ---
                 state.lock().unwrap().log.push(format!(
                     "Proceeding to spawn offer task for peer {}",
-                    peer_id // Added log
+                    peer_id
                 ));
                 let pc_arc_clone = pc_arc.clone();
                 let peer_id_clone = peer_id.clone();
-                let state_clone = state.clone(); // Clone the Arc<StdMutex<AppState>>
+                let state_clone = state.clone();
                 let cmd_tx_clone = cmd_tx.clone();
 
                 tokio::spawn(async move {
-                    // Spawn task for actual offer creation
-                    // --- Set making_offer flag ---
                     state_clone
                         .lock()
                         .unwrap()
@@ -126,24 +113,17 @@ pub async fn initiate_offers_for_session(
                         .log
                         .push(format!("Set making_offer=true for {}", peer_id_clone));
 
-                    // Prefix offer_result with _ to mark it as intentionally unused
-                    let offer_result = async { // Wrap offer logic in an async block for easier cleanup
-                        // ... (Create Data Channel logic remains the same) ...
-                        // Add log before creating data channel
+                    let offer_result = async {
                         state_clone.lock().unwrap().log.push(format!(
                             "Offer Task [{}]: Creating data channel...", peer_id_clone
                         ));
-                        // Example: Create a default data channel if none exists
-                        // Note: This might interfere if the other side also tries to create it.
-                        // Consider creating channels only *after* connection is stable, or use negotiation.
-                        // For now, let's assume a default channel is needed for testing.
                         match pc_arc_clone.create_data_channel("data", None).await {
                             Ok(dc) => {
                                 state_clone.lock().unwrap().log.push(format!(
                                     "Offer Task [{}]: Created data channel '{}'. Setting up callbacks.", peer_id_clone, dc.label()
                                 ));
                                 let dc_arc = Arc::new(dc);
-                                // Setup basic logging callbacks for the created channel
+
                                 let state_log_dc = state_clone.clone();
                                 let peer_id_dc = peer_id_clone.clone();
                                 dc_arc.on_open(Box::new(move || {
@@ -165,14 +145,10 @@ pub async fn initiate_offers_for_session(
                             Err(e) => {
                                  state_clone.lock().unwrap().log.push(format!(
                                     "Offer Task [{}]: Error creating data channel: {}", peer_id_clone, e
-                                )); // Fixed: added missing closing parenthesis
-                                // Decide if this is fatal for the offer attempt
-                                // return Err(()); // Maybe don't fail the whole offer just for the data channel?
+                                ));
                             }
                         }
 
-
-                        // --- Create and Send Offer ---
                         state_clone.lock().unwrap().log.push(format!(
                             "Offer Task [{}]: Creating offer...", peer_id_clone // Added log
                         ));
@@ -181,7 +157,7 @@ pub async fn initiate_offers_for_session(
                                 state_clone.lock().unwrap().log.push(format!(
                                     "Offer Task [{}]: Created offer. Setting local description...", peer_id_clone // Added log
                                 ));
-                                // Fix error logging for setting local description
+
                                 if let Err(e) = pc_arc_clone.set_local_description(offer.clone()).await {
                                     state_clone.lock().unwrap().log.push(format!(
                                         "Offer Task [{}]: Error setting local description (offer): {}", // Restored log
@@ -218,21 +194,18 @@ pub async fn initiate_offers_for_session(
                                     }
                                 }
                             }
-                            // Fix error logging for offer creation
                             Err(e) => {
                                 state_clone
                                     .lock()
                                     .unwrap()
                                     .log
                                     .push(format!("Offer Task [{}]: Error creating offer: {}", peer_id_clone, e)); // Restored log
-                                return Err(()); // Indicate failure
+                                return Err(());
                             }
                         }
-                        Ok(()) // Indicate success
+                        Ok(())
                     }.await;
 
-                    // --- Clear making_offer flag regardless of success/failure ---
-                    // Log success/failure based on offer_result
                     let outcome = if offer_result.is_ok() {
                         "succeeded"
                     } else {
@@ -252,19 +225,19 @@ pub async fn initiate_offers_for_session(
                         .unwrap()
                         .log
                         .push(format!("Set making_offer=false for {}", peer_id_clone));
-                }); // End of spawned task
+                });
             } else {
                 state.lock().unwrap().log.push(format!(
                     "Should initiate offer to {}, but connection object not found!",
-                    peer_id // Log remains valid
+                    peer_id
                 ));
             }
         }
     }
-    // peer_conns lock dropped here
+
     state
         .lock()
         .unwrap()
         .log
-        .push("Finished WebRTC offers check.".to_string()); // Added log
+        .push("Finished WebRTC offers check.".to_string());
 }

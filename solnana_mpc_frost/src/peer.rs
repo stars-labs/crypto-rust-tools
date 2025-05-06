@@ -1,55 +1,45 @@
 use crate::signal::*;
-use crate::state::{AppState, DkgState}; // Import AppState and DkgState
-// Remove unused imports
-// use frost_core::keys::PublicKeyPackage;
-// use frost_ed25519::Ed25519Sha512;
-// Use the internal ClientMsg type from cli_node
+use crate::state::{AppState, DkgState};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration; // Add time imports
+use std::time::Duration;
 use tokio::sync::{Mutex as TokioMutex, mpsc};
-// Add necessary WebRTC imports
+
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate; // Add RTCIceCandidate
+use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration; // Import RTCConfiguration
+use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-// Import InternalCommand and ClientMsg (aliased as SharedClientMsg) from lib.rs
-use frost_core::keys::dkg::round2; // Add round2 import
+
+use frost_core::keys::dkg::round2;
 use frost_ed25519::Ed25519Sha512;
-use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand}; // Add Ed25519Sha512 import
+use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
 
-// --- Constants ---
-// Make constant public
-pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; // Label for the main data channel
-
-// Only use one data channel per peer (DATA_CHANNEL_LABEL), and use a message envelope for all messages.
+pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct DataChannelEnvelope {
-    pub msg_type: String, // e.g. "dkg_round1", "simple", etc.
+    pub msg_type: String,
     pub payload: serde_json::Value,
 }
 
-// --- Helper Function to Send WebRTC Messages ---
 pub async fn send_webrtc_message(
     target_peer_id: &str,
     message: &WebRTCMessage,
     state_log: Arc<StdMutex<AppState<Ed25519Sha512>>>,
 ) -> Result<(), String> {
-    // Check if data channel exists in app state
     let data_channel = {
         let guard = state_log.lock().unwrap();
         guard.data_channels.get(target_peer_id).cloned()
     };
 
     if let Some(dc) = data_channel {
-        // Check if data channel is open
+ 
         if dc.ready_state() == RTCDataChannelState::Open {
-            // Wrap message in envelope
+   
             let (msg_type, payload) = match message {
                 WebRTCMessage::DkgRound1Package { package } => (
                     "dkg_round1",
@@ -61,7 +51,7 @@ pub async fn send_webrtc_message(
                 ),
                 WebRTCMessage::SimpleMessage { text } => {
                     ("simple", serde_json::json!({ "text": text }))
-                } // ...add more variants as needed...
+                }
             };
             let envelope = DataChannelEnvelope {
                 msg_type: msg_type.to_string(),
@@ -70,7 +60,6 @@ pub async fn send_webrtc_message(
             let msg_json = serde_json::to_string(&envelope)
                 .map_err(|e| format!("Failed to serialize envelope: {}", e))?;
 
-            // Send the message
             if let Err(e) = dc.send_text(msg_json).await {
                 state_log.lock().unwrap().log.push(format!(
                     "Error sending message to {}: {}",
@@ -100,30 +89,24 @@ pub async fn send_webrtc_message(
     }
 }
 
-// Creates a single peer connection, sets up callbacks, and stores it.
 pub async fn create_and_setup_peer_connection(
     peer_id: String,
     self_peer_id: String, // Pass self_peer_id
     peer_connections_arc: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    // Update the sender type to use the new InternalCommand
     cmd_tx: mpsc::UnboundedSender<InternalCommand>,
     state_log: Arc<StdMutex<AppState<Ed25519Sha512>>>,
-    // Add WebRTC API and Config as arguments
     api: &'static webrtc::api::API,
     config: &'static RTCConfiguration,
 ) -> Result<Arc<RTCPeerConnection>, String> {
-    // Check if connection already exists before creating
     {
         let peer_conns = peer_connections_arc.lock().await;
         if let Some(existing_pc) = peer_conns.get(&peer_id) {
-            // FIX: Connection already exists, log and return Ok with the existing Arc
             state_log.lock().unwrap().log.push(format!(
                 "WebRTC connection object for {} already exists. Skipping creation.",
                 peer_id
             ));
-            return Ok(existing_pc.clone()); // Return the existing connection Arc
+            return Ok(existing_pc.clone());
         }
-        // Drop lock implicitly here
     }
 
     state_log
@@ -137,7 +120,6 @@ pub async fn create_and_setup_peer_connection(
         Ok(pc) => {
             let pc_arc = Arc::new(pc);
 
-            // --- Only create one data channel (initiator side) ---
             if self_peer_id < peer_id {
                 match pc_arc.create_data_channel(DATA_CHANNEL_LABEL, None).await {
                     Ok(dc) => {
@@ -161,7 +143,6 @@ pub async fn create_and_setup_peer_connection(
                 }
             }
 
-            // --- Setup Callbacks (Essential before processing any signals) ---
             let peer_id_on_ice = peer_id.clone();
             let cmd_tx_on_ice = cmd_tx.clone(); // Clones the sender for internal ClientMsg
             let state_log_on_ice = state_log.clone();
@@ -244,96 +225,33 @@ pub async fn create_and_setup_peer_connection(
                             guard.log.push(format!("!!! WebRTC CONNECTED with {} !!!", peer_id));
                             guard.reconnection_tracker.record_success(&peer_id);
 
-                            // --- REMOVED DKG Check ---
-                            // The DKG trigger logic is moved to the SessionInfo handler in cli_node.rs
-                            // to ensure session data is ready before starting.
-
-                            // Setup keep-alive if not already set
                             if !guard.keep_alive_peers.contains(&peer_id) {
-                                guard.keep_alive_peers.insert(peer_id.clone());
-
+                                guard.keep_alive_peers.insert(peer_id.clone());                                
                                 // Setup keep-alive mechanism using a dedicated channel
                                 let pc_weak_clone = pc_weak.clone();
                                 let peer_id_clone = peer_id.clone();
                                 let state_log_clone = state_log.clone();
+                                let cmd_tx_clone = cmd_tx_local.clone();
 
                                 tokio::spawn(async move {
-                                    // Create a dedicated keep-alive channel
-                                    if let Some(pc_strong) = pc_weak_clone.upgrade() {
-                                        match pc_strong.create_data_channel("keep-alive", None).await {
-                                            Ok(dc) => {
-                                                let dc_arc = Arc::new(dc);
-
-                                                // Set up on_open handler for channel
-                                                let dc_weak = Arc::downgrade(&dc_arc);
-                                                let peer_id_ping = peer_id_clone.clone();
-                                                let state_log_ping = state_log_clone.clone();
-
-                                                dc_arc.on_open(Box::new(move || {
-                                                    if let Ok(mut guard) = state_log_ping.try_lock() {
-                                                        guard.log.push(format!("Keep-alive channel open with {}", peer_id_ping));
-                                                    }
-
-                                                    // Start ping loop in a new task
-                                                    let dc_weak_ping = dc_weak.clone();
-                                                    let peer_ping = peer_id_ping.clone();
-                                                    let state_ping = state_log_ping.clone();
-
-                                                    tokio::spawn(async move {
-                                                        let mut interval = tokio::time::interval(Duration::from_secs(10));
-
-                                                        loop {
-                                                            interval.tick().await;
-
-                                                            if let Some(dc_strong) = dc_weak_ping.upgrade() {
-                                                                if dc_strong.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                                                                    break;
-                                                                }
-
-                                                                if let Err(e) = dc_strong.send_text("ping").await {
-                                                                    if let Ok(mut guard) = state_ping.try_lock() {
-                                                                        guard.log.push(format!(
-                                                                            "Keep-alive channel to {} failed: {}",
-                                                                            peer_ping, e
-                                                                        ));
-                                                                    }
-                                                                    break;
-                                                                }
-                                                            } else {
-                                                                // Channel was dropped
-                                                                break;
-                                                            }
-                                                        }
-                                                    });
-
-                                                    Box::pin(async {})
-                                                }));
-
-                                                if let Ok(mut guard) = state_log_clone.try_lock() {
-                                                    guard.log.push(format!("Created keep-alive channel for {}", peer_id_clone));
-                                                }
-                                            },
-                                            Err(e) => {
-                                                if let Ok(mut guard) = state_log_clone.try_lock() {
-                                                    guard.log.push(format!("Failed to create keep-alive channel for {}: {}",
-                                                        peer_id_clone, e));
-                                                }
-                                            }
-                                        }
-                                    }
+                                    setup_robust_keepalive(
+                                        pc_weak_clone,
+                                        peer_id_clone,
+                                        state_log_clone,
+                                        cmd_tx_clone,
+                                    ).await;
                                 });
                             }
                         }
                     }
-                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed => {
-                        // Combine Disconnected and Failed handling for rejoin logic
+                    RTCPeerConnectionState::Disconnected => {
+                        // Handle disconnection with more aggressive reconnection
                         if let Ok(mut guard) = state_log.try_lock() {
-                            let state_name = if s == RTCPeerConnectionState::Disconnected { "DISCONNECTED" } else { "FAILED" };
-                            guard.log.push(format!("!!! WebRTC {} with {} !!!", state_name, peer_id));
-
-                            // Remove keep-alive tracking if it failed/disconnected
+                            guard.log.push(format!("!!! WebRTC DISCONNECTED with {} !!!", peer_id));
+                            
+                            // Remove keep-alive tracking
                             guard.keep_alive_peers.remove(&peer_id);
-
+                            
                             // Reset DKG state if a peer disconnects during DKG
                             if guard.dkg_state != DkgState::Idle && guard.dkg_state != DkgState::Complete {
                                 guard.log.push(format!("Resetting DKG state due to disconnection with {}", peer_id));
@@ -342,46 +260,97 @@ pub async fn create_and_setup_peer_connection(
                                 guard.local_dkg_part1_data = None;
                                 guard.received_dkg_packages.clear();
                             }
-
-                            // Attempt to rejoin the current session if allowed by tracker
+                            
+                            // Always attempt immediate reconnection on Disconnected state
+                            if let Some(current_session) = guard.session.clone() {
+                                let session_id_to_rejoin = current_session.session_id;
+                                guard.log.push(format!(
+                                    "Attempting immediate reconnection to session '{}' due to DISCONNECTED state with {}",
+                                    session_id_to_rejoin, peer_id
+                                ));
+                                
+                                // Drop the guard before sending the command
+                                drop(guard);
+                                
+                                // Send rejoin command without checking the reconnection tracker
+                                let _ = cmd_tx_local.send(InternalCommand::SendToServer(SharedClientMsg::JoinSession {
+                                    session_id: session_id_to_rejoin
+                                }));
+                            }
+                        }
+                    }
+                    RTCPeerConnectionState::Failed => {
+                        if let Ok(mut guard) = state_log.try_lock() {
+                            guard.log.push(format!("!!! WebRTC FAILED with {} !!!", peer_id));
+                            
+                            // Remove keep-alive tracking
+                            guard.keep_alive_peers.remove(&peer_id);
+                            
+                            // Reset DKG state if a peer disconnects during DKG
+                            if guard.dkg_state != DkgState::Idle && guard.dkg_state != DkgState::Complete {
+                                guard.log.push(format!("Resetting DKG state due to connection failure with {}", peer_id));
+                                guard.dkg_state = DkgState::Failed(format!("Peer {} connection failed", peer_id));
+                                guard.local_dkg_part1_data = None;
+                                guard.received_dkg_packages.clear();
+                            }
+                            
+                            // Attempt to rejoin with backoff strategy
                             if guard.reconnection_tracker.should_attempt(&peer_id) {
                                 if let Some(current_session) = guard.session.clone() {
                                     let session_id_to_rejoin = current_session.session_id;
                                     guard.log.push(format!(
-                                        "Attempting automatic rejoin to session '{}' due to {} state with {}",
-                                        session_id_to_rejoin, state_name, peer_id
+                                        "Attempting reconnection to session '{}' due to FAILED state with {}",
+                                        session_id_to_rejoin, peer_id
                                     ));
-
+                                    
                                     // Drop the guard before sending the command
                                     drop(guard);
-
-                                    // Send the *shared* message type via the internal sender
+                                    
                                     let _ = cmd_tx_local.send(InternalCommand::SendToServer(SharedClientMsg::JoinSession {
                                         session_id: session_id_to_rejoin
                                     }));
-
-                                } else {
-                                    // Log if no active session to rejoin
-                                    guard.log.push(format!(
-                                        "Cannot attempt automatic rejoin for {}: No active session.",
-                                        peer_id
-                                    ));
                                 }
-                            } else {
-                                // Log if reconnection is skipped due to backoff/cooldown
-                                guard.log.push(format!(
-                                    "Skipping automatic rejoin attempt for {} (backoff/cooldown).",
-                                    peer_id
-                                ));
                             }
                         }
                     }
-                    _ => {
-                        // Log other states without special handling
-                        // Already logged above when status map is updated
+                    RTCPeerConnectionState::Connecting | RTCPeerConnectionState::New => {
+                        // We don't need special handling for these states,
+                        // they're already logged above when updating peer_statuses
+                    }
+                    RTCPeerConnectionState::Closed => {
+                        if let Ok(mut guard) = state_log.try_lock() {
+                            guard.log.push(format!("WebRTC connection CLOSED with {}", peer_id));
+                            guard.keep_alive_peers.remove(&peer_id);
+                            
+                            // For explicit close, we shouldn't auto-reconnect
+                        }
+                    }
+                    // Handle the Unspecified state to fix the compilation error
+                    RTCPeerConnectionState::Unspecified => {
+                        if let Ok(mut guard) = state_log.try_lock() {
+                            guard.log.push(format!("WebRTC in UNSPECIFIED state with {}", peer_id));
+                            // No specific action needed for unspecified state
+                        }
                     }
                 }
+                Box::pin(async {})
+            }));
 
+            // --- Setup ICE connection monitoring callback ---
+            let state_log_ice = state_log.clone();
+            let peer_id_ice = peer_id.clone();
+            
+            pc_arc.on_ice_connection_state_change(Box::new(move |ice_state| {
+                let state_log = state_log_ice.clone();
+                let peer_id = peer_id_ice.clone();
+                
+                if let Ok(mut guard) = state_log.try_lock() {
+                    guard.log.push(format!(
+                        "ICE connection state with {}: {:?}",
+                        peer_id, ice_state
+                    ));
+                }
+                
                 Box::pin(async {})
             }));
 
@@ -430,8 +399,6 @@ pub async fn create_and_setup_peer_connection(
     }
 }
 
-// Helper function to set up callbacks for a data channel (created or received)
-// Make function public
 pub fn setup_data_channel_callbacks(
     dc: Arc<RTCDataChannel>,
     peer_id: String,
@@ -583,6 +550,155 @@ pub fn setup_data_channel_callbacks(
         ));
         Box::pin(async {})
     }));
+}
+
+// New improved keep-alive function (updated to work with the available API)
+async fn setup_robust_keepalive(
+    pc_weak: std::sync::Weak<RTCPeerConnection>,
+    peer_id: String,
+    state_log: Arc<StdMutex<AppState<Ed25519Sha512>>>,
+    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut failure_count = 0;
+    let max_failures = 3;
+    
+    loop {
+        interval.tick().await;
+        
+        // Check if PC still exists
+        if let Some(pc_strong) = pc_weak.upgrade() {
+            // Check connection state
+            let current_state = pc_strong.connection_state();
+            
+            match current_state {
+                RTCPeerConnectionState::Connected | RTCPeerConnectionState::Connecting => {
+                    // Connection is live - create or use data channel for pinging
+                    match pc_strong.create_data_channel("keep-alive", None).await {
+                        Ok(dc) => {
+                            // Reset failure count on successful channel creation
+                            failure_count = 0;
+                            
+                            // Use a small scope for the ping attempt
+                            {
+                                if let Ok(mut guard) = state_log.try_lock() {
+                                    guard.log.push(format!(
+                                        "Keep-alive: Successfully created channel for peer {}",
+                                        peer_id
+                                    ));
+                                }
+                            }
+                            
+                            // Setup data channel state callback
+                            let dc_arc = Arc::new(dc);
+                            let dc_weak = Arc::downgrade(&dc_arc);
+                            let peer_id_clone = peer_id.clone();
+                            let state_log_clone = state_log.clone();
+                            
+                            dc_arc.on_open(Box::new(move || {
+                                let dc_weak_ping = dc_weak.clone();
+                                let peer_ping = peer_id_clone.clone();
+                                let state_ping = state_log_clone.clone();
+                                
+                                // Log channel open
+                                if let Ok(mut guard) = state_ping.try_lock() {
+                                    guard.log.push(format!("Keep-alive channel open with {}", peer_ping));
+                                }
+                                
+                                // Send a single ping and close
+                                tokio::spawn(async move {
+                                    if let Some(dc_strong) = dc_weak_ping.upgrade() {
+                                        // Send ping
+                                        if let Err(e) = dc_strong.send_text("ping").await {
+                                            if let Ok(mut guard) = state_ping.try_lock() {
+                                                guard.log.push(format!(
+                                                    "Keep-alive failed with {}: {}",
+                                                    peer_ping, e
+                                                ));
+                                            }
+                                        }
+                                        // Don't need to close explicitly - channel will be garbage collected
+                                    }
+                                });
+                                
+                                Box::pin(async {})
+                            }));
+                            
+                            // Wait a bit to let the ping happen before recreating channel on next interval
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        Err(e) => {
+                            failure_count += 1;
+                            
+                            if let Ok(mut guard) = state_log.try_lock() {
+                                guard.log.push(format!(
+                                    "Keep-alive: Failed to create channel for {}: {} (failure {}/{})",
+                                    peer_id, e, failure_count, max_failures
+                                ));
+                                
+                                // If we've hit max failures while connected, try to kickstart renegotiation
+                                if failure_count >= max_failures && 
+                                    current_state == RTCPeerConnectionState::Connected {
+                                    guard.log.push(format!(
+                                        "Too many keep-alive failures with {}. Triggering reconnection...",
+                                        peer_id
+                                    ));
+                                    
+                                    // Get session info for rejoin
+                                    if let Some(current_session) = guard.session.clone() {
+                                        let session_id_to_rejoin = current_session.session_id;
+                                        drop(guard); // Drop before sending command
+                                        
+                                        // Request rejoin to refresh the connection
+                                        let _ = cmd_tx.send(InternalCommand::SendToServer(SharedClientMsg::JoinSession {
+                                            session_id: session_id_to_rejoin
+                                        }));
+                                        
+                                        // Reset failure counter
+                                        failure_count = 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // For other states, don't try to keep alive - the main state handler will manage reconnection
+                _ => {
+                    if let Ok(mut guard) = state_log.try_lock() {
+                        // Only log this occasionally to avoid spam
+                        if failure_count == 0 {
+                            guard.log.push(format!(
+                                "Keep-alive: Connection with {} not in connectable state: {:?}",
+                                peer_id, current_state
+                            ));
+                        }
+                    }
+                    // Increment failure count to reduce logging frequency
+                    failure_count += 1;
+                    
+                    // If connection is in a bad state for too long, exit the keep-alive loop
+                    if failure_count > max_failures * 2 {
+                        if let Ok(mut guard) = state_log.try_lock() {
+                            guard.log.push(format!(
+                                "Keep-alive: Stopping monitor for {} due to persistent bad state: {:?}",
+                                peer_id, current_state
+                            ));
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Connection was dropped, exit keep-alive loop
+            if let Ok(mut guard) = state_log.try_lock() {
+                guard.log.push(format!(
+                    "Keep-alive: Stopping monitor for {} - connection object no longer exists",
+                    peer_id
+                ));
+            }
+            break;
+        }
+    }
 }
 
 // Apply any pending ICE candidates for a peer

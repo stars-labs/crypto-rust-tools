@@ -87,8 +87,8 @@ impl ReconnectionTracker {
         ReconnectionTracker {
             attempts: HashMap::new(),
             last_attempt: HashMap::new(),
-            cooldown: Duration::from_secs(10), // Cooldown period
-            max_attempts: 5,                   // Max attempts before longer cooldown
+            cooldown: Duration::from_secs(5),  // Reduced from 10 to 5 seconds for faster recovery
+            max_attempts: 10,                  // Increased from 5 to 10 for more persistent reconnection
         }
     }
 
@@ -100,13 +100,25 @@ impl ReconnectionTracker {
             .entry(peer_id.to_string())
             .or_insert_with(|| now - self.cooldown * 2); // Ensure first attempt is allowed
 
-        if *attempts >= self.max_attempts {
-            // Implement exponential backoff or longer fixed cooldown after max attempts
-            if now.duration_since(*last) < self.cooldown * (*attempts as u32) {
+        // For first few attempts, retry quickly
+        if *attempts < 3 {
+            // Almost no cooldown for the first few attempts
+            if now.duration_since(*last) < Duration::from_millis(500) {
+                return false;
+            }
+        } else if *attempts >= self.max_attempts {
+            // Use exponential backoff with a cap after max attempts
+            let backoff = self.cooldown.mul_f32(1.5_f32.powi(*attempts as i32 - self.max_attempts as i32));
+            let capped_backoff = std::cmp::min(backoff, Duration::from_secs(60)); // Cap at 1 minute
+            
+            if now.duration_since(*last) < capped_backoff {
                 return false; // Still in cooldown
             }
-        } else if now.duration_since(*last) < self.cooldown {
-            return false; // Still in cooldown
+        } else {
+            // Linear backoff between the first few attempts and max attempts
+            if now.duration_since(*last) < self.cooldown.mul_f32(*attempts as f32 / 2.0) {
+                return false; // Still in cooldown
+            }
         }
 
         *attempts += 1;

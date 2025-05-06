@@ -20,7 +20,6 @@ use std::{
     collections::{HashMap, HashSet},
     io,
 };
-
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc::api::APIBuilder;
@@ -32,7 +31,6 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState; // Use TokioMutex for async WebRTC state
-
 // Add these imports for WebRTC policies
 use webrtc::peer_connection::policy::{
     bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
@@ -43,7 +41,7 @@ use webrtc::peer_connection::policy::{
 use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand, ServerMsg};
 // Fix WebRTCMessage import
 // Remove unused SessionInfo import
-use crate::signal::{/*SessionInfo,*/ WebRTCMessage};
+use crate::signal::WebRTCMessage;
 // --- Declare Modules ---
 mod negotiation;
 mod peer;
@@ -95,6 +93,7 @@ lazy_static! {
         bundle_policy: RTCBundlePolicy::MaxBundle,
         rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
         ice_candidate_pool_size: 10, // 增加候选池大小以提高连接成功率
+
         ..Default::default()
     };
     pub static ref WEBRTC_API: webrtc::api::API = {
@@ -137,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     let url = url::Url::parse("ws://127.0.0.1:9000").unwrap();
     let (ws_stream, _) = connect_async(url).await?;
     // Remove mut from ws_stream
-    let (mut ws_sink, ws_stream) = ws_stream.split();
+    let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
     // Register (Send directly, no channel needed for initial message)
     let register_msg = SharedClientMsg::Register {
@@ -148,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Channel for INTERNAL commands within the CLI app (uses InternalCommand from lib.rs)
-    let (internal_cmd_tx, internal_cmd_rx) = mpsc::unbounded_channel::<InternalCommand>();
+    let (internal_cmd_tx, mut internal_cmd_rx) = mpsc::unbounded_channel::<InternalCommand>();
 
     // Shared state for TUI and network
     // Specify the Ciphersuite for AppState
@@ -243,8 +242,6 @@ async fn main() -> anyhow::Result<()> {
     let self_peer_id_main_net = peer_id.clone();
     let internal_cmd_tx_main_net = internal_cmd_tx.clone();
     let peer_connections_arc_main_net = state.lock().unwrap().peer_connections.clone(); // This is Arc<TokioMutex<...>>
-    let mut internal_cmd_rx = internal_cmd_rx; // Make mutable for .recv()
-    let mut ws_stream = ws_stream; // Make mutable for .next()
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -831,11 +828,11 @@ async fn main() -> anyhow::Result<()> {
 
 
                                                     // Optionally clear intermediate DKG data now
-                                                    // guard.local_dkg_part1_data = None;
-                                                    // guard.received_dkg_packages.clear();
-                                                    // guard.round2_secret_package = None;
-                                                    // guard.received_dkg_round2_packages.clear();
-                                                    // guard.queued_dkg_round1.clear();
+                                                    guard.local_dkg_part1_data = None;
+                                                    guard.received_dkg_packages.clear();
+                                                    guard.round2_secret_package = None;
+                                                    guard.received_dkg_round2_packages.clear();
+                                                    guard.queued_dkg_round1.clear();
 
                                                     guard.log.push("DKG process completed successfully.".to_string());
                                                 }
@@ -847,8 +844,7 @@ async fn main() -> anyhow::Result<()> {
                                                         "Failed part3 inputs: R1 keys={:?}, R2 keys={:?}",
                                                         filtered_round1.keys().collect::<Vec<_>>(), // Log filtered R1 keys
                                                         filtered_round2.keys().collect::<Vec<_>>()
-                                                    ));
-                                                    // --- End FIX ---
+                                                    ));                                           
                                                     guard.dkg_state = DkgState::Failed(format!("DKG Part 3 Error: {:?}", e));
                                                 }
                                             }

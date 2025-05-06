@@ -34,24 +34,20 @@ pub fn draw_main_ui<B: Backend>(
             ])
             .split(f.area());
 
-        // --- Title Widget ---
         let title_block = Block::default()
             .title(format!(" Peer ID: {} ", app.peer_id)) // Add spacing
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded); // Use rounded borders
         f.render_widget(title_block, main_chunks[0]);
 
-        // --- Peers Widget ---
-        // Determine which peers *should* be connected based on the session
         let session_participants: HashSet<String> = app
             .session
             .as_ref()
             .map(|s| s.participants.iter().cloned().collect())
             .unwrap_or_default();
 
-        // Update the TUI rendering logic for peer statuses to be more accurate
         let peer_list_items = app
-            .peers // Peers known via signaling
+            .peers
             .iter()
             .filter(|p| !p.trim().eq_ignore_ascii_case(app.peer_id.trim()))
             .map(|p| {
@@ -88,7 +84,6 @@ pub fn draw_main_ui<B: Backend>(
                 .block(Block::default().title(" Peers (Signaling) ").borders(Borders::ALL));
         f.render_widget(peers_widget, main_chunks[1]);
 
-        // --- Log Widget ---
         let log_text: Vec<Line> = app.log.iter().map(|l| Line::from(l.clone())).collect();
         let log_widget = Paragraph::new(log_text)
             .block(Block::default().title(" Log (Scroll: Up/Down) ").borders(Borders::ALL))

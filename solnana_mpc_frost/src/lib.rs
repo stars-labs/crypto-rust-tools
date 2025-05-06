@@ -8,8 +8,6 @@ pub struct SessionInfo {
     pub total: usize,
     pub threshold: usize,
     pub participants: Vec<String>,
-    // Note: 'joined' field is only used server-side, so it's not included here
-    // If needed client-side later, it can be added optionally.
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -62,9 +60,6 @@ pub enum ClientMsg {
     },
 }
 
-// --- Define NEW internal command enum ---
-// This enum is used for commands passed *within* the cli_node application,
-// not for messages sent over the network via WebSocket.
 #[derive(Debug)]
 pub enum InternalCommand {
     SendDirect {
@@ -82,5 +77,4 @@ pub enum InternalCommand {
         from_peer_id: String,
         package: round2::Package<Ed25519Sha512>,
     },
-    // Add other internal commands if needed
 }
