@@ -1,4 +1,4 @@
-use crate::utils::signal::WebRTCMessage;
+use crate::protocal::signal::WebRTCMessage;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -15,25 +15,23 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand, ServerMsg};
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
-use std::{
-    collections::{HashMap, HashSet},
-    io,
-};
-use tokio::sync::mpsc;
+use std::{collections::HashMap, io};
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+// Add display-related imports for better status handling
 
 mod utils;
 // --- Use items from modules ---
+use protocal::signal::{SDPInfo, WebRTCSignal};
 use utils::negotiation::initiate_offers_for_session;
 use utils::peer::{
     apply_pending_candidates, create_and_setup_peer_connection, send_webrtc_message,
 };
-use utils::signal::{SDPInfo, WebRTCSignal};
 use utils::state::{AppState, DkgState, ReconnectionTracker};
 
 mod ui;
@@ -41,7 +39,14 @@ use ui::tui::{draw_main_ui, handle_key_event};
 // Import our new utility modules
 use utils::ed25519_dkg;
 // Import from our new webrtc module
-use utils::webrtc::{WEBRTC_API, WEBRTC_CONFIG};
+use network::webrtc::{WEBRTC_API, WEBRTC_CONFIG};
+
+mod protocal;
+
+mod network;
+
+// 1. 新增: DKG 启动“稳定窗口”参数
+const DKG_CONNECTED_STABLE_WINDOW: usize = 2; // 连续2次Connected才触发
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -70,61 +75,160 @@ async fn main() -> anyhow::Result<()> {
 
     // Shared state for TUI and network
     // Specify the Ciphersuite for AppState
-    let state = Arc::new(StdMutex::new(AppState::<Ed25519Sha512> {
-        // TUI state uses StdMutex
+    let state = Arc::new(Mutex::new(AppState::<Ed25519Sha512> {
+        // TUI state uses Mutex
         peer_id: peer_id.clone(),
         peers: vec![],
         log: vec!["Registered with server".to_string()],
         log_scroll: 0, // Initialize scroll state
         session: None,
         invites: vec![],
-        peer_connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())), // Use TokioMutex here
-        peer_statuses: HashMap::new(), // Initialize peer statuses
+        peer_connections: Arc::new(Mutex::new(HashMap::new())), // Use TokioMutex here
+        peer_statuses: HashMap::new(),                          // Initialize peer statuses
         reconnection_tracker: ReconnectionTracker::new(),
-        keep_alive_peers: HashSet::new(),
-        // Remove cmd_tx field as it's unused in AppState
-        // cmd_tx: Some(cmd_tx.clone()), // 存储一个命令发送器副本
-        // --- Initialize Perfect Negotiation Flags ---
         making_offer: HashMap::new(),
         ignore_offer: HashMap::new(),
-        // Initialize the pending_ice_candidates field
         pending_ice_candidates: HashMap::new(),
-        // --- Initialize DKG State ---
         dkg_state: DkgState::Idle,
         identifier_map: None,
-        // identifier_to_index_map: None, // Removed initialization
         local_dkg_part1_data: None,
         received_dkg_packages: BTreeMap::new(),
         key_package: None,
         group_public_key: None,
-        // Add missing fields:
         data_channels: HashMap::new(),
         solana_public_key: None,
         queued_dkg_round1: vec![],
         round2_secret_package: None,
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
+        // 新增: 记录每个peer最近N次状态
+        peer_connected_history: HashMap::new(), // peer_id -> Vec<RTCPeerConnectionState>
     }));
 
-    // --- Spawn Periodic Connection Status Checker Task ---
+    // --- Spawn Peer Connection State Change Handler Task ---
     let state_for_checker = state.clone();
-    let peer_connections_for_checker = state.lock().unwrap().peer_connections.clone();
+    let peer_connections_for_checker = state.lock().await.peer_connections.clone();
+    let internal_cmd_tx_for_checker = internal_cmd_tx.clone();
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
-            interval.tick().await;
+            // Wait for any peer connection state change (simulate by polling, but you can use a notification/event if available)
+            // For now, poll at a short interval (e.g., 100ms) for demonstration, but ideally, use a callback/event from your WebRTC lib.
+            tokio::time::sleep(Duration::from_millis(100)).await;
 
-            // Check and update all connection statuses
             let peer_conns = {
-                let lock = peer_connections_for_checker.lock().await; // Use TokioMutex and .await
+                let lock = peer_connections_for_checker.lock().await;
                 lock.clone()
             };
-            // Check each connection and update status
             for (peer_id, pc) in peer_conns.iter() {
                 let current_state = pc.connection_state();
+                let current_ice_state = pc.ice_connection_state();
 
-                // Update the status in AppState
                 if let Ok(mut guard) = state_for_checker.try_lock() {
+                    // --- Debug print for connectionState and iceConnectionState ---
+                    guard.log.push(format!(
+                        "Peer {}: connectionState={:?}, iceConnectionState={:?}",
+                        peer_id, current_state, current_ice_state
+                    ));
+                    // 记录历史状态
+                    let history = guard
+                        .peer_connected_history
+                        .entry(peer_id.clone())
+                        .or_insert_with(Vec::new);
+                    history.push(current_state);
+                    if history.len() > DKG_CONNECTED_STABLE_WINDOW {
+                        history.remove(0);
+                    }
+                    // --- Recovery: Detect stuck PeerConnections in New state ---
+                    // If the last N states are all New, forcibly close and remove the PeerConnection
+                    if history.len() == DKG_CONNECTED_STABLE_WINDOW
+                        && history.iter().all(|s| *s == RTCPeerConnectionState::New)
+                    {
+                        // --- Clone session participants before any mutable borrow ---
+                        let participants_clone =
+                            guard.session.as_ref().map(|s| s.participants.clone());
+                        let peer_id_clone = peer_id.clone();
+                        let self_peer_id_clone = guard.peer_id.clone();
+                        let pc_arc_clone = guard.peer_connections.clone();
+                        let internal_cmd_tx_clone = internal_cmd_tx_for_checker.clone();
+                        let state_clone = state_for_checker.clone();
+                        let webrtc_api = &WEBRTC_API;
+                        let webrtc_config = &WEBRTC_CONFIG;
+
+                        let mut recovery_logs = Vec::new();
+                        let mut removed = false;
+                        {
+                            let mut pc_map = guard.peer_connections.lock().await;
+                            if let Some(pc_arc) = pc_map.remove(peer_id) {
+                                let _ = pc_arc.close().await;
+                                recovery_logs.push(format!(
+                                    "PeerConnection for {} closed and removed for recovery.",
+                                    peer_id
+                                ));
+                                removed = true;
+                            }
+                        }
+                        if removed {
+                            guard.peer_statuses.remove(peer_id);
+                            guard.peer_connected_history.remove(peer_id);
+                        }
+                        recovery_logs.insert(0, format!(
+                            "PeerConnection for {} stuck in New state for {} checks, forcing recreation.",
+                            peer_id, DKG_CONNECTED_STABLE_WINDOW
+                        ));
+                        for log in recovery_logs {
+                            guard.log.push(log);
+                        }
+                        // --- NEW: Immediately recreate PeerConnection and initiate negotiation ---
+                        if let Some(participants_clone) = participants_clone {
+                            // Only run recovery for peers that are not self
+                            if peer_id_clone != self_peer_id_clone {
+                                let is_offerer = self_peer_id_clone < peer_id_clone;
+                                tokio::spawn(async move {
+                                    match create_and_setup_peer_connection(
+                                        peer_id_clone.clone(),
+                                        self_peer_id_clone.clone(),
+                                        pc_arc_clone.clone(),
+                                        internal_cmd_tx_clone.clone(),
+                                        state_clone.clone(),
+                                        webrtc_api,
+                                        webrtc_config,
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            state_clone.lock().await.log.push(format!(
+                                                "PeerConnection for {} recreated after recovery.",
+                                                peer_id_clone
+                                            ));
+                                            if is_offerer {
+                                                state_clone.lock().await.log.push(format!(
+                                                    "This node is offerer for {} after recovery, initiating offer...", peer_id_clone
+                                                ));
+                                                initiate_offers_for_session(
+                                                    participants_clone,
+                                                    self_peer_id_clone,
+                                                    pc_arc_clone,
+                                                    internal_cmd_tx_clone,
+                                                    state_clone,
+                                                )
+                                                .await;
+                                            } else {
+                                                state_clone.lock().await.log.push(format!(
+                                                    "This node is not offerer for {} after recovery, waiting for offer.", peer_id_clone
+                                                ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            state_clone.lock().await.log.push(format!(
+                                                "Error recreating PeerConnection for {} after recovery: {}", peer_id_clone, e
+                                            ));
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     // Only update if we're in a session with this peer
                     if let Some(session) = &guard.session {
                         if session.participants.contains(peer_id) {
@@ -150,6 +254,34 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
+
+                    // --- DKG trigger check: after updating peer_statuses ---
+                    if let Some(session) = &guard.session {
+                        if guard.dkg_state == DkgState::Idle {
+                            let all_connected = session
+                                .participants
+                                .iter()
+                                .filter(|p| **p != guard.peer_id)
+                                .all(|p_id| {
+                                    let history = guard.peer_connected_history.get(p_id);
+                                    match history {
+                                        Some(hist) if hist.len() == DKG_CONNECTED_STABLE_WINDOW => {
+                                            hist.iter()
+                                                .all(|s| *s == RTCPeerConnectionState::Connected)
+                                        }
+                                        _ => false,
+                                    }
+                                });
+                            if all_connected {
+                                guard.log.push(
+                                    format!("All peers connected for {} consecutive checks, triggering DKG Round 1...", DKG_CONNECTED_STABLE_WINDOW)
+                                );
+                                guard.dkg_state = DkgState::Round1InProgress;
+                                let _ = internal_cmd_tx_for_checker
+                                    .send(InternalCommand::TriggerDkgRound1);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -160,11 +292,9 @@ async fn main() -> anyhow::Result<()> {
     let state_main_net = state.clone();
     let self_peer_id_main_net = peer_id.clone();
     let internal_cmd_tx_main_net = internal_cmd_tx.clone();
-    let peer_connections_arc_main_net = state.lock().unwrap().peer_connections.clone(); // This is Arc<TokioMutex<...>>
+    let peer_connections_arc_main_net = state.lock().await.peer_connections.clone(); // This is Arc<TokioMutex<...>>
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-
         // Request peer list on start
         let list_peers_msg = SharedClientMsg::ListPeers;
         let _ = ws_sink
@@ -175,11 +305,6 @@ async fn main() -> anyhow::Result<()> {
 
         loop {
             tokio::select! {
-            _ = interval.tick() => {
-                // Periodic peer list request
-                let list_peers_msg = SharedClientMsg::ListPeers;
-                let _ = ws_sink.send(Message::Text(serde_json::to_string(&list_peers_msg).unwrap())).await;
-            },
             Some(cmd) = internal_cmd_rx.recv() => {
                 match cmd {
                     InternalCommand::SendToServer(shared_msg) => {
@@ -193,9 +318,9 @@ async fn main() -> anyhow::Result<()> {
                         tokio::spawn(async move {
                             let webrtc_msg = WebRTCMessage::SimpleMessage { text: message };
                             if let Err(e) = send_webrtc_message(&to, &webrtc_msg,state_clone.clone()).await {
-                                 state_clone.lock().unwrap().log.push(format!("Error sending direct message to {}: {}", to, e));
+                                 state_clone.lock().await.log.push(format!("Error sending direct message to {}: {}", to, e));
                             } else {
-                                 state_clone.lock().unwrap().log.push(format!("Sent direct message to {}", to));
+                                 state_clone.lock().await.log.push(format!("Sent direct message to {}", to));
                             }
                         });
                     }
@@ -214,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
                             state_main_net.clone(),
                             from_peer_id,
                             package,
-                        );
+                        ).await;
                     }
                     InternalCommand::ProcessDkgRound2 { from_peer_id, package } => {
                         // Use our new ed25519_dkg module
@@ -242,17 +367,17 @@ async fn main() -> anyhow::Result<()> {
                                         match server_msg { // Restore missing arms here
                                             ServerMsg::Peers { ref peers } => {
                                                 // --- Lock StdMutex ---
-                                                let mut state_guard = state_main_net.lock().unwrap();
+                                                let mut state_guard = state_main_net.lock().await;
                                                 state_guard.peers = peers.clone();
                                                 // FIX: Remove offer initiation logic from here
                                                 drop(state_guard); // Drop lock
                                             }
                                             ServerMsg::SessionInvite { ref session_id, ref from, total, threshold, ref participants } => {
-                                                let mut state_guard = state_main_net.lock().unwrap();
+                                                let mut state_guard = state_main_net.lock().await;
                                                 // Use crate::signal::SessionInfo
                                                 // Remove unnecessary parentheses
                                                 if !state_guard.invites.iter().any(|inv| inv.session_id == *session_id) {
-                                                    state_guard.invites.push(crate::utils::signal::SessionInfo { session_id: session_id.clone(), total: total as u16, threshold: threshold as u16, participants: participants.clone() });
+                                                    state_guard.invites.push(crate::protocal::signal::SessionInfo { session_id: session_id.clone(), total: total as u16, threshold: threshold as u16, participants: participants.clone() });
                                                     state_guard.log.push(format!("Session invite from {} for session {}", from, session_id));
                                                 } else {
                                                      state_guard.log.push(format!("Duplicate invite from {} for session {}", from, session_id));
@@ -261,168 +386,243 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                             ServerMsg::Error { ref error } => {
                                                 // ... (Error handling remains the same) ...
-                                                let mut state_guard = state_main_net.lock().unwrap();
+                                                let mut state_guard = state_main_net.lock().await;
                                                 state_guard.log.push(format!("Error: {}", error));
                                                 // Drop guard immediately
                                                 drop(state_guard);
                                             }
                                             // Handle complex cases involving async operations separately
                                             ServerMsg::SessionInfo { session_id, total, threshold, participants } => {
-                                                let queued_packages_to_process = { // Scope for guard
-                                                    let mut guard = state_main_net.lock().unwrap();
-                                                    guard.log.push(format!(
-                                                        "Session info received/updated: {}. Waiting for all participants.",
-                                                        session_id
-                                                    ));
-                                                    let new_session = crate::utils::signal::SessionInfo {
-                                                        session_id: session_id.clone(),
-                                                        total: total as u16,
-                                                        threshold: threshold as u16,
-                                                        participants: participants.clone(),
-                                                    };
-                                                    guard.session = Some(new_session);
+                                                // Construct the new session information from the message
+                                                // Ensure crate::protocal::signal::SessionInfo derives PartialEq and Clone
+                                                let current_message_session_info = crate::protocal::signal::SessionInfo {
+                                                    session_id: session_id.clone(),
+                                                    total: total as u16,
+                                                    threshold: threshold as u16,
+                                                    participants: participants.clone(),
+                                                };
 
-                                                    // Create or update identifier map
-                                                    guard.log.push("Session participants updated. Creating identifier map...".to_string());
-                                                    let mut id_map = BTreeMap::new();
-                                                    // let mut id_to_index_map = BTreeMap::new(); // Removed map for reverse lookup
-                                                    for (i, p_id) in participants.iter().enumerate() {
-                                                        let index = (i + 1) as u16; // 1-based index
-                                                        match Identifier::<Ed25519Sha512>::try_from(index) {
-                                                            Ok(identifier) => {
-                                                                id_map.insert(p_id.clone(), identifier);
-                                                                // id_to_index_map.insert(identifier, index); // Removed reverse mapping
-                                                                guard.log.push(format!("Mapped {} -> {:?}", p_id, identifier)); // Log Debug format
-                                                            }
-                                                            Err(e) => {
-                                                                guard.log.push(format!("Error creating identifier for {}: {:?}", p_id, e));
-                                                                // Handle error appropriately, maybe fail DKG
+                                                let (should_process_session_update, queued_packages_to_process) = {
+                                                    let mut guard = state_main_net.lock().await;
+                                                    let mut process_queued = Vec::new(); // Initialize empty
+
+                                                    let needs_update = match &guard.session {
+                                                        Some(existing_session) => *existing_session != current_message_session_info,
+                                                        None => true, // No existing session, so definitely update
+                                                    };
+
+                                                    if needs_update {
+                                                        guard.log.push(format!(
+                                                            "Session info for {} requires update. Processing...",
+                                                            session_id
+                                                        ));
+                                                        // Log old session info if any
+                                                        let old_session_info = guard.session.clone();
+                                                        if let Some(existing_session) = old_session_info {
+                                                            guard.log.push(format!(
+                                                                "Old session info: {:?}", existing_session
+                                                            ));
+                                                        }
+                                                        guard.session = Some(current_message_session_info.clone()); // Update the session state
+
+                                                        // Create or update identifier map
+                                                        guard.log.push("Updating identifier map...".to_string());
+                                                        let mut id_map = BTreeMap::new();
+                                                        // Use 'participants' from the incoming message for map creation
+                                                        for (i, p_id) in participants.iter().enumerate() {
+                                                            let index = (i + 1) as u16; // 1-based index
+                                                            match Identifier::<Ed25519Sha512>::try_from(index) {
+                                                                Ok(identifier) => {
+                                                                    id_map.insert(p_id.clone(), identifier);
+                                                                    guard.log.push(format!("Mapped {} -> {:?}", p_id, identifier));
+                                                                }
+                                                                Err(e) => {
+                                                                    guard.log.push(format!("Error creating identifier for {}: {:?}", p_id, e));
+                                                                }
                                                             }
                                                         }
-                                                    }
-                                                    guard.identifier_map = Some(id_map);
-                                                    // guard.identifier_to_index_map = Some(id_to_index_map); // Removed storing the reverse map
+                                                        guard.identifier_map = Some(id_map);
+                                                        // guard.identifier_to_index_map = Some(id_to_index_map); // Removed storing the reverse map
 
-                                                    // Take queued packages for processing outside the lock
-                                                    let queued = std::mem::take(&mut guard.queued_dkg_round1);
-                                                    if !queued.is_empty() {
+                                                        // Take queued packages for processing
+                                                        process_queued = std::mem::take(&mut guard.queued_dkg_round1);
+                                                        if !process_queued.is_empty() {
+                                                            guard.log.push(format!(
+                                                                "Processing {} queued DKG Round 1 packages after session/identifier_map ready.",
+                                                                process_queued.len()
+                                                            ));
+                                                        }
+                                                        // 新增: 清空 peer_connected_history
+                                                        guard.peer_connected_history.clear();
+                                                        // Log PeerConnection states before possible recreation
+                                                        let pc_map = guard.peer_connections.lock().await;
+                                                        let mut pc_state_logs = Vec::new();
+                                                        for (pid, pc) in pc_map.iter() {
+                                                            pc_state_logs.push(format!(
+                                                                "Before session update: PeerConnection for {} is in state {:?}, ICE state {:?}",
+                                                                pid, pc.connection_state(), pc.ice_connection_state()
+                                                            ));
+                                                        }
+                                                        drop(pc_map);
+                                                        for log in pc_state_logs {
+                                                            guard.log.push(log);
+                                                        }
+
+                                                        (true, process_queued) // Indicate update happened and pass queued packages
+                                                    } else {
                                                         guard.log.push(format!(
-                                                            "Processing {} queued DKG Round 1 packages after session/identifier_map ready.",
-                                                            queued.len()
+                                                            "Session info for {} is unchanged. Skipping update.",
+                                                            session_id
                                                         ));
+                                                        (false, process_queued) // Indicate no update, empty queued packages
                                                     }
-                                                    queued // Return the queued packages
                                                 }; // guard dropped here
 
-                                                // Process queued packages by sending internal commands
-                                                for (from_peer_id, package) in queued_packages_to_process {
-                                                    let _ = internal_cmd_tx_main_net.send(InternalCommand::ProcessDkgRound1 {
-                                                        from_peer_id,
-                                                        package,
-                                                    });
-                                                }
+                                                if should_process_session_update {
+                                                    // Process queued packages by sending internal commands
+                                                    for (from_peer_id, package) in queued_packages_to_process {
+                                                        let _ = internal_cmd_tx_main_net.send(InternalCommand::ProcessDkgRound1 {
+                                                            from_peer_id,
+                                                            package,
+                                                        });
+                                                    }
 
-                                                // --- Spawn Task to Create PeerConnection Objects ---
-                                                let pc_arc_clone = peer_connections_arc_main_net.clone();
-                                                let internal_cmd_tx_clone = internal_cmd_tx_main_net.clone();
-                                                let state_log_clone = state_main_net.clone();
-                                                let self_peer_id_clone = self_peer_id_main_net.clone();
-                                                let participants_clone = participants.clone(); // Clone participants for the task
-                                                let session_id_clone = session_id.clone(); // Clone session_id for logging
+                                                    // --- Spawn Task to Create PeerConnection Objects ---
+                                                    let pc_arc_clone = peer_connections_arc_main_net.clone();
+                                                    let internal_cmd_tx_clone = internal_cmd_tx_main_net.clone();
+                                                    let state_log_clone = state_main_net.clone();
+                                                    let self_peer_id_clone = self_peer_id_main_net.clone();
+                                                    // Use 'participants' from the original message
+                                                    let participants_clone = participants.clone();
+                                                    let session_id_clone = session_id.clone(); // Use session_id from original message
 
-                                                tokio::spawn(async move {
-                                                    state_log_clone.lock().unwrap().log.push(format!(
-                                                        "SessionInfo Task: Creating peer connections for session {}...",
-                                                        session_id_clone // Use cloned session_id for logging
-                                                    ));
-                                                    for p_id in participants_clone.iter() { // Iterate over cloned participants
-                                                        if *p_id != self_peer_id_clone {
-                                                            // Pass WEBRTC_API and WEBRTC_CONFIG directly
-                                                            match create_and_setup_peer_connection(
-                                                                p_id.clone(),
-                                                                self_peer_id_clone.clone(),
-                                                                pc_arc_clone.clone(), // Use Arc<TokioMutex<...>>
-                                                                internal_cmd_tx_clone.clone(),
-                                                                state_log_clone.clone(),
-                                                                &WEBRTC_API, // Pass API reference
-                                                                &WEBRTC_CONFIG, // Pass Config reference
-                                                            )
-                                                            .await
-                                                            {
-                                                                Ok(_) => { /* Connection object created or existed */ }
-                                                                Err(e) => {
-                                                                    state_log_clone.lock().unwrap().log.push(format!(
-                                                                        "Error setting up peer connection for {}: {}",
-                                                                        p_id, e
+                                                    tokio::spawn(async move {
+                                                        state_log_clone.lock().await.log.push(format!(
+                                                            "SessionInfo Task: Creating/verifying peer connections for session {}...",
+                                                            session_id_clone
+                                                        ));
+                                                        for p_id in participants_clone.iter() {
+                                                            if *p_id != self_peer_id_clone {
+                                                                // 新增: 只在 Closed 时重建 PeerConnection
+                                                                let pc_map = pc_arc_clone.lock().await;
+                                                                let need_create = match pc_map.get(p_id) {
+                                                                    Some(pc) => {
+                                                                        let state = pc.connection_state();
+                                                                        let ice_state = pc.ice_connection_state();
+                                                                        state_log_clone.lock().await.log.push(format!(
+                                                                            "PeerConnection for {} exists with state {:?}, ICE state {:?}",
+                                                                            p_id, state, ice_state
+                                                                        ));
+                                                                        state == RTCPeerConnectionState::Closed
+                                                                    },
+                                                                    None => {
+                                                                        state_log_clone.lock().await.log.push(format!(
+                                                                            "PeerConnection for {} does not exist, will create.", p_id
+                                                                        ));
+                                                                        true
+                                                                    },
+                                                                };
+                                                                drop(pc_map);
+                                                                if need_create {
+                                                                    state_log_clone.lock().await.log.push(format!(
+                                                                        "Creating PeerConnection for {} (state is Closed or not exist)", p_id
+                                                                    ));
+                                                                    match create_and_setup_peer_connection(
+                                                                        p_id.clone(),
+                                                                        self_peer_id_clone.clone(),
+                                                                        pc_arc_clone.clone(),
+                                                                        internal_cmd_tx_clone.clone(),
+                                                                        state_log_clone.clone(),
+                                                                        &WEBRTC_API,
+                                                                        &WEBRTC_CONFIG,
+                                                                    )
+                                                                    .await
+                                                                    {
+                                                                        Ok(_) => {
+                                                                            state_log_clone.lock().await.log.push(format!(
+                                                                                "PeerConnection for {} created successfully.", p_id
+                                                                            ));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            state_log_clone.lock().await.log.push(format!(
+                                                                                "Error setting up peer connection for {}: {}",
+                                                                                p_id, e
+                                                                            ));
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    state_log_clone.lock().await.log.push(format!(
+                                                                        "PeerConnection for {} already exists and is not Closed, skipping creation", p_id
                                                                     ));
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                                    // Initiate offers *after* creating/setting up connections
-                                                    // FIX: Pass arguments in the correct order and remove borrow from self_peer_id
-                                                    initiate_offers_for_session(
-                                                        participants_clone, // Pass the Vec<String> of participants
-                                                        self_peer_id_clone, // Pass String, not &String
-                                                        pc_arc_clone.clone(), // Use Arc<TokioMutex<...>>
-                                                        internal_cmd_tx_clone.clone(), // Pass command sender
-                                                        state_log_clone.clone(), // Pass state log
-                                                    )
-                                                    .await;
-                                                });
+                                                        initiate_offers_for_session(
+                                                            participants_clone,
+                                                            self_peer_id_clone,
+                                                            pc_arc_clone.clone(),
+                                                            internal_cmd_tx_clone.clone(),
+                                                            state_log_clone.clone(),
+                                                        )
+                                                        .await;
+                                                    });
 
-                                                // --- Check and Trigger DKG Round 1 ---
-                                                { // Scope for guard
-                                                    let mut guard = state_main_net.lock().unwrap();
-                                                    if let Some(session) = &guard.session {
-                                                        // Check if DKG is idle *and* session matches the received info
-                                                        if guard.dkg_state == DkgState::Idle && session.session_id == session_id {
-                                                            let all_connected = session
-                                                                .participants
-                                                                .iter()
-                                                                .filter(|p| **p != self_peer_id_main_net) // Exclude self
-                                                                .all(|p_id| {
-                                                                    guard.peer_statuses.get(p_id)
-                                                                        == Some(&RTCPeerConnectionState::Connected)
-                                                                });
+                                                    // --- Check and Trigger DKG Round 1 ---
+                                                    // This check is now conditional on the session having been updated.
+                                                    { // Scope for guard
+                                                        let mut guard = state_main_net.lock().await;
+                                                        // Ensure guard.session is Some and matches the current message's session_id.
+                                                        if let Some(session_state) = &guard.session {
+                                                            if guard.dkg_state == DkgState::Idle && session_state.session_id == session_id {
+                                                                // 新增: 检查所有peer最近N次状态都为Connected
+                                                                let all_connected = session_state // Use session_state from guard
+                                                                    .participants
+                                                                    .iter()
+                                                                    .filter(|p| **p != self_peer_id_main_net) // Exclude self
+                                                                    .all(|p_id| {
+                                                                        let history = guard.peer_connected_history.get(p_id);
+                                                                        match history {
+                                                                            Some(hist) if hist.len() == DKG_CONNECTED_STABLE_WINDOW =>
+                                                                                hist.iter().all(|s| *s == RTCPeerConnectionState::Connected),
+                                                                            _ => false,
+                                                                        }
+                                                                    });
 
-                                                            if all_connected {
-                                                                guard.log.push(
-                                                                    "All peers connected and session ready! Triggering DKG Round 1...".to_string(),
-                                                                );
-                                                                guard.dkg_state = DkgState::Round1InProgress; // Set state BEFORE sending command
-                                                                // Send internal command
-                                                                let _ = internal_cmd_tx_main_net.send(InternalCommand::TriggerDkgRound1);
-                                                            } else {
-                                                                // Collect detailed log messages without holding the mutable borrow during iteration
-                                                                let mut waiting_logs = Vec::new();
-                                                                for p_id in session.participants.iter().filter(|p| **p != self_peer_id_main_net) {
-                                                                    let status = guard.peer_statuses.get(p_id);
-                                                                    if status != Some(&RTCPeerConnectionState::Connected) {
-                                                                        waiting_logs.push(format!(
-                                                                            "DKG Wait: Peer {} status is {:?} (Expected Connected)",
-                                                                            p_id, status // Log the actual status found in the map
-                                                                        ));
+                                                                if all_connected {
+                                                                    guard.log.push(
+                                                                        format!("All peers connected for {} consecutive checks, triggering DKG Round 1...", DKG_CONNECTED_STABLE_WINDOW)
+                                                                    );
+                                                                    guard.dkg_state = DkgState::Round1InProgress; // Set state BEFORE sending command
+                                                                    let _ = internal_cmd_tx_main_net.send(InternalCommand::TriggerDkgRound1);
+                                                                } else {
+                                                                    let mut waiting_logs = Vec::new();
+                                                                    // Use session_state.participants for iteration
+                                                                    for p_id in session_state.participants.iter().filter(|p| **p != self_peer_id_main_net) {
+                                                                        let status = guard.peer_statuses.get(p_id);
+                                                                        if status != Some(&RTCPeerConnectionState::Connected) {
+                                                                            waiting_logs.push(format!(
+                                                                                "DKG Wait: Peer {} status is {:?} (Expected Connected)",
+                                                                                p_id, status
+                                                                            ));
+                                                                        }
                                                                     }
-                                                                }
-                                                                // Log the initial waiting message *after* the loop using `session`
-                                                                guard.log.push(
-                                                                    "Session ready, waiting for all peers to connect before starting DKG...".to_string(),
-                                                                );
-                                                                // Now push the collected detailed logs
-                                                                for log_msg in waiting_logs {
-                                                                    guard.log.push(log_msg);
+                                                                    guard.log.push(
+                                                                        "Session updated, waiting for all peers to connect before starting DKG...".to_string(),
+                                                                    );
+                                                                    for log_msg in waiting_logs {
+                                                                        guard.log.push(log_msg);
+                                                                    }
                                                                 }
                                                             }
                                                         }
-                                                    }
-                                                } // guard dropped here
+                                                    } // guard dropped here
+                                                }
                                             }
                                             ServerMsg::Relay { ref from, ref data } => {
-                                                state_main_net.lock().unwrap().log.push(format!("Relay from {}: {:?}", from, data)); // Log raw data
+                                                state_main_net.lock().await.log.push(format!("Relay from {}: {:?}", from, data)); // Log raw data
                                                 match serde_json::from_value::<WebRTCSignal>(data.clone()) {
                                                     Ok(signal) => {
-                                                        state_main_net.lock().unwrap().log.push(format!("Parsed WebRTC signal from {}: {:?}", from, signal)); // Log parsed signal
+                                                        state_main_net.lock().await.log.push(format!("Parsed WebRTC signal from {}: {:?}", from, signal)); // Log parsed signal
                                                         // Clone necessary Arcs and data FOR the spawned task
                                                         let pc_arc_net_clone = peer_connections_arc_main_net.clone();
                                                         let from_clone = from.clone();
@@ -444,7 +644,7 @@ async fn main() -> anyhow::Result<()> {
                                                                 Some(pc) => Ok(pc), // Use existing
                                                                 None => {
                                                                     // If not found, try to create it now
-                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                    state_log_clone.lock().await.log.push(format!(
                                                                         "WebRTC signal from {} received, but connection object missing. Attempting creation...",
                                                                         from_clone
                                                                     ));
@@ -479,7 +679,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             let current_signaling_state_read;
 
                                                                             { // Scope for AppState lock (read-only phase)
-                                                                                let mut state_guard = state_log_clone.lock().unwrap();
+                                                                                let mut state_guard = state_log_clone.lock().await;
                                                                                 let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
                                                                                 let ignoring = state_guard.ignore_offer.get(&from_clone).copied().unwrap_or(false);
                                                                                 let is_polite = self_peer_id_clone > from_clone;
@@ -516,7 +716,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             // FIX: Re-evaluate proceed_with_offer based on state checks inside this block
                                                                             let mut final_proceed_with_offer = proceed_with_offer; // Start with initial decision
                                                                             {
-                                                                                let mut state_guard = state_log_clone.lock().unwrap();
+                                                                                let mut state_guard = state_log_clone.lock().await;
                                                                                 let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
                                                                                 let is_polite = self_peer_id_clone > from_clone;
                                                                                 let collision = making;
@@ -555,7 +755,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             // --- Perform Async Operations (No AppState lock held) ---
                                                                             // FIX: Use final_proceed_with_offer for the decision
                                                                             if final_proceed_with_offer {
-                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                     "Processing offer from {}...", from_clone
                                                                                 ));
                                                                                 // FIX: Use RTCSessionDescription::offer
@@ -564,12 +764,12 @@ async fn main() -> anyhow::Result<()> {
                                                                                 ) {
                                                                                     Ok(offer) => {
                                                                                         if let Err(e) = pc_clone.set_remote_description(offer).await {
-                                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                                            state_log_clone.lock().await.log.push(format!(
                                                                                                 "Error setting remote description (offer) from {}: {}", from_clone, e
                                                                                             ));
                                                                                             return;
                                                                                         }
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                             "Set remote description (offer) from {}. Creating answer...", from_clone
                                                                                         ));
                                                                                         // Apply any pending ICE candidates now that the remote description is set
@@ -586,14 +786,14 @@ async fn main() -> anyhow::Result<()> {
 
                                                                                                 // Setup callbacks for the created channel
                                                                                                 // Pass dc directly
-                                                                                                utils::peer::setup_data_channel_callbacks(dc, peer_id_dc, state_log_dc, cmd_tx_dc);
+                                                                                                utils::peer::setup_data_channel_callbacks(dc, peer_id_dc, state_log_dc, cmd_tx_dc).await;
 
-                                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                                     "Created responder data channel for {}", from_clone
                                                                                                 ));
                                                                                             },
                                                                                             Err(e) => {
-                                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                                     "Error creating responder data channel for {}: {} (continuing anyway)",
                                                                                                     from_clone, e
                                                                                                 ));
@@ -604,12 +804,12 @@ async fn main() -> anyhow::Result<()> {
                                                                                         match pc_clone.create_answer(None).await {
                                                                                             Ok(answer) => {
                                                                                                 if let Err(e) = pc_clone.set_local_description(answer.clone()).await {
-                                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                    state_log_clone.lock().await.log.push(format!(
                                                                                                         "Error setting local description (answer) for {}: {}", from_clone, e
                                                                                                     ));
                                                                                                     return;
                                                                                                 }
-                                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                                     "Set local description (answer) for {}. Sending answer...", from_clone
                                                                                                 ));
                                                                                                 let signal = WebRTCSignal::Answer(SDPInfo { sdp: answer.sdp });
@@ -622,26 +822,26 @@ async fn main() -> anyhow::Result<()> {
                                                                                                         });
                                                                                                         // Use the correct sender clone
                                                                                                         let _ = internal_cmd_tx_clone.send(relay_msg);
-                                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                                             "Sent answer to {}", from_clone
                                                                                                         ));
                                                                                                     },
                                                                                                     Err(e) => {
-                                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                                             "Error serializing answer for {}: {}", from_clone, e
                                                                                                         ));
                                                                                                     }
                                                                                                 }
                                                                                             },
                                                                                             Err(e) => {
-                                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                                     "Error creating answer for {}: {}", from_clone, e
                                                                                                 ));
                                                                                             }
                                                                                         }
                                                                                     },
                                                                                     Err(e) => {
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                             "Error parsing offer from {}: {}", from_clone, e
                                                                                         ));
                                                                                     }
@@ -649,7 +849,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             }
                                                                         }
                                                                         WebRTCSignal::Answer(answer_info) => {
-                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                            state_log_clone.lock().await.log.push(format!(
                                                                                 "Processing answer from {}...", from_clone
                                                                             ));
                                                                             // FIX: Use RTCSessionDescription::answer
@@ -658,11 +858,11 @@ async fn main() -> anyhow::Result<()> {
                                                                             ) {
                                                                                 Ok(answer) => {
                                                                                     if let Err(e) = pc_clone.set_remote_description(answer).await {
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                             "Error setting remote description (answer) from {}: {}", from_clone, e
                                                                                         ));
                                                                                     } else {
-                                                                                        state_log_clone.lock().unwrap().log.push(format!(
+                                                                                        state_log_clone.lock().await.log.push(format!(
                                                                                             "Set remote description (answer) from {}", from_clone
                                                                                         ));
                                                                                         // Apply any pending ICE candidates now that the remote description is set
@@ -670,7 +870,7 @@ async fn main() -> anyhow::Result<()> {
                                                                                     }
                                                                                 },
                                                                                 Err(e) => {
-                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                    state_log_clone.lock().await.log.push(format!(
                                                                                         "Error parsing answer from {}: {}", from_clone, e
                                                                                     ));
                                                                                 }
@@ -678,7 +878,7 @@ async fn main() -> anyhow::Result<()> {
                                                                         }
                                                                         WebRTCSignal::Candidate(candidate_info) => {
                                                                             // ... existing Candidate handling ...
-                                                                            state_log_clone.lock().unwrap().log.push(format!(
+                                                                            state_log_clone.lock().await.log.push(format!(
                                                                                 "Processing candidate from {}...", from_clone
                                                                             ));
                                                                             // FIX: Use RTCIceCandidateInit directly with add_ice_candidate
@@ -701,18 +901,21 @@ async fn main() -> anyhow::Result<()> {
 
                                                                             if remote_description_set {
                                                                                 // If remote description is set, add the candidate directly
+                                                                                state_log_clone.lock().await.log.push(format!(
+                                                                                    "Remote description is set for {}. Adding ICE candidate now.", from_clone
+                                                                                ));
                                                                                 if let Err(e) = pc_clone.add_ice_candidate(candidate_init.clone()).await {
-                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                    state_log_clone.lock().await.log.push(format!(
                                                                                         "Error adding ICE candidate from {}: {}", from_clone, e
                                                                                     ));
                                                                                 } else {
-                                                                                    state_log_clone.lock().unwrap().log.push(format!(
+                                                                                    state_log_clone.lock().await.log.push(format!(
                                                                                         "Added ICE candidate from {}", from_clone
                                                                                     ));
                                                                                 }
                                                                             } else {
                                                                                 // If remote description is not set, store the candidate for later
-                                                                                let mut state_guard = state_log_clone.lock().unwrap();
+                                                                                let mut state_guard = state_log_clone.lock().await;
                                                                                 state_guard.log.push(format!(
                                                                                     "Storing ICE candidate from {} for later (remote description not set yet)",
                                                                                     from_clone
@@ -721,6 +924,11 @@ async fn main() -> anyhow::Result<()> {
                                                                                     .entry(from_clone.clone())
                                                                                     .or_insert_with(Vec::new);
                                                                                 candidates.push(candidate_init);
+                                                                                let queued_msg = format!(
+                                                                                    "Queued ICE candidate from {}. Total queued: {}", from_clone, candidates.len()
+                                                                                );
+                                                                                // Now that candidates is no longer borrowed, we can push to log
+                                                                                state_guard.log.push(queued_msg);
                                                                                 drop(state_guard);
                                                                             }
                                                                         }
@@ -728,7 +936,7 @@ async fn main() -> anyhow::Result<()> {
                                                                             }
                                                                             Err(e) => {
                                                                                 // Log the error from pc_to_use_result
-                                                                                state_log_clone.lock().unwrap().log.push(format!(
+                                                                                state_log_clone.lock().await.log.push(format!(
                                                                                     "Failed to create/retrieve connection object for {} to handle signal: {}",
                                                                                     from_clone, e
                                                                                 ));
@@ -738,7 +946,7 @@ async fn main() -> anyhow::Result<()> {
                                                                 }
                                                                 Err(e) => {
                                                                     // ... existing Err handling for WebRTCSignal parsing ...
-                                                                    state_main_net.lock().unwrap().log.push(format!(
+                                                                    state_main_net.lock().await.log.push(format!(
                                                                         "Error parsing WebRTC signal from {}: {}", from, e
                                                                     ));
                                                                 }
@@ -748,7 +956,7 @@ async fn main() -> anyhow::Result<()> {
                                                     }
                                                 Err(e) => {
                                                     // ... existing Err handling for websocket message reading ...
-                                                    state_main_net.lock().unwrap().log.push(format!(
+                                                    state_main_net.lock().await.log.push(format!(
                                                         "Error reading websocket message: {}", e
                                                     ));
                                                 }
@@ -756,7 +964,7 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                         // FIX: Handle other message types like Close, Ping, Pong if necessary
                                         Message::Close(_) => { // Remove Ok()
-                                            state_main_net.lock().unwrap().log.push("WebSocket connection closed by server.".to_string());
+                                            state_main_net.lock().await.log.push("WebSocket connection closed by server.".to_string());
                                             break; // Exit the network loop
                                         }
                                         Message::Ping(ping_data) => { // Remove Ok()
@@ -765,7 +973,7 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                         Message::Pong(_) => {} // Remove Ok()
                                         Message::Binary(_) => { // Remove Ok()
-                                             state_main_net.lock().unwrap().log.push("Received unexpected binary message.".to_string());
+                                             state_main_net.lock().await.log.push("Received unexpected binary message.".to_string());
                                         }
                                         // Add catch-all for Frame and potential future variants
                                         Message::Frame(_) => {} // Remove Ok()
@@ -773,12 +981,12 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 Some(Err(e)) => {
                                     // Handle error from ws_stream.next()
-                                    state_main_net.lock().unwrap().log.push(format!("WebSocket read error: {}", e));
+                                    state_main_net.lock().await.log.push(format!("WebSocket read error: {}", e));
                                     break; // Exit loop on error
                                 }
                                 None => {
                                     // Stream ended
-                                    state_main_net.lock().unwrap().log.push("WebSocket stream ended".to_string());
+                                    state_main_net.lock().await.log.push("WebSocket stream ended".to_string());
                                     break; // Exit loop
                     }
                 }
@@ -797,11 +1005,9 @@ async fn main() -> anyhow::Result<()> {
     let mut input = String::new(); // Need mut for editing input
     let mut input_mode = false; // Need mut for toggling input mode
 
-    // Enable the TUI loop - uncomment this section
     loop {
         {
-            // Scope for drawing lock
-            let app_guard = state.lock().unwrap();
+            let app_guard = state.lock().await;
             draw_main_ui(&mut terminal, &app_guard, &input, input_mode)?;
         }
 
@@ -809,7 +1015,7 @@ async fn main() -> anyhow::Result<()> {
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
-                    let mut app_guard = state.lock().unwrap();
+                    let mut app_guard = state.lock().await;
                     let continue_loop = handle_key_event(
                         key,
                         &mut app_guard,
@@ -824,7 +1030,6 @@ async fn main() -> anyhow::Result<()> {
                 _ => {} // Ignore other events like Mouse, Resize etc.
             }
         }
-
         // No sleep needed - event::poll has a timeout already
     }
 

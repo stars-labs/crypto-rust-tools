@@ -7,6 +7,3 @@ pub mod secp256k1_dkg;
 
 pub mod solana_helper;
 pub mod state;
-
-
-pub mod webrtc;

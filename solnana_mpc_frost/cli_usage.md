@@ -137,3 +137,8 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
     *   Node `mpc-2` logs "Received WebRTC message from mpc-1: SimpleMessage { text: \"Hello, this is a direct P2P message!\" }" (or similar).
 
 *(Note: This example covers session setup, signaling, WebRTC connection establishment, DKG, and direct peer-to-peer communication.)*
+
+# Why does `mpc-3`'s connection to `mpc-1` transition from Connected to New?
+
+## Key Log Excerpts
+```

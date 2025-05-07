@@ -1,18 +1,20 @@
-use crate::utils::state::{AppState, DkgState};
+use crate::protocal::signal::SessionInfo;
+use crate::utils::state::{AppState, DkgStateDisplay}; // Import DkgStateDisplay
 use crate::{InternalCommand, SharedClientMsg}; // Import necessary types
 use crossterm::event::{KeyCode, KeyEvent};
 use frost_ed25519::Ed25519Sha512; // Keep for AppState generic
 use ratatui::{
+    Frame, // Add Frame import
     Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},                                         // Remove Spans
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap}, // Keep Wrap
 };
 use std::collections::HashSet;
 use std::io;
-use tokio::sync::mpsc; // For command channel
+use tokio::sync::mpsc; // For command channel // Import SessionInfo
 
 pub fn draw_main_ui<B: Backend>(
     terminal: &mut Terminal<B>,
@@ -92,100 +94,15 @@ pub fn draw_main_ui<B: Backend>(
         f.render_widget(log_widget, main_chunks[2]);
 
         // --- Status Widget ---
-        let session_line = if let Some(sess) = &app.session {
-            format!(
-                "Session: {} ({} of {}, threshold {})",
-                sess.session_id,
-                sess.participants.len(),
-                sess.total,
-                sess.threshold
-            )
-        } else {
-            "No session".to_string()
-        };
-        let invites_line = if !app.invites.is_empty() {
-            format!(
-                "Invites: {}",
-                app.invites
-                    .iter()
-                    .map(|s| s.session_id.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        } else {
-            "No invites".to_string()
-        };
-
-        let dkg_status_line = match &app.dkg_state {
-            DkgState::Idle => "DKG Status: Idle".to_string(),
-            DkgState::Round1InProgress => "DKG Status: Round 1 (Sending Packages...)".to_string(),
-            DkgState::Round1Complete => "DKG Status: Round 1 Complete (Waiting for Round 2...)".to_string(),
-            DkgState::Round2InProgress => "DKG Status: Round 2 (Processing...)".to_string(),
-            DkgState::Complete => "DKG Status: COMPLETE!".to_string(),
-            DkgState::Failed(reason) => format!("DKG Status: FAILED ({})", reason),
-        };
-        let dkg_style = match app.dkg_state {
-             DkgState::Complete => Style::default().fg(Color::Green),
-             DkgState::Failed(_) => Style::default().fg(Color::Red),
-             _ => Style::default().fg(Color::Yellow),
-        };
-
-        // Create lines for the keys
-        let key_package_line = match &app.key_package {
-            Some(kp) => {
-                let id = kp.identifier();
-                // Format ID using Debug, then truncate
-                let id_str = format!("{:?}", id); // e.g., "Identifier(\"0100...\")"
-                let display_id = id_str.chars().skip(12).take(2).collect::<String>(); // Skip "Identifier(\"" and take "01"
-
-                // Convert signing share scalar to bytes and then hex encode (full)
-                let share_bytes = kp.signing_share().to_scalar().to_bytes();
-                let share_hex = hex::encode(share_bytes);
-                // Use the truncated ID for display
-                format!("Key Share: ID {} (Share: {})", display_id, share_hex)
-            },
-            None => "Key Share: None".to_string(),
-        };
-
-        let group_key_line = match &app.group_public_key {
-            Some(pk) => {
-                // FIX: Remove .verifying_key() call, just use .serialize()
-                // Use serialize directly on PublicKeyPackage for Ed25519
-                match pk.serialize() {
-                    Ok(pk_bytes) => {
-                        let pk_hex = hex::encode(pk_bytes);
-                        // Show only a portion of the key for brevity
-                        format!("Group Public Key: {}...", pk_hex.chars().take(32).collect::<String>())
-                    },
-                    Err(_) => "Group Public Key: Error serializing".to_string(),
-                }
-            },
-            None => "Group Public Key: None".to_string(),
-        };
-
-        let solana_key_line = match &app.solana_public_key {
-            Some(key) => format!("Solana Public Key: {}", key), // Assuming this is already a string
-            None => "Solana Public Key: None".to_string(),
-        };
-
-        let status_paragraph = Paragraph::new(vec![
-            Line::from(session_line),
-            Line::from(invites_line),
-            Line::from(dkg_status_line).style(dkg_style),
-            Line::from(key_package_line).style(Style::default().fg(Color::Cyan)),
-            Line::from(group_key_line).style(Style::default().fg(Color::Green)),
-            Line::from(solana_key_line).style(Style::default().fg(Color::Magenta)),
-        ])
-        .block(Block::default().title(" Status ").borders(Borders::ALL))
-        .wrap(Wrap { trim: true }); // Apply wrapping, trim leading/trailing whitespace
-        f.render_widget(status_paragraph, main_chunks[3]);
+        draw_status_section(f, app, main_chunks[3]);
 
         // --- Input Widget ---
         let input_title = if input_mode { " Input (Esc to cancel) " } else { " Help " };
         let input_display_text = if input_mode {
             format!("> {}", input)
         } else {
-            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Quit: q".to_string() // Update help text
+            // Add "Save Log: s" to the help text
+            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Quit: q".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -195,14 +112,99 @@ pub fn draw_main_ui<B: Backend>(
         // --- Cursor for Input Mode ---
         if input_mode {
             // Calculate cursor position based on input text length
-            // Add 2 for the "> " prefix
-            let cursor_x = main_chunks[4].x + input.chars().count() as u16 + 2;
+            // Add 1 for block border, 2 for the "> " prefix
+            let cursor_x = main_chunks[4].x + input.chars().count() as u16 + 3;
             let cursor_y = main_chunks[4].y + 1; // Inside the input box border
             let position = Rect::new(cursor_x, cursor_y, 1, 1);
             f.set_cursor_position(position);
         }
     })?;
     Ok(())
+}
+
+fn draw_status_section<T: frost_core::Ciphersuite>(
+    f: &mut Frame<'_>,
+    app: &AppState<T>,
+    area: Rect,
+) {
+    let mut status_items = Vec::new();
+
+    // Session display - show active session only
+    if let Some(session) = &app.session {
+        status_items.push(Line::from(vec![
+            // Changed Spans to Line
+            Span::styled("Session: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(
+                "{} ({} of {}, threshold {})",
+                session.session_id,
+                session.participants.len(),
+                session.total,
+                session.threshold
+            )),
+        ]));
+    } else {
+        status_items.push(Line::from(vec![
+            // Changed Spans to Line
+            Span::styled("Session: ", Style::default().fg(Color::Yellow)),
+            Span::raw("None"),
+        ]));
+    }
+
+    // Invites display - only show invites that aren't the active session
+    let pending_invites: Vec<&SessionInfo> = app
+        .invites
+        .iter()
+        .filter(|invite| {
+            app.session
+                .as_ref()
+                .map(|s| s.session_id != invite.session_id)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    if pending_invites.is_empty() {
+        status_items.push(Line::from(vec![
+            // Changed Spans to Line
+            Span::styled("Invites: ", Style::default().fg(Color::Yellow)),
+            Span::raw("None"),
+        ]));
+    } else {
+        status_items.push(Line::from(vec![
+            // Changed Spans to Line
+            Span::styled("Invites: ", Style::default().fg(Color::Yellow)),
+            Span::raw(
+                pending_invites
+                    .iter()
+                    .map(|i| i.session_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ]));
+    }
+
+    // DKG Status using the new display trait
+    let dkg_status = app.dkg_state.display_status();
+    let dkg_style = if app.dkg_state.is_active() {
+        Style::default().fg(Color::Green)
+    } else if app.dkg_state.is_completed() {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    status_items.push(Line::from(vec![
+        // Changed Spans to Line
+        Span::styled("DKG Status: ", Style::default().fg(Color::Yellow)),
+        Span::styled(dkg_status, dkg_style),
+    ]));
+
+    // ...remaining status items...
+
+    let status_block = Block::default().title("Status").borders(Borders::ALL);
+    let status_text = Paragraph::new(status_items)
+        .block(status_block)
+        .wrap(Wrap { trim: true });
+    f.render_widget(status_text, area);
 }
 
 // Returns Ok(true) to continue, Ok(false) to quit, Err on error.
@@ -377,6 +379,14 @@ pub fn handle_key_event(
                     ));
                 } else {
                     app.log.push("No invites to accept with 'o'".to_string());
+                }
+            }
+            KeyCode::Char('s') => {
+                // Save log to <peer_id>.log
+                let filename = format!("{}.log", app.peer_id.trim());
+                match std::fs::write(&filename, app.log.join("\n")) {
+                    Ok(_) => app.log.push(format!("Log saved to {}", filename)),
+                    Err(e) => app.log.push(format!("Failed to save log: {}", e)),
                 }
             }
             KeyCode::Up => {

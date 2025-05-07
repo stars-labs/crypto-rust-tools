@@ -1,5 +1,5 @@
+use crate::protocal::signal::WebRTCMessage;
 use crate::utils::peer::send_webrtc_message;
-use crate::utils::signal::WebRTCMessage;
 use crate::utils::state::{AppState, DkgState};
 use frost_core::keys::PublicKeyPackage;
 use frost_core::keys::dkg::{part1, part2, part3, round1, round2};
@@ -8,7 +8,8 @@ use frost_ed25519::rand_core::OsRng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // Helper function to hash serializable data
 pub fn hash_data<T: Serialize>(data: &T) -> String {
@@ -24,13 +25,13 @@ pub fn hash_data<T: Serialize>(data: &T) -> String {
 
 // Handle DKG Round 1 Initialization
 pub async fn handle_trigger_dkg_round1(
-    state: Arc<StdMutex<AppState<Ed25519Sha512>>>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
     self_peer_id: String,
 ) {
     // --- Extract data under lock ---
     let extracted_data = {
         // Scope for guard
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock().await;
         if guard.dkg_state != DkgState::Round1InProgress {
             guard
                 .log
@@ -104,7 +105,7 @@ pub async fn handle_trigger_dkg_round1(
                 // Compare with reference
                 if let Err(e) = send_webrtc_message(target_peer_id, &dkg_msg, state.clone()).await {
                     // Log error without holding lock for long
-                    state.lock().unwrap().log.push(format!(
+                    state.lock().await.log.push(format!(
                         "Error sending DKG Round 1 package to {}: {}",
                         target_peer_id, e
                     ));
@@ -113,7 +114,7 @@ pub async fn handle_trigger_dkg_round1(
                 }
             }
         }
-        state.lock().unwrap().log.push(format!(
+        state.lock().await.log.push(format!(
             "Broadcasted DKG Round 1 package to {} peers.",
             sent_count
         ));
@@ -121,12 +122,12 @@ pub async fn handle_trigger_dkg_round1(
 }
 
 // Handle processing of DKG Round 1 packages
-pub fn process_dkg_round1(
-    state: Arc<StdMutex<AppState<Ed25519Sha512>>>,
+pub async fn process_dkg_round1(
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
     from_peer_id: String,
     package: round1::Package<Ed25519Sha512>,
 ) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().await;
 
     // Ensure session and identifier map are ready before processing
     let (session, identifier_map) = match (&guard.session, &guard.identifier_map) {
@@ -247,7 +248,7 @@ pub fn process_dkg_round1(
         } else {
             // This should ideally not happen if identifier map is correct
             // Re-acquire lock briefly to log error and set state
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().await;
             guard.log.push(
                 "Error: Could not find own identifier to remove package for part2.".to_string(),
             );
@@ -257,7 +258,7 @@ pub fn process_dkg_round1(
         let actual_part2_input_count = packages_for_part2.len(); // Actual count after removal
 
         // --- Log Hashes and Counts before Part 2 ---
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock().await;
         guard.log.push("DEBUG: Preparing for Part 2:".to_string());
         guard
             .log
@@ -281,7 +282,7 @@ pub fn process_dkg_round1(
 
         // --- Strict Check: Ensure correct number of packages for part2 ---
         if actual_part2_input_count != expected_part2_input_count {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().await;
             guard.log.push(format!(
                 "Error: Incorrect number of packages for part2. Expected {}, Got {}. Aborting.",
                 expected_part2_input_count, actual_part2_input_count
@@ -296,7 +297,7 @@ pub fn process_dkg_round1(
         );
 
         // Re-acquire lock to update state and broadcast
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock().await;
 
         match part2_result {
             Ok((round2_secret, round2_packages_to_send)) => {
@@ -351,7 +352,7 @@ pub fn process_dkg_round1(
                                 )
                                 .await
                                 {
-                                    state_task_clone.lock().unwrap().log.push(format!(
+                                    state_task_clone.lock().await.log.push(format!(
                                         "Error sending DKG Round 2 package to {}: {}",
                                         target_peer_id_task, e
                                     ));
@@ -392,11 +393,11 @@ pub fn process_dkg_round1(
 
 // Handle processing of DKG Round 2 packages
 pub async fn process_dkg_round2(
-    state: Arc<StdMutex<AppState<Ed25519Sha512>>>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
     from_peer_id: String,
     package: round2::Package<Ed25519Sha512>,
 ) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().await;
 
     // Ensure session and identifier map are ready
     let (session, identifier_map) = match (&guard.session, &guard.identifier_map) {
@@ -638,7 +639,7 @@ pub async fn process_dkg_round2(
         );
 
         // Re-acquire lock to update state
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock().await;
 
         // --- FIX: Log filtered Round 1 keys ---
         guard.log.push(format!(

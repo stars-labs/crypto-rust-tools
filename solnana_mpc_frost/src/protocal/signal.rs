@@ -10,7 +10,7 @@ use frost_ed25519::Ed25519Sha512; // Needed for type parameter
 use frost_core::keys::dkg::round2;
 
 // --- Session Info Struct ---
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 pub struct SessionInfo {
     pub session_id: String,
     pub total: u16,

@@ -1,4 +1,4 @@
-use crate::utils::signal::SessionInfo;
+use crate::protocal::signal::SessionInfo;
 use frost_core::{
     Ciphersuite, Identifier,
     keys::{
@@ -18,7 +18,7 @@ use webrtc::{
 }; // Keep SessionInfo import
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet}, // Keep BTreeMap
+    collections::{BTreeMap, HashMap}, // Keep BTreeMap
                                                // Remove Arc import from here if only used for peer_connections
 };
 
@@ -31,6 +31,44 @@ pub enum DkgState {
     Round2InProgress,
     Complete,
     Failed(String),
+}
+
+/// Trait for displaying DKG state with proper formatting
+pub trait DkgStateDisplay {
+    /// Get a user-friendly display string for the DKG state
+    fn display_status(&self) -> String;
+
+    /// Check if the state is considered "active" (in-progress)
+    fn is_active(&self) -> bool;
+
+    /// Check if the state represents completed DKG
+    fn is_completed(&self) -> bool;
+}
+
+impl DkgStateDisplay for DkgState {
+    fn display_status(&self) -> String {
+        match self {
+            DkgState::Idle => "Idle".to_string(),
+            DkgState::Round1InProgress => "Round 1 (In Progress...)".to_string(),
+            DkgState::Round1Complete => "Round 1 (Complete)".to_string(),
+            DkgState::Round2InProgress => "Round 2 (In Progress...)".to_string(),
+            DkgState::Complete => "Complete (Key Generated)".to_string(),
+            DkgState::Failed(err) => {
+                format!("Failed: {}", err)
+            } // Display error message if available
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(
+            self,
+            DkgState::Round1InProgress | DkgState::Round1Complete | DkgState::Round2InProgress
+        )
+    }
+
+    fn is_completed(&self) -> bool {
+        matches!(self, DkgState::Complete)
+    }
 }
 
 // --- AppState Struct ---
@@ -47,7 +85,6 @@ pub struct AppState<C: Ciphersuite> {
     // TUI related state (can use StdMutex)
     pub peer_statuses: HashMap<String, RTCPeerConnectionState>,
     pub reconnection_tracker: ReconnectionTracker,
-    pub keep_alive_peers: HashSet<String>,
     // Perfect Negotiation Flags
     pub making_offer: HashMap<String, bool>,
     pub ignore_offer: HashMap<String, bool>,
@@ -71,6 +108,7 @@ pub struct AppState<C: Ciphersuite> {
     pub solana_public_key: Option<String>,
     // Fix: Use proper round1::Package type
     pub queued_dkg_round1: Vec<(String, round1::Package<C>)>,
+    pub peer_connected_history: HashMap<String, Vec<RTCPeerConnectionState>>,
 }
 
 // --- Reconnection Tracker ---
