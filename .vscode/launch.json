@@ -1,0 +1,342 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'ssh_to_solana'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=ssh_to_solana",
+                    "--package=ssh_to_solana"
+                ],
+                "filter": {
+                    "name": "ssh_to_solana",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'ssh_to_solana'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=ssh_to_solana",
+                    "--package=ssh_to_solana"
+                ],
+                "filter": {
+                    "name": "ssh_to_solana",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'yubikey_ed25519_crpyto'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=yubikey_ed25519_crpyto"
+                ],
+                "filter": {
+                    "name": "yubikey_ed25519_crpyto",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'main'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=main",
+                    "--package=yubikey_ed25519_crpyto"
+                ],
+                "filter": {
+                    "name": "main",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'main'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=main",
+                    "--package=yubikey_ed25519_crpyto"
+                ],
+                "filter": {
+                    "name": "main",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'solnana_mpc_frost'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "solnana_mpc_frost",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'cli_node'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=cli_node",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "cli_node",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'cli_node'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=cli_node",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "cli_node",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'signal_server'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=signal_server",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "signal_server",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'signal_server'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=signal_server",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "signal_server",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'dkg'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'dkg'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'eth_dkg'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=eth_dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "eth_dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'eth_dkg'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=eth_dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "eth_dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'solana_dkg'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=solana_dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "solana_dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'solana_dkg'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=solana_dkg",
+                    "--package=solnana_mpc_frost"
+                ],
+                "filter": {
+                    "name": "solana_dkg",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'crypto-rust-tools'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=crypto-rust-tools",
+                    "--package=crypto-rust-tools"
+                ],
+                "filter": {
+                    "name": "crypto-rust-tools",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'crypto-rust-tools'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=crypto-rust-tools",
+                    "--package=crypto-rust-tools"
+                ],
+                "filter": {
+                    "name": "crypto-rust-tools",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

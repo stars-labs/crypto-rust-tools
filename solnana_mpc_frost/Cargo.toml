@@ -42,11 +42,3 @@ path = "src/signal_server.rs"
 [[bin]]
 name = "cli_node"
 path = "src/cli_node.rs"
-
-[[example]]
-name = "ed25519_dkg"
-path = "examples/ed25519_dkg.rs"
-
-[[example]]
-name = "secp256k1_dkg"
-path = "examples/secp256k1_dkg.rs"
