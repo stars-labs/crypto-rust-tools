@@ -47,9 +47,44 @@
                 rustfmt
                 pcsclite
                 opensc
-
+                cargo-generate
+                worker-build
+                lld
               ];
             };
+
+          packages.dockerImage = pkgs.dockerTools.buildImage {
+            name = "webrtc-signal-server";
+            tag = "latest";
+            copyToRoot = pkgs.buildEnv {
+              name = "image-root";
+              paths = [
+                (pkgs.rustPlatform.buildRustPackage {
+                  pname = "webrtc-signal-server";
+                  version = "0.1.1";
+                  src = ./.;
+                  cargoLock = {
+                    lockFile = ./Cargo.lock;
+                  };
+                  buildInputs = [ ];
+                  nativeBuildInputs = [ ];
+                  cargoBuildFlags = [
+                    "-p"
+                    "webrtc-signal-server"
+                    "--bin"
+                    "webrtc-signal-server"
+                  ];
+                })
+              ];
+              pathsToLink = [ "/bin" ];
+            };
+            config = {
+              Cmd = [ "/bin/webrtc-signal-server" ];
+              ExposedPorts = {
+                "9000/tcp" = { };
+              };
+            };
+          };
         };
     };
 }

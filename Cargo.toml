@@ -1,9 +1,16 @@
 [package]
+edition = "2024"
 name = "crypto-rust-tools"
 version = "0.1.0"
-edition = "2024"
 
 [dependencies]
 
 [workspace]
-members = ["ssh_to_solana", "yubikey_ed25519_crpyto", "solnana_mpc_frost"]
+members = [
+    "frost-mpc-webrtc-node",
+    "solnana-mpc-frost",
+    "ssh-to-solana",
+    "webrtc-signal-server",
+    "webrtc-signal-server-cloudflare-worker",
+    "yubikey-ed25519-crpyto",
+]

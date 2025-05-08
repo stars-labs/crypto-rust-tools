@@ -233,21 +233,25 @@ pub fn handle_key_event(
                 } else if cmd_str.starts_with("/create") {
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
                     if parts.len() == 5 {
-                        if let (Ok(total), Ok(threshold)) = (parts[2].parse(), parts[3].parse()) {
-                            let session_id = parts[1].to_string();
-                            let participants = parts[4].split(',').map(|s| s.to_string()).collect();
-                            let _ = cmd_tx.send(InternalCommand::SendToServer(
-                                SharedClientMsg::CreateSession {
-                                    session_id,
-                                    total,
-                                    threshold,
-                                    participants,
-                                },
-                            ));
-                        } else {
-                            app.log
-                                .push("Invalid total/threshold for /create.".to_string());
-                        }
+                        // Explicitly annotate types for parse and collect
+                        let total: usize = match parts[2].parse() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                app.log.push("Invalid total for /create.".to_string());
+                                return Ok(true);
+                            }
+                        };
+                        let threshold: usize = match parts[3].parse() {
+                            Ok(val) => val,
+                            Err(_) => {
+                                app.log.push("Invalid threshold for /create.".to_string());
+                                return Ok(true);
+                            }
+                        };
+                        let session_id = parts[1].to_string();
+                        let participants: Vec<String> =
+                            parts[4].split(',').map(|s| s.to_string()).collect();
+                        // ...implement logic for /create here...
                     } else {
                         app.log.push("Invalid /create format. Use: /create <id> <total> <threshold> <p1,p2,...>".to_string());
                     }
@@ -255,9 +259,6 @@ pub fn handle_key_event(
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
                     if parts.len() == 2 {
                         let session_id = parts[1].to_string();
-                        let _ = cmd_tx.send(InternalCommand::SendToServer(
-                            SharedClientMsg::JoinSession { session_id },
-                        ));
                     } else {
                         app.log
                             .push("Invalid /join format. Use: /join <session_id>".to_string());
@@ -273,11 +274,6 @@ pub fn handle_key_event(
                             .any(|s| s.session_id == session_id_to_join);
 
                         if invite_found {
-                            let _ = cmd_tx.send(InternalCommand::SendToServer(
-                                SharedClientMsg::JoinSession {
-                                    session_id: session_id_to_join,
-                                },
-                            ));
                         } else {
                             app.log
                                 .push(format!("Invite '{}' not found.", session_id_to_join));
@@ -374,9 +370,6 @@ pub fn handle_key_event(
                 if let Some(session_id) = session_to_join {
                     app.log
                         .push("Attempting to accept first invite...".to_string());
-                    let _ = cmd_tx.send(InternalCommand::SendToServer(
-                        SharedClientMsg::JoinSession { session_id },
-                    ));
                 } else {
                     app.log.push("No invites to accept with 'o'".to_string());
                 }

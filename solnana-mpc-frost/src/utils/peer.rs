@@ -2,7 +2,7 @@ use crate::protocal::signal::*;
 use crate::utils::state::{AppState, DkgState};
 
 use std::collections::HashMap;
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use tokio::sync::{Mutex, mpsc};
 
@@ -16,7 +16,8 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use frost_core::keys::dkg::round2;
 use frost_ed25519::Ed25519Sha512;
-use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
+use webrtc_signal_server::ClientMsg as SharedClientMsg;
+use solnana_mpc_frost::InternalCommand;
 
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
 
@@ -204,7 +205,7 @@ pub async fn create_and_setup_peer_connection(
             pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
                 let state_log = state_log_on_state.clone();
                 let peer_id = peer_id_on_state.clone();
-                let cmd_tx_local = cmd_tx_on_state.clone();
+            
                 let pc_arc = pc_arc_for_state.clone();
 
                 // Log both connectionState and iceConnectionState together
@@ -247,17 +248,12 @@ pub async fn create_and_setup_peer_connection(
                             if let Some(current_session) = guard.session.clone() {
                                 let session_id_to_rejoin = current_session.session_id;
                                 guard.log.push(format!(
-                                    "Attempting immediate reconnection to session '{}' due to DISCONNECTED state with {}",
+                                    "Attempting immediate reconnection to session '{}' due to DISCONNECTED state with {} (no JoinSession message sent, logic removed)",
                                     session_id_to_rejoin, peer_id
                                 ));
-                                
                                 // Drop the guard before sending the command
                                 drop(guard);
-                                
-                                // Send rejoin command without checking the reconnection tracker
-                                let _ = cmd_tx_local.send(InternalCommand::SendToServer(SharedClientMsg::JoinSession {
-                                    session_id: session_id_to_rejoin
-                                }));
+                                // No JoinSession message sent
                             }
                         }
                     }
@@ -278,16 +274,12 @@ pub async fn create_and_setup_peer_connection(
                                 if let Some(current_session) = guard.session.clone() {
                                     let session_id_to_rejoin = current_session.session_id;
                                     guard.log.push(format!(
-                                        "Attempting reconnection to session '{}' due to FAILED state with {}",
+                                        "Attempting reconnection to session '{}' due to FAILED state with {} (no JoinSession message sent, logic removed)",
                                         session_id_to_rejoin, peer_id
                                     ));
-                                    
                                     // Drop the guard before sending the command
                                     drop(guard);
-                                    
-                                    let _ = cmd_tx_local.send(InternalCommand::SendToServer(SharedClientMsg::JoinSession {
-                                        session_id: session_id_to_rejoin
-                                    }));
+                                    // No JoinSession message sent
                                 }
                             }
                         }

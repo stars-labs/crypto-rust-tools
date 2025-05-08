@@ -4,7 +4,6 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use frost_core::Identifier;
 
 use frost_ed25519::Ed25519Sha512;
 
@@ -12,9 +11,9 @@ use futures_util::{SinkExt, StreamExt};
 
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand, ServerMsg};
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
+
+use solnana_mpc_frost::InternalCommand;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{collections::HashMap, io};
@@ -23,6 +22,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc_signal_server::{ClientMsg as SharedClientMsg, ServerMsg};
 // Add display-related imports for better status handling
 
 mod utils;
@@ -57,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
     let peer_id = peer_id.trim().to_string();
 
     // Connect to signaling server
-    let url = url::Url::parse("ws://127.0.0.1:9000").unwrap();
-    let (ws_stream, _) = connect_async(url).await?;
+    let ws_url = "wss://auto-life.tech";
+    let (ws_stream, _) = connect_async(ws_url).await?;
     // Remove mut from ws_stream
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         peer_id: peer_id.clone(),
     };
     ws_sink
-        .send(Message::Text(serde_json::to_string(&register_msg)?))
+        .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
         .await?;
 
     // Channel for INTERNAL commands within the CLI app (uses InternalCommand from lib.rs)
@@ -299,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
         let list_peers_msg = SharedClientMsg::ListPeers;
         let _ = ws_sink
             .send(Message::Text(
-                serde_json::to_string(&list_peers_msg).unwrap(),
+                serde_json::to_string(&list_peers_msg).unwrap().into(),
             ))
             .await;
 
@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
                 match cmd {
                     InternalCommand::SendToServer(shared_msg) => {
                         // Send shared messages received via internal channel to WebSocket
-                        let _ = ws_sink.send(Message::Text(serde_json::to_string(&shared_msg).unwrap())).await;
+                        let _ = ws_sink.send(Message::Text(serde_json::to_string(&shared_msg).unwrap().into())).await;
                     }
                     InternalCommand::SendDirect { to, message } => {
                         // Handle sending direct WebRTC message
@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
                                 match serde_json::from_str::<ServerMsg>(&txt) {
                                     Ok(server_msg) => {
                                         // Handle simple state updates first, keep lock brief
-                                        match server_msg { // Restore missing arms here
+                                        match server_msg {
                                             ServerMsg::Peers { ref peers } => {
                                                 // --- Lock StdMutex ---
                                                 let mut state_guard = state_main_net.lock().await;
@@ -372,251 +372,10 @@ async fn main() -> anyhow::Result<()> {
                                                 // FIX: Remove offer initiation logic from here
                                                 drop(state_guard); // Drop lock
                                             }
-                                            ServerMsg::SessionInvite { ref session_id, ref from, total, threshold, ref participants } => {
-                                                let mut state_guard = state_main_net.lock().await;
-                                                // Use crate::signal::SessionInfo
-                                                // Remove unnecessary parentheses
-                                                if !state_guard.invites.iter().any(|inv| inv.session_id == *session_id) {
-                                                    state_guard.invites.push(crate::protocal::signal::SessionInfo { session_id: session_id.clone(), total: total as u16, threshold: threshold as u16, participants: participants.clone() });
-                                                    state_guard.log.push(format!("Session invite from {} for session {}", from, session_id));
-                                                } else {
-                                                     state_guard.log.push(format!("Duplicate invite from {} for session {}", from, session_id));
-                                                }
-                                                drop(state_guard);
-                                            }
                                             ServerMsg::Error { ref error } => {
-                                                // ... (Error handling remains the same) ...
                                                 let mut state_guard = state_main_net.lock().await;
                                                 state_guard.log.push(format!("Error: {}", error));
-                                                // Drop guard immediately
                                                 drop(state_guard);
-                                            }
-                                            // Handle complex cases involving async operations separately
-                                            ServerMsg::SessionInfo { session_id, total, threshold, participants } => {
-                                                // Construct the new session information from the message
-                                                // Ensure crate::protocal::signal::SessionInfo derives PartialEq and Clone
-                                                let current_message_session_info = crate::protocal::signal::SessionInfo {
-                                                    session_id: session_id.clone(),
-                                                    total: total as u16,
-                                                    threshold: threshold as u16,
-                                                    participants: participants.clone(),
-                                                };
-
-                                                let (should_process_session_update, queued_packages_to_process) = {
-                                                    let mut guard = state_main_net.lock().await;
-                                                    let mut process_queued = Vec::new(); // Initialize empty
-
-                                                    let needs_update = match &guard.session {
-                                                        Some(existing_session) => *existing_session != current_message_session_info,
-                                                        None => true, // No existing session, so definitely update
-                                                    };
-
-                                                    if needs_update {
-                                                        guard.log.push(format!(
-                                                            "Session info for {} requires update. Processing...",
-                                                            session_id
-                                                        ));
-                                                        // Log old session info if any
-                                                        let old_session_info = guard.session.clone();
-                                                        if let Some(existing_session) = old_session_info {
-                                                            guard.log.push(format!(
-                                                                "Old session info: {:?}", existing_session
-                                                            ));
-                                                        }
-                                                        guard.session = Some(current_message_session_info.clone()); // Update the session state
-
-                                                        // Create or update identifier map
-                                                        guard.log.push("Updating identifier map...".to_string());
-                                                        let mut id_map = BTreeMap::new();
-                                                        // Use 'participants' from the incoming message for map creation
-                                                        for (i, p_id) in participants.iter().enumerate() {
-                                                            let index = (i + 1) as u16; // 1-based index
-                                                            match Identifier::<Ed25519Sha512>::try_from(index) {
-                                                                Ok(identifier) => {
-                                                                    id_map.insert(p_id.clone(), identifier);
-                                                                    guard.log.push(format!("Mapped {} -> {:?}", p_id, identifier));
-                                                                }
-                                                                Err(e) => {
-                                                                    guard.log.push(format!("Error creating identifier for {}: {:?}", p_id, e));
-                                                                }
-                                                            }
-                                                        }
-                                                        guard.identifier_map = Some(id_map);
-                                                        // guard.identifier_to_index_map = Some(id_to_index_map); // Removed storing the reverse map
-
-                                                        // Take queued packages for processing
-                                                        process_queued = std::mem::take(&mut guard.queued_dkg_round1);
-                                                        if !process_queued.is_empty() {
-                                                            guard.log.push(format!(
-                                                                "Processing {} queued DKG Round 1 packages after session/identifier_map ready.",
-                                                                process_queued.len()
-                                                            ));
-                                                        }
-                                                        // 新增: 清空 peer_connected_history
-                                                        guard.peer_connected_history.clear();
-                                                        // Log PeerConnection states before possible recreation
-                                                        let pc_map = guard.peer_connections.lock().await;
-                                                        let mut pc_state_logs = Vec::new();
-                                                        for (pid, pc) in pc_map.iter() {
-                                                            pc_state_logs.push(format!(
-                                                                "Before session update: PeerConnection for {} is in state {:?}, ICE state {:?}",
-                                                                pid, pc.connection_state(), pc.ice_connection_state()
-                                                            ));
-                                                        }
-                                                        drop(pc_map);
-                                                        for log in pc_state_logs {
-                                                            guard.log.push(log);
-                                                        }
-
-                                                        (true, process_queued) // Indicate update happened and pass queued packages
-                                                    } else {
-                                                        guard.log.push(format!(
-                                                            "Session info for {} is unchanged. Skipping update.",
-                                                            session_id
-                                                        ));
-                                                        (false, process_queued) // Indicate no update, empty queued packages
-                                                    }
-                                                }; // guard dropped here
-
-                                                if should_process_session_update {
-                                                    // Process queued packages by sending internal commands
-                                                    for (from_peer_id, package) in queued_packages_to_process {
-                                                        let _ = internal_cmd_tx_main_net.send(InternalCommand::ProcessDkgRound1 {
-                                                            from_peer_id,
-                                                            package,
-                                                        });
-                                                    }
-
-                                                    // --- Spawn Task to Create PeerConnection Objects ---
-                                                    let pc_arc_clone = peer_connections_arc_main_net.clone();
-                                                    let internal_cmd_tx_clone = internal_cmd_tx_main_net.clone();
-                                                    let state_log_clone = state_main_net.clone();
-                                                    let self_peer_id_clone = self_peer_id_main_net.clone();
-                                                    // Use 'participants' from the original message
-                                                    let participants_clone = participants.clone();
-                                                    let session_id_clone = session_id.clone(); // Use session_id from original message
-
-                                                    tokio::spawn(async move {
-                                                        state_log_clone.lock().await.log.push(format!(
-                                                            "SessionInfo Task: Creating/verifying peer connections for session {}...",
-                                                            session_id_clone
-                                                        ));
-                                                        for p_id in participants_clone.iter() {
-                                                            if *p_id != self_peer_id_clone {
-                                                                // 新增: 只在 Closed 时重建 PeerConnection
-                                                                let pc_map = pc_arc_clone.lock().await;
-                                                                let need_create = match pc_map.get(p_id) {
-                                                                    Some(pc) => {
-                                                                        let state = pc.connection_state();
-                                                                        let ice_state = pc.ice_connection_state();
-                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                            "PeerConnection for {} exists with state {:?}, ICE state {:?}",
-                                                                            p_id, state, ice_state
-                                                                        ));
-                                                                        state == RTCPeerConnectionState::Closed
-                                                                    },
-                                                                    None => {
-                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                            "PeerConnection for {} does not exist, will create.", p_id
-                                                                        ));
-                                                                        true
-                                                                    },
-                                                                };
-                                                                drop(pc_map);
-                                                                if need_create {
-                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                        "Creating PeerConnection for {} (state is Closed or not exist)", p_id
-                                                                    ));
-                                                                    match create_and_setup_peer_connection(
-                                                                        p_id.clone(),
-                                                                        self_peer_id_clone.clone(),
-                                                                        pc_arc_clone.clone(),
-                                                                        internal_cmd_tx_clone.clone(),
-                                                                        state_log_clone.clone(),
-                                                                        &WEBRTC_API,
-                                                                        &WEBRTC_CONFIG,
-                                                                    )
-                                                                    .await
-                                                                    {
-                                                                        Ok(_) => {
-                                                                            state_log_clone.lock().await.log.push(format!(
-                                                                                "PeerConnection for {} created successfully.", p_id
-                                                                            ));
-                                                                        }
-                                                                        Err(e) => {
-                                                                            state_log_clone.lock().await.log.push(format!(
-                                                                                "Error setting up peer connection for {}: {}",
-                                                                                p_id, e
-                                                                            ));
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                        "PeerConnection for {} already exists and is not Closed, skipping creation", p_id
-                                                                    ));
-                                                                }
-                                                            }
-                                                        }
-                                                        initiate_offers_for_session(
-                                                            participants_clone,
-                                                            self_peer_id_clone,
-                                                            pc_arc_clone.clone(),
-                                                            internal_cmd_tx_clone.clone(),
-                                                            state_log_clone.clone(),
-                                                        )
-                                                        .await;
-                                                    });
-
-                                                    // --- Check and Trigger DKG Round 1 ---
-                                                    // This check is now conditional on the session having been updated.
-                                                    { // Scope for guard
-                                                        let mut guard = state_main_net.lock().await;
-                                                        // Ensure guard.session is Some and matches the current message's session_id.
-                                                        if let Some(session_state) = &guard.session {
-                                                            if guard.dkg_state == DkgState::Idle && session_state.session_id == session_id {
-                                                                // 新增: 检查所有peer最近N次状态都为Connected
-                                                                let all_connected = session_state // Use session_state from guard
-                                                                    .participants
-                                                                    .iter()
-                                                                    .filter(|p| **p != self_peer_id_main_net) // Exclude self
-                                                                    .all(|p_id| {
-                                                                        let history = guard.peer_connected_history.get(p_id);
-                                                                        match history {
-                                                                            Some(hist) if hist.len() == DKG_CONNECTED_STABLE_WINDOW =>
-                                                                                hist.iter().all(|s| *s == RTCPeerConnectionState::Connected),
-                                                                            _ => false,
-                                                                        }
-                                                                    });
-
-                                                                if all_connected {
-                                                                    guard.log.push(
-                                                                        format!("All peers connected for {} consecutive checks, triggering DKG Round 1...", DKG_CONNECTED_STABLE_WINDOW)
-                                                                    );
-                                                                    guard.dkg_state = DkgState::Round1InProgress; // Set state BEFORE sending command
-                                                                    let _ = internal_cmd_tx_main_net.send(InternalCommand::TriggerDkgRound1);
-                                                                } else {
-                                                                    let mut waiting_logs = Vec::new();
-                                                                    // Use session_state.participants for iteration
-                                                                    for p_id in session_state.participants.iter().filter(|p| **p != self_peer_id_main_net) {
-                                                                        let status = guard.peer_statuses.get(p_id);
-                                                                        if status != Some(&RTCPeerConnectionState::Connected) {
-                                                                            waiting_logs.push(format!(
-                                                                                "DKG Wait: Peer {} status is {:?} (Expected Connected)",
-                                                                                p_id, status
-                                                                            ));
-                                                                        }
-                                                                    }
-                                                                    guard.log.push(
-                                                                        "Session updated, waiting for all peers to connect before starting DKG...".to_string(),
-                                                                    );
-                                                                    for log_msg in waiting_logs {
-                                                                        guard.log.push(log_msg);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    } // guard dropped here
-                                                }
                                             }
                                             ServerMsg::Relay { ref from, ref data } => {
                                                 state_main_net.lock().await.log.push(format!("Relay from {}: {:?}", from, data)); // Log raw data

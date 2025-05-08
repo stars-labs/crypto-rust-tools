@@ -10,10 +10,11 @@ This document defines the JSON message types and protocol flow for negotiating a
    Each node (CLI or Chrome extension) connects to the signaling server via WebSocket and registers with a unique `peer_id`.
 
 2. **Discovery:**  
-   Nodes query the signaling server for available peers or a specific MPC session.
+   Nodes query the signaling server for available peers.
 
-3. **Session Negotiation:**  
-   Nodes agree on session parameters (e.g., total participants, threshold, session ID).
+3. **Session Negotiation & Mesh Formation:**  
+   Nodes coordinate session parameters (e.g., total participants, threshold, session ID) and build the mesh themselves. The signaling server does **not** store or manage session state.  
+   Each node maintains its own session state and uses a spinning tree or broadcast approach to sense and build the mesh.
 
 4. **Signaling Exchange:**  
    Nodes exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server to establish direct peer-to-peer connections.
@@ -29,7 +30,7 @@ This document defines the JSON message types and protocol flow for negotiating a
 
 **Client → Server**
 ```json
-{ "register": "<peer_id>" }
+{ "type": "register", "peer_id": "<peer_id>" }
 ```
 Registers the client with the signaling server using a unique `peer_id`.
 
@@ -39,37 +40,28 @@ Registers the client with the signaling server using a unique `peer_id`.
 
 **Client → Server**
 ```json
-{ "list_peers": true }
+{ "type": "list_peers" }
 ```
 Requests a list of currently registered peers.
 
 **Server → Client**
 ```json
-{ "peers": ["peer1", "peer2", ...] }
+{ "type": "peers", "peers": ["peer1", "peer2", ...] }
 ```
 Returns the list of available peers.
 
 ---
 
-### 3. Session Negotiation
+### 3. Session Negotiation & Mesh Formation
 
-**Client → Server**
-```json
-{ "create_session": { "session_id": "<id>", "total": 3, "threshold": 2, "participants": ["peer1", "peer2", "peer3"] } }
-```
-Creates a new MPC session.
+**Note:**  
+The signaling server does **not** store or manage session state.  
+Nodes must coordinate session creation, joining, and participant lists among themselves.  
+A spinning tree or broadcast protocol is used by nodes to sense the network and build the mesh.
 
-**Client → Server**
-```json
-{ "join_session": { "session_id": "<id>" } }
-```
-Joins an existing session.
-
-**Server → Client**
-```json
-{ "session_info": { "session_id": "<id>", "total": 3, "threshold": 2, "participants": ["peer1", "peer2", "peer3"] } }
-```
-Confirms session creation or join.
+- Nodes broadcast their intent to participate in a session (e.g., via WebRTC or relayed messages).
+- Each node maintains its own session state and tracks the mesh topology.
+- Nodes use peer discovery and direct communication to build the full mesh.
 
 ---
 
@@ -77,13 +69,13 @@ Confirms session creation or join.
 
 **Client → Server**
 ```json
-{ "to": "<peer_id>", "data": { ... } }
+{ "type": "relay", "to": "<peer_id>", "data": { ... } }
 ```
 Sends signaling data (SDP offer/answer, ICE candidate, etc.) to another peer via the server.
 
 **Server → Client**
 ```json
-{ "from": "<peer_id>", "data": { ... } }
+{ "type": "relay", "from": "<peer_id>", "data": { ... } }
 ```
 Relays signaling data from another peer.
 
@@ -93,9 +85,9 @@ Relays signaling data from another peer.
 
 **Server → Client**
 ```json
-{ "error": "<description>" }
+{ "type": "error", "error": "<description>" }
 ```
-Sent if an error occurs (e.g., unknown peer, session error).
+Sent if an error occurs (e.g., unknown peer).
 
 ---
 
@@ -136,13 +128,14 @@ Used to acknowledge receipt of a message, if needed.
 ### 1. Registration & Discovery
 
 - Each node connects to the signaling server and registers with a unique `peer_id`.
-- Nodes may request a list of available peers or sessions.
+- Nodes may request a list of available peers.
 
-### 2. Session Negotiation
+### 2. Session Negotiation & Mesh Formation
 
-- One node (initiator) creates a session, specifying `session_id`, `total`, `threshold`, and participant list.
-- Other nodes join the session using `session_id`.
-- The server confirms session creation/join and notifies all participants.
+- One node (initiator) proposes a session by directly communicating with other nodes (using WebRTC or relayed messages).
+- All nodes maintain their own session state and participant list.
+- Nodes use a spinning tree or broadcast protocol to sense the network and build the mesh, without relying on the signaling server to store session info.
+- Each node attempts to connect to all other participants, forming a full mesh.
 
 ### 3. WebRTC Signaling
 
@@ -168,13 +161,12 @@ Used to acknowledge receipt of a message, if needed.
 
 | Context    | Direction         | Message Example                                 | Purpose                      |
 |------------|-------------------|------------------------------------------------|------------------------------|
-| WebSocket  | Client → Server   | `{ "register": "peer1" }`                      | Register with signal server  |
-| WebSocket  | Client → Server   | `{ "list_peers": true }`                       | List available peers         |
-| WebSocket  | Client → Server   | `{ "create_session": { ... } }`                | Create MPC session           |
-| WebSocket  | Client → Server   | `{ "join_session": { ... } }`                  | Join MPC session             |
-| WebSocket  | Server → Client   | `{ "session_info": { ... } }`                  | Session info/confirmation    |
-| WebSocket  | Client ↔ Server   | `{ "to": "peer2", "data": { ... } }`           | Relay signaling data         |
-| WebSocket  | Server → Client   | `{ "from": "peer2", "data": { ... } }`         | Receive signaling data       |
+| WebSocket  | Client → Server   | `{ "type": "register", "peer_id": "peer1" }`   | Register with signal server  |
+| WebSocket  | Client → Server   | `{ "type": "list_peers" }`                     | List available peers         |
+| WebSocket  | Client ↔ Server   | `{ "type": "relay", "to": "peer2", "data": { ... } }` | Relay signaling data   |
+| WebSocket  | Server → Client   | `{ "type": "relay", "from": "peer2", "data": { ... } }` | Receive signaling data |
+| WebSocket  | Server → Client   | `{ "type": "peers", "peers": ["peer1", "peer2"] }` | List of peers           |
+| WebSocket  | Server → Client   | `{ "type": "error", "error": "description" }`  | Error message                |
 | WebRTC     | Peer ↔ Peer       | `{ "type": "commitment", "payload": { ... } }` | Commitment message           |
 | WebRTC     | Peer ↔ Peer       | `{ "type": "share", "payload": { ... } }`      | Share message                |
 | WebRTC     | Peer ↔ Peer       | `{ "type": "ready", "payload": { ... } }`      | Ready message                |
@@ -195,15 +187,15 @@ Each node connects to the signaling server and registers:
 
 **cli1 → server**
 ```json
-{ "register": "cli1" }
+{ "type": "register", "peer_id": "cli1" }
 ```
 **cli2 → server**
 ```json
-{ "register": "cli2" }
+{ "type": "register", "peer_id": "cli2" }
 ```
 **chrome1 → server**
 ```json
-{ "register": "chrome1" }
+{ "type": "register", "peer_id": "chrome1" }
 ```
 
 ---
@@ -214,85 +206,32 @@ Each node requests the list of available peers:
 
 **cli1 → server**
 ```json
-{ "list_peers": true }
+{ "type": "list_peers" }
 ```
 **server → cli1**
 ```json
-{ "peers": ["cli1", "cli2", "chrome1"] }
+{ "type": "peers", "peers": ["cli1", "cli2", "chrome1"] }
 ```
 
 ---
 
-### 3. Session Negotiation
+### 3. Session Negotiation & Mesh Formation
 
-**cli1** creates a session and invites the others:
+**cli1** proposes a session by directly communicating with the other nodes (using WebRTC or relayed messages):
 
-**cli1 → server**
+**cli1 → cli2 (via relay or WebRTC)**
 ```json
-{
-  "create_session": {
-    "session_id": "session123",
-    "total": 3,
-    "threshold": 2,
-    "participants": ["cli1", "cli2", "chrome1"]
-  }
-}
+{ "type": "session_proposal", "payload": { "session_id": "session123", "total": 3, "threshold": 2, "participants": ["cli1", "cli2", "chrome1"] } }
 ```
-**server → cli1**
+**cli1 → chrome1 (via relay or WebRTC)**
 ```json
-{
-  "session_info": {
-    "session_id": "session123",
-    "total": 3,
-    "threshold": 2,
-    "participants": ["cli1", "cli2", "chrome1"]
-  }
-}
+{ "type": "session_proposal", "payload": { "session_id": "session123", "total": 3, "threshold": 2, "participants": ["cli1", "cli2", "chrome1"] } }
 ```
-**Session Invitation Notification**
+**cli2** and **chrome1** respond and coordinate directly with each other and cli1 to agree on the session.
 
-When a session is created and participants are specified, the server should proactively notify all listed participants (except the creator) about the invitation. This allows clients to display a prompt or automatically join.
+Each node maintains its own session state and attempts to connect to all other participants, using a spinning tree or broadcast protocol to sense and build the mesh.
 
-**server → cli2**
-```json
-{ "session_invite": { "session_id": "session123", "from": "cli1", "total": 3, "threshold": 2, "participants": ["cli1", "cli2", "chrome1"] } }
-```
-**server → chrome1**
-```json
-{ "session_invite": { "session_id": "session123", "from": "cli1", "total": 3, "threshold": 2, "participants": ["cli1", "cli2", "chrome1"] } }
-
-```
-
-**cli2 → server**
-```json
-{ "join_session": { "session_id": "session123" } }
-```
-**chrome1 → server**
-```json
-{ "join_session": { "session_id": "session123" } }
-```
-**server → cli2**
-```json
-{
-  "session_info": {
-    "session_id": "session123",
-    "total": 3,
-    "threshold": 2,
-    "participants": ["cli1", "cli2", "chrome1"]
-  }
-}
-```
-**server → chrome1**
-```json
-{
-  "session_info": {
-    "session_id": "session123",
-    "total": 3,
-    "threshold": 2,
-    "participants": ["cli1", "cli2", "chrome1"]
-  }
-}
-```
+---
 
 ### 4. WebRTC Signaling
 
@@ -300,19 +239,19 @@ Each node exchanges signaling messages to establish direct connections.
 
 **cli1 → server**
 ```json
-{ "to": "cli2", "data": { "type": "offer", "sdp": "<sdp-offer>" } }
+{ "type": "relay", "to": "cli2", "data": { "type": "offer", "sdp": "<sdp-offer>" } }
 ```
 **server → cli2**
 ```json
-{ "from": "cli1", "data": { "type": "offer", "sdp": "<sdp-offer>" } }
+{ "type": "relay", "from": "cli1", "data": { "type": "offer", "sdp": "<sdp-offer>" } }
 ```
 **cli2 → server**
 ```json
-{ "to": "cli1", "data": { "type": "answer", "sdp": "<sdp-answer>" } }
+{ "type": "relay", "to": "cli1", "data": { "type": "answer", "sdp": "<sdp-answer>" } }
 ```
 **server → cli1**
 ```json
-{ "from": "cli2", "data": { "type": "answer", "sdp": "<sdp-answer>" } }
+{ "type": "relay", "from": "cli2", "data": { "type": "answer", "sdp": "<sdp-answer>" } }
 ```
 *...similar signaling for cli1 ↔ chrome1, cli2 ↔ chrome1, including ICE candidates...*
 
@@ -399,5 +338,6 @@ When the protocol completes, nodes may send a final message:
 - **Session IDs:** Should be unique per MPC wallet creation session.
 - **Security:** All sensitive data should be encrypted as appropriate for your application.
 - **Extensibility:** You may add additional message types as needed for your MPC protocol.
+- **Session State:** The signaling server does **not** store or manage session state. All session coordination and mesh building is handled by the nodes themselves.
 
 ---

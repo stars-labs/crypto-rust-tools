@@ -1,0 +1,13 @@
+name = "webrtc-signal-server-cloudflare-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-05-08"
+
+[build]
+command = "worker-build --release"
+
+[durable_objects]
+bindings = [{ name = "Peers", class_name = "Peers" }]
+
+[[migrations]]
+tag = "v1"                     # Should be unique for each entry
+new_sqlite_classes = ["Peers"]

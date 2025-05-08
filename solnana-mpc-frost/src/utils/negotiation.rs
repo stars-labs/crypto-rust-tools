@@ -1,12 +1,14 @@
 use crate::protocal::signal::{SDPInfo, WebRTCSignal};
 use crate::utils::state::AppState;
 use frost_ed25519::Ed25519Sha512;
-use solnana_mpc_frost::{ClientMsg as SharedClientMsg, InternalCommand};
+
+use solnana_mpc_frost::InternalCommand;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, mpsc};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc_signal_server::ClientMsg as SharedClientMsg;
 
 pub async fn initiate_offers_for_session(
     participants: Vec<String>,
