@@ -305,452 +305,36 @@ async fn main() -> anyhow::Result<()> {
 
         loop {
             tokio::select! {
-            Some(cmd) = internal_cmd_rx.recv() => {
-                match cmd {
-                    InternalCommand::SendToServer(shared_msg) => {
-                        // Send shared messages received via internal channel to WebSocket
-                        let _ = ws_sink.send(Message::Text(serde_json::to_string(&shared_msg).unwrap().into())).await;
-                    }
-                    InternalCommand::SendDirect { to, message } => {
-                        // Handle sending direct WebRTC message
-                        let state_clone = state_main_net.clone();
-
-                        tokio::spawn(async move {
-                            let webrtc_msg = WebRTCMessage::SimpleMessage { text: message };
-                            if let Err(e) = send_webrtc_message(&to, &webrtc_msg,state_clone.clone()).await {
-                                 state_clone.lock().await.log.push(format!("Error sending direct message to {}: {}", to, e));
-                            } else {
-                                 state_clone.lock().await.log.push(format!("Sent direct message to {}", to));
-                            }
-                        });
-                    }
-                    InternalCommand::TriggerDkgRound1 => {
-                        // Use our new ed25519_dkg module
-                        let state_clone = state_main_net.clone();
-                        let self_peer_id_clone = self_peer_id_main_net.clone();
-
-                        tokio::spawn(async move {
-                            ed25519_dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
-                        });
-                    }
-                    InternalCommand::ProcessDkgRound1 { from_peer_id, package } => {
-                        // Use our new ed25519_dkg module
-                        ed25519_dkg::process_dkg_round1(
-                            state_main_net.clone(),
-                            from_peer_id,
-                            package,
-                        ).await;
-                    }
-                    InternalCommand::ProcessDkgRound2 { from_peer_id, package } => {
-                        // Use our new ed25519_dkg module
-                        let state_clone = state_main_net.clone();
-                        let from_peer_id_clone = from_peer_id.clone();
-                        let package_clone = package.clone();
-
-                        tokio::spawn(async move {
-                            ed25519_dkg::process_dkg_round2(state_clone, from_peer_id_clone, package_clone).await;
-                        });
-                    }
-                }
-            },
-            maybe_msg = ws_stream.next() => {
-                match maybe_msg {
-                    Some(Ok(msg)) => {
-                        // Renamed 'msg' variable inside the block to avoid conflict
-                        let current_msg = msg;
-                        // Match directly on Message variants, not Ok(Message::...)
-                        match current_msg {
-                            Message::Text(txt) => { // Remove Ok()
-                                match serde_json::from_str::<ServerMsg>(&txt) {
-                                    Ok(server_msg) => {
-                                        // Handle simple state updates first, keep lock brief
-                                        match server_msg {
-                                            ServerMsg::Peers { ref peers } => {
-                                                // --- Lock StdMutex ---
-                                                let mut state_guard = state_main_net.lock().await;
-                                                state_guard.peers = peers.clone();
-                                                // FIX: Remove offer initiation logic from here
-                                                drop(state_guard); // Drop lock
-                                            }
-                                            ServerMsg::Error { ref error } => {
-                                                let mut state_guard = state_main_net.lock().await;
-                                                state_guard.log.push(format!("Error: {}", error));
-                                                drop(state_guard);
-                                            }
-                                            ServerMsg::Relay { ref from, ref data } => {
-                                                state_main_net.lock().await.log.push(format!("Relay from {}: {:?}", from, data)); // Log raw data
-                                                match serde_json::from_value::<WebRTCSignal>(data.clone()) {
-                                                    Ok(signal) => {
-                                                        state_main_net.lock().await.log.push(format!("Parsed WebRTC signal from {}: {:?}", from, signal)); // Log parsed signal
-                                                        // Clone necessary Arcs and data FOR the spawned task
-                                                        let pc_arc_net_clone = peer_connections_arc_main_net.clone();
-                                                        let from_clone = from.clone();
-                                                        // Pass INTERNAL cmd_tx
-                                                        let internal_cmd_tx_clone = internal_cmd_tx_main_net.clone();
-                                                        let state_log_clone = state_main_net.clone();
-                                                        let signal_clone = signal.clone(); // Clone the parsed signal
-                                                        let self_peer_id_clone = self_peer_id_main_net.clone();
-
-                                                        tokio::spawn(async move { // Spawn signal handling
-                                                            // --- Get or Create Peer Connection ---
-                                                            let pc_result = { // Scope for lock
-                                                                let peer_conns = pc_arc_net_clone.lock().await; // Use TokioMutex and .await
-                                                                peer_conns.get(&from_clone).cloned() // Try to get existing
-                                                            };
-
-                                                            // Restructure: Define the result explicitly first
-                                                            let pc_to_use_result: Result<Arc<RTCPeerConnection>, String> = match pc_result {
-                                                                Some(pc) => Ok(pc), // Use existing
-                                                                None => {
-                                                                    // If not found, try to create it now
-                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                        "WebRTC signal from {} received, but connection object missing. Attempting creation...",
-                                                                        from_clone
-                                                                    ));
-                                                                    // Call create_and_setup_peer_connection. It handles "already exists" internally. // Corrected comment
-                                                                    // Pass INTERNAL cmd_tx AND WebRTC statics
-                                                                    create_and_setup_peer_connection(
-                                                                        from_clone.clone(),
-                                                                        self_peer_id_clone.clone(), // Pass self_peer_id
-                                                                        pc_arc_net_clone.clone(),   // Pass Arc<TokioMutex<...>>
-                                                                        internal_cmd_tx_clone.clone(), // Pass internal cmd_tx
-                                                                        state_log_clone.clone(),
-                                                                        &WEBRTC_API, // Pass static ref
-                                                                        &WEBRTC_CONFIG, // Pass static ref
-                                                                    ).await // Await the result
-                                                                }
-                                                            };
-                                                            // --- End Get or Create Peer Connection ---
-
-                                                            // --- Process Signal if PC is available ---
-                                                            // Match on the explicitly defined result
-                                                            match pc_to_use_result {
-                                                                Ok(pc_clone) => { // Use the obtained (existing or newly created) Arc
-                                                                    match signal_clone {
-                                                                        WebRTCSignal::Offer(offer_info) => {
-                                                                            use webrtc::peer_connection::signaling_state::RTCSignalingState;
-
-                                                                            // --- Perfect Negotiation & State Check (Read Only under Lock) ---
-                                                                            // FIX: Remove mut and initial assignment for proceed_with_offer
-                                                                            let proceed_with_offer;
-                                                                            let mut should_abort_due_to_race = false;
-                                                                            // FIX: Remove is_stable_or_closed variable declaration here
-                                                                            let current_signaling_state_read;
-
-                                                                            { // Scope for AppState lock (read-only phase)
-                                                                                let mut state_guard = state_log_clone.lock().await;
-                                                                                let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
-                                                                                let ignoring = state_guard.ignore_offer.get(&from_clone).copied().unwrap_or(false);
-                                                                                let is_polite = self_peer_id_clone > from_clone;
-                                                                                current_signaling_state_read = pc_clone.signaling_state();
-
-                                                                                state_guard.log.push(format!(
-                                                                                    "Offer from {}: making={}, ignoring={}, is_polite={}, state={:?}",
-                                                                                    from_clone, making, ignoring, is_polite, current_signaling_state_read
-                                                                                ));
-
-                                                                                // --- Glare Handling logic ---
-                                                                                let collision = making;
-                                                                                // FIX: Calculate proceed_with_offer directly here
-                                                                                proceed_with_offer = if collision && is_polite {
-                                                                                    true // Polite peer yields, but will process this offer
-                                                                                } else if collision && !is_polite {
-                                                                                    false // Impolite peer ignores incoming offer during collision
-                                                                                } else if ignoring {
-                                                                                    false // Explicitly ignoring
-                                                                                } else {
-                                                                                    true // No collision or ignoring, proceed
-                                                                                };
-
-                                                                                // --- Abort Check (Safeguard) ---
-                                                                                // FIX: Check against the calculated proceed_with_offer
-                                                                                if proceed_with_offer && making {
-                                                                                    should_abort_due_to_race = true;
-                                                                                    // proceed_with_offer = false; // Let the next block handle this
-                                                                                }
-
-                                                                            } // --- AppState lock dropped ---
-
-                                                                            // --- Update State based on decisions (Brief lock) ---
-                                                                            // FIX: Re-evaluate proceed_with_offer based on state checks inside this block
-                                                                            let mut final_proceed_with_offer = proceed_with_offer; // Start with initial decision
-                                                                            {
-                                                                                let mut state_guard = state_log_clone.lock().await;
-                                                                                let making = state_guard.making_offer.get(&from_clone).copied().unwrap_or(false);
-                                                                                let is_polite = self_peer_id_clone > from_clone;
-                                                                                let collision = making;
-
-                                                                                if should_abort_due_to_race {
-                                                                                    state_guard.log.push(format!(
-                                                                                        "Aborting offer from {}: Detected making_offer=true just before async operation (Race?)",
-                                                                                        from_clone
-                                                                                    ));
-                                                                                    final_proceed_with_offer = false; // Abort
-                                                                                } else if collision && is_polite {
-                                                                                    state_guard.log.push(format!("Glare detected with {}: Polite peer yielding (state update).", from_clone));
-                                                                                    state_guard.making_offer.insert(from_clone.clone(), false);
-                                                                                    // final_proceed_with_offer remains true (polite peer processes)
-                                                                                } else if collision && !is_polite {
-                                                                                    state_guard.log.push(format!("Glare detected with {}: Impolite peer ignoring incoming offer (state update).", from_clone));
-                                                                                    state_guard.ignore_offer.insert(from_clone.clone(), true);
-                                                                                    final_proceed_with_offer = false; // Impolite peer ignores
-                                                                                } else if state_guard.ignore_offer.get(&from_clone).copied().unwrap_or(false) {
-                                                                                    state_guard.log.push(format!("Ignoring offer from {} as previously decided (state update).", from_clone));
-                                                                                    state_guard.ignore_offer.insert(from_clone.clone(), false); // Reset ignore flag
-                                                                                    final_proceed_with_offer = false; // Ignore this time
-                                                                                }
-
-                                                                                // FIX: Perform state check directly here using current_signaling_state_read
-                                                                                let is_invalid_state = !(current_signaling_state_read == RTCSignalingState::Stable || current_signaling_state_read == RTCSignalingState::Closed);
-                                                                                if final_proceed_with_offer && is_invalid_state {
-                                                                                    state_guard.log.push(format!(
-                                                                                        "Aborting offer from {}: Invalid signaling state {:?} (expected Stable or Closed)",
-                                                                                        from_clone, current_signaling_state_read
-                                                                                    ));
-                                                                                    final_proceed_with_offer = false; // Cannot proceed in this state
-                                                                                }
-                                                                            } // --- AppState lock dropped ---
-
-                                                                            // --- Perform Async Operations (No AppState lock held) ---
-                                                                            // FIX: Use final_proceed_with_offer for the decision
-                                                                            if final_proceed_with_offer {
-                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                    "Processing offer from {}...", from_clone
-                                                                                ));
-                                                                                // FIX: Use RTCSessionDescription::offer
-                                                                                match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
-                                                                                    offer_info.sdp.clone()
-                                                                                ) {
-                                                                                    Ok(offer) => {
-                                                                                        if let Err(e) = pc_clone.set_remote_description(offer).await {
-                                                                                            state_log_clone.lock().await.log.push(format!(
-                                                                                                "Error setting remote description (offer) from {}: {}", from_clone, e
-                                                                                            ));
-                                                                                            return;
-                                                                                        }
-                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                            "Set remote description (offer) from {}. Creating answer...", from_clone
-                                                                                        ));
-                                                                                        // Apply any pending ICE candidates now that the remote description is set
-                                                                                        apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
-
-                                                                                        // Create data channel before answering
-                                                                                        match pc_clone.create_data_channel(utils::peer::DATA_CHANNEL_LABEL, None).await {
-                                                                                            Ok(dc) => {
-                                                                                                // Don't wrap in Arc::new() again
-                                                                                                let peer_id_dc = from_clone.clone();
-                                                                                                let state_log_dc = state_log_clone.clone();
-                                                                                                // Pass INTERNAL cmd_tx
-                                                                                                let cmd_tx_dc = internal_cmd_tx_clone.clone(); // Pass internal cmd_tx
-
-                                                                                                // Setup callbacks for the created channel
-                                                                                                // Pass dc directly
-                                                                                                utils::peer::setup_data_channel_callbacks(dc, peer_id_dc, state_log_dc, cmd_tx_dc).await;
-
-                                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                                    "Created responder data channel for {}", from_clone
-                                                                                                ));
-                                                                                            },
-                                                                                            Err(e) => {
-                                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                                    "Error creating responder data channel for {}: {} (continuing anyway)",
-                                                                                                    from_clone, e
-                                                                                                ));
-                                                                                                // Don't return/fail here, as we can still answer without our own channel
-                                                                                            }
-                                                                                        }
-
-                                                                                        match pc_clone.create_answer(None).await {
-                                                                                            Ok(answer) => {
-                                                                                                if let Err(e) = pc_clone.set_local_description(answer.clone()).await {
-                                                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                                                        "Error setting local description (answer) for {}: {}", from_clone, e
-                                                                                                    ));
-                                                                                                    return;
-                                                                                                }
-                                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                                    "Set local description (answer) for {}. Sending answer...", from_clone
-                                                                                                ));
-                                                                                                let signal = WebRTCSignal::Answer(SDPInfo { sdp: answer.sdp });
-                                                                                                match serde_json::to_value(signal) {
-                                                                                                    Ok(json_val) => {
-                                                                                                        // Send Relay message via INTERNAL channel
-                                                                                                        let relay_msg = InternalCommand::SendToServer(SharedClientMsg::Relay {
-                                                                                                            to: from_clone.clone(),
-                                                                                                            data: json_val,
-                                                                                                        });
-                                                                                                        // Use the correct sender clone
-                                                                                                        let _ = internal_cmd_tx_clone.send(relay_msg);
-                                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                                            "Sent answer to {}", from_clone
-                                                                                                        ));
-                                                                                                    },
-                                                                                                    Err(e) => {
-                                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                                            "Error serializing answer for {}: {}", from_clone, e
-                                                                                                        ));
-                                                                                                    }
-                                                                                                }
-                                                                                            },
-                                                                                            Err(e) => {
-                                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                                    "Error creating answer for {}: {}", from_clone, e
-                                                                                                ));
-                                                                                            }
-                                                                                        }
-                                                                                    },
-                                                                                    Err(e) => {
-                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                            "Error parsing offer from {}: {}", from_clone, e
-                                                                                        ));
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        WebRTCSignal::Answer(answer_info) => {
-                                                                            state_log_clone.lock().await.log.push(format!(
-                                                                                "Processing answer from {}...", from_clone
-                                                                            ));
-                                                                            // FIX: Use RTCSessionDescription::answer
-                                                                            match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(
-                                                                                answer_info.sdp.clone()
-                                                                            ) {
-                                                                                Ok(answer) => {
-                                                                                    if let Err(e) = pc_clone.set_remote_description(answer).await {
-                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                            "Error setting remote description (answer) from {}: {}", from_clone, e
-                                                                                        ));
-                                                                                    } else {
-                                                                                        state_log_clone.lock().await.log.push(format!(
-                                                                                            "Set remote description (answer) from {}", from_clone
-                                                                                        ));
-                                                                                        // Apply any pending ICE candidates now that the remote description is set
-                                                                                        apply_pending_candidates(&from_clone, pc_clone.clone(), state_log_clone.clone()).await;
-                                                                                    }
-                                                                                },
-                                                                                Err(e) => {
-                                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                                        "Error parsing answer from {}: {}", from_clone, e
-                                                                                    ));
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                        WebRTCSignal::Candidate(candidate_info) => {
-                                                                            // ... existing Candidate handling ...
-                                                                            state_log_clone.lock().await.log.push(format!(
-                                                                                "Processing candidate from {}...", from_clone
-                                                                            ));
-                                                                            // FIX: Use RTCIceCandidateInit directly with add_ice_candidate
-                                                                            let candidate_init = RTCIceCandidateInit { // Use imported RTCIceCandidateInit
-                                                                                candidate: candidate_info.candidate,
-                                                                                sdp_mid: candidate_info.sdp_mid,
-                                                                                sdp_mline_index: candidate_info.sdp_mline_index,
-                                                                                username_fragment: None, // Add username_fragment field
-                                                                            };
-
-                                                                            // Check if remote description is set before adding ICE candidate
-                                                                            let current_state = pc_clone.signaling_state();
-                                                                            let remote_description_set = match current_state {
-                                                                                webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer |
-                                                                                webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalPranswer |
-                                                                                webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemotePranswer |
-                                                                                webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => true,
-                                                                                _ => false,
-                                                                            };
-
-                                                                            if remote_description_set {
-                                                                                // If remote description is set, add the candidate directly
-                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                    "Remote description is set for {}. Adding ICE candidate now.", from_clone
-                                                                                ));
-                                                                                if let Err(e) = pc_clone.add_ice_candidate(candidate_init.clone()).await {
-                                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                                        "Error adding ICE candidate from {}: {}", from_clone, e
-                                                                                    ));
-                                                                                } else {
-                                                                                    state_log_clone.lock().await.log.push(format!(
-                                                                                        "Added ICE candidate from {}", from_clone
-                                                                                    ));
-                                                                                }
-                                                                            } else {
-                                                                                // If remote description is not set, store the candidate for later
-                                                                                let mut state_guard = state_log_clone.lock().await;
-                                                                                state_guard.log.push(format!(
-                                                                                    "Storing ICE candidate from {} for later (remote description not set yet)",
-                                                                                    from_clone
-                                                                                ));
-                                                                                let candidates = state_guard.pending_ice_candidates
-                                                                                    .entry(from_clone.clone())
-                                                                                    .or_insert_with(Vec::new);
-                                                                                candidates.push(candidate_init);
-                                                                                let queued_msg = format!(
-                                                                                    "Queued ICE candidate from {}. Total queued: {}", from_clone, candidates.len()
-                                                                                );
-                                                                                // Now that candidates is no longer borrowed, we can push to log
-                                                                                state_guard.log.push(queued_msg);
-                                                                                drop(state_guard);
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                            }
-                                                                            Err(e) => {
-                                                                                // Log the error from pc_to_use_result
-                                                                                state_log_clone.lock().await.log.push(format!(
-                                                                                    "Failed to create/retrieve connection object for {} to handle signal: {}",
-                                                                                    from_clone, e
-                                                                                ));
-                                                                            }
-                                                                        }
-                                                                    });  // Add semicolon here
-                                                                }
-                                                                Err(e) => {
-                                                                    // ... existing Err handling for WebRTCSignal parsing ...
-                                                                    state_main_net.lock().await.log.push(format!(
-                                                                        "Error parsing WebRTC signal from {}: {}", from, e
-                                                                    ));
-                                                                }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                Err(e) => {
-                                                    // ... existing Err handling for websocket message reading ...
-                                                    state_main_net.lock().await.log.push(format!(
-                                                        "Error reading websocket message: {}", e
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                        // FIX: Handle other message types like Close, Ping, Pong if necessary
-                                        Message::Close(_) => { // Remove Ok()
-                                            state_main_net.lock().await.log.push("WebSocket connection closed by server.".to_string());
-                                            break; // Exit the network loop
-                                        }
-                                        Message::Ping(ping_data) => { // Remove Ok()
-                                            // Respond with Pong
-                                            let _ = ws_sink.send(Message::Pong(ping_data)).await;
-                                        }
-                                        Message::Pong(_) => {} // Remove Ok()
-                                        Message::Binary(_) => { // Remove Ok()
-                                             state_main_net.lock().await.log.push("Received unexpected binary message.".to_string());
-                                        }
-                                        // Add catch-all for Frame and potential future variants
-                                        Message::Frame(_) => {} // Remove Ok()
-                                    }
-                                }
-                                Some(Err(e)) => {
-                                    // Handle error from ws_stream.next()
-                                    state_main_net.lock().await.log.push(format!("WebSocket read error: {}", e));
-                                    break; // Exit loop on error
-                                }
-                                None => {
-                                    // Stream ended
-                                    state_main_net.lock().await.log.push("WebSocket stream ended".to_string());
-                                    break; // Exit loop
+                Some(cmd) = internal_cmd_rx.recv() => {
+                    handle_internal_command(
+                        cmd,
+                        state_main_net.clone(),
+                        self_peer_id_main_net.clone()
+                    ).await;
+                },
+                maybe_msg = ws_stream.next() => {
+                    match maybe_msg {
+                        Some(Ok(msg)) => {
+                            handle_websocket_message(
+                                msg,
+                                state_main_net.clone(),
+                                self_peer_id_main_net.clone(),
+                                internal_cmd_tx_main_net.clone(),
+                                peer_connections_arc_main_net.clone(),
+                                &mut ws_sink,
+                            ).await;
+                        },
+                        Some(Err(e)) => {
+                            state_main_net.lock().await.log.push(format!("WebSocket read error: {}", e));
+                            break; // Exit loop on error
+                        },
+                        None => {
+                            state_main_net.lock().await.log.push("WebSocket stream ended".to_string());
+                            break; // Exit loop
+                        }
                     }
                 }
             }
-                    }
         }
     });
 
@@ -796,4 +380,623 @@ async fn main() -> anyhow::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+/// Handler for internal commands sent via MPSC channel
+async fn handle_internal_command(
+    cmd: InternalCommand,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    self_peer_id: String,
+) {
+    match cmd {
+        InternalCommand::SendToServer(shared_msg) => {
+            // Send via the task's WebSocket sink
+            if let Ok(msg_str) = serde_json::to_string(&shared_msg) {
+                // Fix unused variable warning by prefixing with underscore
+                let _server_msg = Message::Text(msg_str.into());
+                // Access shared state to get WebSocket sink (or pass it as parameter)
+                // For simplicity, we'll log that we would send this message
+                state
+                    .lock()
+                    .await
+                    .log
+                    .push(format!("Sending to server: {:?}", shared_msg));
+                // The actual sending happens in the main task
+            }
+        }
+        InternalCommand::SendDirect { to, message } => {
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                let webrtc_msg = WebRTCMessage::SimpleMessage { text: message };
+                if let Err(e) = send_webrtc_message(&to, &webrtc_msg, state_clone.clone()).await {
+                    state_clone
+                        .lock()
+                        .await
+                        .log
+                        .push(format!("Error sending direct message to {}: {}", to, e));
+                } else {
+                    state_clone
+                        .lock()
+                        .await
+                        .log
+                        .push(format!("Sent direct message to {}", to));
+                }
+            });
+        }
+        InternalCommand::TriggerDkgRound1 => {
+            let state_clone = state.clone();
+            let self_peer_id_clone = self_peer_id.clone();
+            tokio::spawn(async move {
+                ed25519_dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
+            });
+        }
+        InternalCommand::ProcessDkgRound1 {
+            from_peer_id,
+            package,
+        } => {
+            ed25519_dkg::process_dkg_round1(state.clone(), from_peer_id, package).await;
+        }
+        InternalCommand::ProcessDkgRound2 {
+            from_peer_id,
+            package,
+        } => {
+            let state_clone = state.clone();
+            let from_peer_id_clone = from_peer_id.clone();
+            let package_clone = package.clone();
+            tokio::spawn(async move {
+                ed25519_dkg::process_dkg_round2(state_clone, from_peer_id_clone, package_clone)
+                    .await;
+            });
+        }
+    }
+}
+
+/// Handler for WebSocket messages received from the server
+async fn handle_websocket_message(
+    msg: Message,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    self_peer_id: String,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+    peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    ws_sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+) {
+    match msg {
+        Message::Text(txt) => {
+            match serde_json::from_str::<ServerMsg>(&txt) {
+                Ok(server_msg) => {
+                    match server_msg {
+                        ServerMsg::Peers { peers } => {
+                            let mut state_guard = state.lock().await;
+                            state_guard.peers = peers.clone();
+                            drop(state_guard);
+                        }
+                        ServerMsg::Error { error } => {
+                            let mut state_guard = state.lock().await;
+                            state_guard.log.push(format!("Error: {}", error));
+                            drop(state_guard);
+                        }
+                        ServerMsg::Relay { from, data } => {
+                            state
+                                .lock()
+                                .await
+                                .log
+                                .push(format!("Relay from {}: {:?}", from, data));
+                            match serde_json::from_value::<WebRTCSignal>(data.clone()) {
+                                Ok(signal) => {
+                                    state.lock().await.log.push(format!(
+                                        "Parsed WebRTC signal from {}: {:?}",
+                                        from, signal
+                                    ));
+                                    // Handle WebRTC signal in a separate function
+                                    handle_webrtc_signal(
+                                        from,
+                                        signal,
+                                        state.clone(),
+                                        self_peer_id,
+                                        internal_cmd_tx.clone(),
+                                        peer_connections_arc.clone(),
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    state.lock().await.log.push(format!(
+                                        "Error parsing WebRTC signal from {}: {}",
+                                        from, e
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    state
+                        .lock()
+                        .await
+                        .log
+                        .push(format!("Error parsing server message: {}", e));
+                }
+            }
+        }
+        Message::Close(_) => {
+            state
+                .lock()
+                .await
+                .log
+                .push("WebSocket connection closed by server.".to_string());
+            // The main loop will handle breaking out
+        }
+        Message::Ping(ping_data) => {
+            // Respond with Pong
+            let _ = ws_sink.send(Message::Pong(ping_data)).await;
+        }
+        Message::Pong(_) => {} // Ignore pongs
+        Message::Binary(_) => {
+            state
+                .lock()
+                .await
+                .log
+                .push("Received unexpected binary message.".to_string());
+        }
+        Message::Frame(_) => {} // Ignore frames
+    }
+}
+
+/// Handler for WebRTC signaling messages
+async fn handle_webrtc_signal(
+    from_peer_id: String,
+    signal: WebRTCSignal,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    self_peer_id: String,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+    peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+) {
+    // Clone necessary variables for the spawned task
+    let from_clone = from_peer_id.clone();
+    let state_log_clone = state.clone();
+    let self_peer_id_clone = self_peer_id;
+    let internal_cmd_tx_clone = internal_cmd_tx;
+    let pc_arc_net_clone = peer_connections_arc.clone();
+    let signal_clone = signal.clone();
+
+    tokio::spawn(async move {
+        // Get or create peer connection
+        let pc_to_use_result = {
+            let peer_conns = pc_arc_net_clone.lock().await;
+            match peer_conns.get(&from_clone).cloned() {
+                Some(pc) => Ok(pc),
+                None => {
+                    state_log_clone.lock().await.log.push(format!(
+                        "WebRTC signal from {} received, but connection object missing. Attempting creation...",
+                        from_clone
+                    ));
+
+                    create_and_setup_peer_connection(
+                        from_clone.clone(),
+                        self_peer_id_clone.clone(),
+                        pc_arc_net_clone.clone(),
+                        internal_cmd_tx_clone.clone(),
+                        state_log_clone.clone(),
+                        &WEBRTC_API,
+                        &WEBRTC_CONFIG,
+                    )
+                    .await
+                }
+            }
+        };
+
+        match pc_to_use_result {
+            Ok(pc_clone) => match signal_clone {
+                WebRTCSignal::Offer(offer_info) => {
+                    handle_webrtc_offer(
+                        &from_clone,
+                        offer_info,
+                        pc_clone,
+                        state_log_clone.clone(),
+                        self_peer_id_clone.clone(),
+                        internal_cmd_tx_clone.clone(),
+                    )
+                    .await;
+                }
+                WebRTCSignal::Answer(answer_info) => {
+                    handle_webrtc_answer(
+                        &from_clone,
+                        answer_info,
+                        pc_clone,
+                        state_log_clone.clone(),
+                    )
+                    .await;
+                }
+                WebRTCSignal::Candidate(candidate_info) => {
+                    handle_webrtc_candidate(
+                        &from_clone,
+                        candidate_info,
+                        pc_clone,
+                        state_log_clone.clone(),
+                    )
+                    .await;
+                }
+            },
+            Err(e) => {
+                state_log_clone.lock().await.log.push(format!(
+                    "Failed to create/retrieve connection object for {} to handle signal: {}",
+                    from_clone, e
+                ));
+            }
+        }
+    });
+}
+
+/// Handler for WebRTC offer signals
+async fn handle_webrtc_offer(
+    from_peer_id: &str,
+    offer_info: SDPInfo,
+    pc: Arc<RTCPeerConnection>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    self_peer_id: String,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+) {
+    use webrtc::peer_connection::signaling_state::RTCSignalingState;
+
+    // Check if we should proceed with this offer
+    let proceed_with_offer;
+    let mut should_abort_due_to_race = false;
+    let current_signaling_state_read;
+
+    {
+        let mut state_guard = state.lock().await;
+        let making = state_guard
+            .making_offer
+            .get(from_peer_id)
+            .copied()
+            .unwrap_or(false);
+        let ignoring = state_guard
+            .ignore_offer
+            .get(from_peer_id)
+            .copied()
+            .unwrap_or(false);
+        let is_polite = self_peer_id > from_peer_id.to_string();
+        current_signaling_state_read = pc.signaling_state();
+
+        state_guard.log.push(format!(
+            "Offer from {}: making={}, ignoring={}, is_polite={}, state={:?}",
+            from_peer_id, making, ignoring, is_polite, current_signaling_state_read
+        ));
+
+        let collision = making;
+        proceed_with_offer = if collision && is_polite {
+            true // Polite peer yields, but will process this offer
+        } else if collision && !is_polite {
+            false // Impolite peer ignores incoming offer during collision
+        } else if ignoring {
+            false // Explicitly ignoring
+        } else {
+            true // No collision or ignoring, proceed
+        };
+
+        if proceed_with_offer && making {
+            should_abort_due_to_race = true;
+        }
+    }
+
+    // Reevaluate with safeguards
+    let mut final_proceed_with_offer = proceed_with_offer;
+    {
+        let mut state_guard = state.lock().await;
+        let making = state_guard
+            .making_offer
+            .get(from_peer_id)
+            .copied()
+            .unwrap_or(false);
+        let is_polite = self_peer_id > from_peer_id.to_string();
+        let collision = making;
+
+        if should_abort_due_to_race {
+            state_guard.log.push(format!(
+                "Aborting offer from {}: Detected making_offer=true just before async operation (Race?)",
+                from_peer_id
+            ));
+            final_proceed_with_offer = false;
+        } else if collision && is_polite {
+            state_guard.log.push(format!(
+                "Glare detected with {}: Polite peer yielding (state update).",
+                from_peer_id
+            ));
+            state_guard
+                .making_offer
+                .insert(from_peer_id.to_string(), false);
+        } else if collision && !is_polite {
+            state_guard.log.push(format!(
+                "Glare detected with {}: Impolite peer ignoring incoming offer (state update).",
+                from_peer_id
+            ));
+            state_guard
+                .ignore_offer
+                .insert(from_peer_id.to_string(), true);
+            final_proceed_with_offer = false;
+        } else if state_guard
+            .ignore_offer
+            .get(from_peer_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            state_guard.log.push(format!(
+                "Ignoring offer from {} as previously decided (state update).",
+                from_peer_id
+            ));
+            state_guard
+                .ignore_offer
+                .insert(from_peer_id.to_string(), false);
+            final_proceed_with_offer = false;
+        }
+
+        let is_invalid_state = !(current_signaling_state_read == RTCSignalingState::Stable
+            || current_signaling_state_read == RTCSignalingState::Closed);
+        if final_proceed_with_offer && is_invalid_state {
+            state_guard.log.push(format!(
+                "Aborting offer from {}: Invalid signaling state {:?} (expected Stable or Closed)",
+                from_peer_id, current_signaling_state_read
+            ));
+            final_proceed_with_offer = false;
+        }
+    }
+
+    if final_proceed_with_offer {
+        state
+            .lock()
+            .await
+            .log
+            .push(format!("Processing offer from {}...", from_peer_id));
+
+        // Create session description from offer
+        match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
+            offer_info.sdp,
+        ) {
+            Ok(offer) => {
+                // Set remote description
+                if let Err(e) = pc.set_remote_description(offer).await {
+                    state.lock().await.log.push(format!(
+                        "Error setting remote description (offer) from {}: {}",
+                        from_peer_id, e
+                    ));
+                    return;
+                }
+
+                state.lock().await.log.push(format!(
+                    "Set remote description (offer) from {}. Creating answer...",
+                    from_peer_id
+                ));
+
+                // Apply any pending ICE candidates
+                apply_pending_candidates(from_peer_id, pc.clone(), state.clone()).await;
+
+                // Create data channel before answering
+                process_data_channel_creation(
+                    from_peer_id,
+                    &pc,
+                    state.clone(),
+                    internal_cmd_tx.clone(),
+                )
+                .await;
+
+                // Create and send answer
+                create_and_send_answer(from_peer_id, &pc, state.clone(), internal_cmd_tx).await;
+            }
+            Err(e) => {
+                state
+                    .lock()
+                    .await
+                    .log
+                    .push(format!("Error parsing offer from {}: {}", from_peer_id, e));
+            }
+        }
+    }
+}
+
+/// Helper for creating a data channel
+async fn process_data_channel_creation(
+    peer_id: &str,
+    pc: &Arc<RTCPeerConnection>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+) {
+    match pc
+        .create_data_channel(utils::peer::DATA_CHANNEL_LABEL, None)
+        .await
+    {
+        Ok(dc) => {
+            let peer_id_dc = peer_id.to_string();
+            let state_log_dc = state.clone();
+            let cmd_tx_dc = cmd_tx.clone();
+
+            utils::peer::setup_data_channel_callbacks(dc, peer_id_dc, state_log_dc, cmd_tx_dc)
+                .await;
+            state
+                .lock()
+                .await
+                .log
+                .push(format!("Created responder data channel for {}", peer_id));
+        }
+        Err(e) => {
+            state.lock().await.log.push(format!(
+                "Error creating responder data channel for {}: {} (continuing anyway)",
+                peer_id, e
+            ));
+        }
+    }
+}
+
+/// Helper for creating and sending an answer
+async fn create_and_send_answer(
+    peer_id: &str,
+    pc: &Arc<RTCPeerConnection>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+) {
+    match pc.create_answer(None).await {
+        Ok(answer) => {
+            if let Err(e) = pc.set_local_description(answer.clone()).await {
+                state.lock().await.log.push(format!(
+                    "Error setting local description (answer) for {}: {}",
+                    peer_id, e
+                ));
+                return;
+            }
+
+            state.lock().await.log.push(format!(
+                "Set local description (answer) for {}. Sending answer...",
+                peer_id
+            ));
+
+            let signal = WebRTCSignal::Answer(SDPInfo { sdp: answer.sdp });
+            match serde_json::to_value(signal) {
+                Ok(json_val) => {
+                    let relay_msg = InternalCommand::SendToServer(SharedClientMsg::Relay {
+                        to: peer_id.to_string(),
+                        data: json_val,
+                    });
+
+                    let _ = cmd_tx.send(relay_msg);
+                    state
+                        .lock()
+                        .await
+                        .log
+                        .push(format!("Sent answer to {}", peer_id));
+                }
+                Err(e) => {
+                    state
+                        .lock()
+                        .await
+                        .log
+                        .push(format!("Error serializing answer for {}: {}", peer_id, e));
+                }
+            }
+        }
+        Err(e) => {
+            state
+                .lock()
+                .await
+                .log
+                .push(format!("Error creating answer for {}: {}", peer_id, e));
+        }
+    }
+}
+
+/// Handler for WebRTC answer signals
+async fn handle_webrtc_answer(
+    from_peer_id: &str,
+    answer_info: SDPInfo,
+    pc: Arc<RTCPeerConnection>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+) {
+    state
+        .lock()
+        .await
+        .log
+        .push(format!("Processing answer from {}...", from_peer_id));
+
+    match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(
+        answer_info.sdp,
+    ) {
+        Ok(answer) => {
+            if let Err(e) = pc.set_remote_description(answer).await {
+                state.lock().await.log.push(format!(
+                    "Error setting remote description (answer) from {}: {}",
+                    from_peer_id, e
+                ));
+            } else {
+                state.lock().await.log.push(format!(
+                    "Set remote description (answer) from {}",
+                    from_peer_id
+                ));
+
+                // Apply any pending ICE candidates now that the remote description is set
+                apply_pending_candidates(from_peer_id, pc.clone(), state.clone()).await;
+            }
+        }
+        Err(e) => {
+            state
+                .lock()
+                .await
+                .log
+                .push(format!("Error parsing answer from {}: {}", from_peer_id, e));
+        }
+    }
+}
+
+/// Handler for WebRTC ICE candidate signals
+async fn handle_webrtc_candidate(
+    from_peer_id: &str,
+    candidate_info: protocal::signal::CandidateInfo,
+    pc: Arc<RTCPeerConnection>,
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+) {
+    state
+        .lock()
+        .await
+        .log
+        .push(format!("Processing candidate from {}...", from_peer_id));
+
+    let candidate_init = RTCIceCandidateInit {
+        candidate: candidate_info.candidate,
+        sdp_mid: candidate_info.sdp_mid,
+        sdp_mline_index: candidate_info.sdp_mline_index,
+        username_fragment: None,
+    };
+
+    // Check if remote description is set before adding ICE candidate
+    let current_state = pc.signaling_state();
+    let remote_description_set = match current_state {
+        webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalPranswer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemotePranswer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => true,
+        _ => false,
+    };
+
+    if remote_description_set {
+        state.lock().await.log.push(format!(
+            "Remote description is set for {}. Adding ICE candidate now.",
+            from_peer_id
+        ));
+
+        if let Err(e) = pc.add_ice_candidate(candidate_init.clone()).await {
+            state.lock().await.log.push(format!(
+                "Error adding ICE candidate from {}: {}",
+                from_peer_id, e
+            ));
+        } else {
+            state
+                .lock()
+                .await
+                .log
+                .push(format!("Added ICE candidate from {}", from_peer_id));
+        }
+    } else {
+        // Store the candidate for later
+        let mut state_guard = state.lock().await;
+        state_guard.log.push(format!(
+            "Storing ICE candidate from {} for later (remote description not set yet)",
+            from_peer_id
+        ));
+
+        let candidates = state_guard
+            .pending_ice_candidates
+            .entry(from_peer_id.to_string())
+            .or_insert_with(Vec::new);
+
+        candidates.push(candidate_init);
+
+        let queued_msg = format!(
+            "Queued ICE candidate from {}. Total queued: {}",
+            from_peer_id,
+            candidates.len()
+        );
+
+        state_guard.log.push(queued_msg);
+    }
 }
