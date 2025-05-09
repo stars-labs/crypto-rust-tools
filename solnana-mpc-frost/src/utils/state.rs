@@ -18,51 +18,46 @@ use webrtc::{
 }; // Keep SessionInfo import
 
 use std::{
-    collections::{BTreeMap, HashMap}, // Keep BTreeMap
+    collections::{BTreeMap, HashMap, HashSet}, // Keep BTreeMap
                                                // Remove Arc import from here if only used for peer_connections
 };
 
-// --- DKG State Enum ---
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DkgState {
-    Idle,
-    Round1InProgress,
-    Round1Complete, // All Round 1 packages received
-    Round2InProgress,
-    Complete,
-    Failed(String),
-}
+// Import DkgState and MeshStatus directly from the solnana_mpc_frost crate
+use solnana_mpc_frost::{DkgState, MeshStatus};
 
-/// Trait for displaying DKG state with proper formatting
+// DkgStateDisplay trait - defines display behavior for DkgState
 pub trait DkgStateDisplay {
-    /// Get a user-friendly display string for the DKG state
     fn display_status(&self) -> String;
-
-    /// Check if the state is considered "active" (in-progress)
     fn is_active(&self) -> bool;
-
-    /// Check if the state represents completed DKG
     fn is_completed(&self) -> bool;
 }
 
+// Implement the trait for the imported DkgState
 impl DkgStateDisplay for DkgState {
     fn display_status(&self) -> String {
         match self {
             DkgState::Idle => "Idle".to_string(),
-            DkgState::Round1InProgress => "Round 1 (In Progress...)".to_string(),
-            DkgState::Round1Complete => "Round 1 (Complete)".to_string(),
-            DkgState::Round2InProgress => "Round 2 (In Progress...)".to_string(),
-            DkgState::Complete => "Complete (Key Generated)".to_string(),
-            DkgState::Failed(err) => {
-                format!("Failed: {}", err)
-            } // Display error message if available
+            DkgState::Round1InProgress => "Round 1 In Progress".to_string(),
+            DkgState::Round1Complete => "Round 1 Complete".to_string(),
+            DkgState::Round2InProgress => "Round 2 In Progress".to_string(),
+            DkgState::VerificationInProgress => "Verification In Progress".to_string(),
+            DkgState::Complete => "Complete".to_string(),
+            DkgState::Failed(reason) => format!("Failed: {}", reason),
+            DkgState::CommitmentsInProgress => "Commitments In Progress".to_string(),
+            DkgState::SharesInProgress => "Shares In Progress".to_string(),
+            DkgState::CommitmentsComplete => "Commitments Complete".to_string(),
         }
     }
 
     fn is_active(&self) -> bool {
         matches!(
             self,
-            DkgState::Round1InProgress | DkgState::Round1Complete | DkgState::Round2InProgress
+            DkgState::Round1InProgress
+                | DkgState::Round1Complete
+                | DkgState::Round2InProgress
+                | DkgState::VerificationInProgress
+                | DkgState::CommitmentsInProgress
+                | DkgState::SharesInProgress
         )
     }
 
@@ -109,6 +104,10 @@ pub struct AppState<C: Ciphersuite> {
     // Fix: Use proper round1::Package type
     pub queued_dkg_round1: Vec<(String, round1::Package<C>)>,
     pub peer_connected_history: HashMap<String, Vec<RTCPeerConnectionState>>,
+    /// Track which peers have reported mesh readiness
+    pub mesh_ready_peers: HashSet<String>,
+    /// Overall mesh readiness status
+    pub mesh_status: MeshStatus,
 }
 
 // --- Reconnection Tracker ---

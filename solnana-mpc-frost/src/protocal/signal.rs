@@ -16,6 +16,7 @@ pub struct SessionInfo {
     pub total: u16,
     pub threshold: u16,
     pub participants: Vec<String>,
+    pub accepted_peers: Vec<String>,
 }
 
 // --- WebRTC Signaling Data (sent via Relay) ---
@@ -58,6 +59,22 @@ pub enum WebRTCMessage {
         // Add this variant
         package: round2::Package<Ed25519Sha512>,
     },
+    /// Session proposal message
+    SessionProposal(SessionProposal),
+
+    /// Session response message
+    SessionResponse(SessionResponse),
+
+    /// Data channel opened notification
+    ChannelOpen {
+        peer_id: String,
+    },
+
+    /// Mesh readiness notification
+    MeshReady {
+        session_id: String,
+        peer_id: String,
+    },
 }
 
 // Helper to convert RTCIceCandidate to CandidateInfo
@@ -76,4 +93,20 @@ impl From<RTCSessionDescription> for SDPInfo {
     fn from(desc: RTCSessionDescription) -> Self {
         SDPInfo { sdp: desc.sdp }
     }
+}
+
+/// Session proposal information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionProposal {
+    pub session_id: String,
+    pub total: u16,
+    pub threshold: u16,
+    pub participants: Vec<String>,
+}
+
+/// Session response information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub session_id: String,
+    pub accepted: bool,
 }

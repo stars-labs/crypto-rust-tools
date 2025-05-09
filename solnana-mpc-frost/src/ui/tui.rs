@@ -1,5 +1,5 @@
 use crate::protocal::signal::SessionInfo;
-use crate::utils::state::{AppState, DkgStateDisplay}; // Import DkgStateDisplay
+use crate::utils::state::{AppState, DkgStateDisplay}; // Now correctly imports DkgStateDisplay trait
 use crate::{InternalCommand, SharedClientMsg}; // Import necessary types
 use crossterm::event::{KeyCode, KeyEvent};
 use frost_ed25519::Ed25519Sha512; // Keep for AppState generic

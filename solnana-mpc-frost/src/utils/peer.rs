@@ -1,6 +1,6 @@
 use crate::protocal::signal::*;
-use crate::utils::state::{AppState, DkgState};
-
+use crate::utils::state::{AppState};
+use solnana_mpc_frost::{ DkgState};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -53,6 +53,7 @@ pub async fn send_webrtc_message(
                 WebRTCMessage::SimpleMessage { text } => {
                     ("simple", serde_json::json!({ "text": text }))
                 }
+                _ => ("unknown", serde_json::Value::String("unhandled_message_type".to_string())),
             };
             let envelope = DataChannelEnvelope {
                 msg_type: msg_type.to_string(),
@@ -200,14 +201,17 @@ pub async fn create_and_setup_peer_connection(
             // Setup state change handler with DKG trigger logic
             let state_log_on_state = state_log.clone();
             let peer_id_on_state = peer_id.clone();
-            let cmd_tx_on_state = cmd_tx.clone();
+            // Fix the setup_peer_connection_callbacks function
+            // Clone before moving into closure
+            let cmd_tx_for_state_change = cmd_tx.clone();
             let pc_arc_for_state = pc_arc.clone();
             pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-                let state_log = state_log_on_state.clone();
-                let peer_id = peer_id_on_state.clone();
-            
+                // Using the cloned sender here
+                let cmd_tx_on_state = cmd_tx_for_state_change.clone();
+                
+                // Fix: Use pc_arc directly instead of undefined pc_arc_for_state
                 let pc_arc = pc_arc_for_state.clone();
-
+                
                 // Log both connectionState and iceConnectionState together
                 let ice_state = pc_arc.ice_connection_state();
                 println!(
@@ -305,8 +309,8 @@ pub async fn create_and_setup_peer_connection(
             }));
 
             // --- Setup ICE connection monitoring callback ---
-            let state_log_ice = state_log.clone();
-            let peer_id_ice = peer_id.clone();
+            let state_log_ice = state_log_on_state.clone();
+            let peer_id_ice = peer_id_on_state.clone();
             let pc_arc_for_ice = pc_arc.clone();
             pc_arc.on_ice_connection_state_change(Box::new(move |ice_state| {
                 let state_log = state_log_ice.clone();
@@ -330,8 +334,8 @@ pub async fn create_and_setup_peer_connection(
             }));
 
             // --- Only set up callbacks for the main data channel (responder side) ---
-            let state_log_on_data = state_log.clone();
-            let peer_id_on_data = peer_id.clone();
+            let state_log_on_data = state_log_on_state.clone();
+            let peer_id_on_data = peer_id_on_state.clone();
             let cmd_tx_on_data = cmd_tx.clone();
             pc_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
                 let state_log = state_log_on_data.clone();
@@ -353,12 +357,12 @@ pub async fn create_and_setup_peer_connection(
             // --- Store the connection object ---
             {
                 let mut peer_conns = peer_connections_arc.lock().await;
-                peer_conns.insert(peer_id.clone(), pc_arc.clone());
-                state_log
+                peer_conns.insert(peer_id_on_state.clone(), pc_arc.clone());
+                state_log_on_state
                     .lock()
                     .await
                     .log
-                    .push(format!("Stored WebRTC connection object for {}", peer_id));
+                    .push(format!("Stored WebRTC connection object for {}", peer_id_on_state));
             } // Drop lock
 
             Ok(pc_arc)

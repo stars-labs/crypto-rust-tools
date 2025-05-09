@@ -1,13 +1,13 @@
 use bincode::serde::{decode_from_slice, encode_to_vec};
-use clap::Parser; // Add this import
-use frost::Identifier; // Keep only the needed import
+use clap::{Parser, arg, command}; // Fix clap imports
+use frost::Identifier;
 use frost::rand_core::OsRng;
 use frost_core::SigningPackage;
-use frost_core::keys::dkg::{round1, round2}; // Keep only needed modules
-use frost_core::keys::{KeyPackage, PublicKeyPackage}; // Keep only KeyPackage, add PublicKeyPackage
-use frost_core::{round1 as frost_round1, round2 as frost_round2}; // Import signing rounds
-use frost_ed25519 as frost; // Alias for convenience
-use frost_ed25519::Ed25519Sha512; // Import directly to use as generic parameter
+use frost_core::keys::dkg::{round1, round2};
+use frost_core::keys::{KeyPackage, PublicKeyPackage};
+use frost_core::{round1 as frost_round1, round2 as frost_round2};
+use frost_ed25519 as frost;
+use frost_ed25519::Ed25519Sha512;
 use hex;
 use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
@@ -15,27 +15,27 @@ use solana_sdk::{
     commitment_config::CommitmentConfig, message::Message, pubkey::Pubkey, signature::Signature,
     system_instruction::transfer, transaction::Transaction,
 };
-use std::collections::BTreeMap; // Removed HashMap
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 
 use std::error::Error;
-use std::fs::{self}; // Removed File
-use std::io::{self, Read, Write, stdin}; // Removed unused BufWriter
+use std::fs::{self};
+use std::io::{self, Read, Write, stdin};
 use std::net::{TcpListener, TcpStream};
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant; // Re-add Instant
+use std::time::Instant;
 
 /// Solana DKG Example CLI
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct CliArgs {
     /// Your node index (1-based)
-    #[arg(long)]
+    #[arg(long, short)]
     index: u16,
     /// Total number of participants
-    #[arg(long)]
+    #[arg(long, short)]
     total: u16,
     /// Threshold for signing
     #[arg(long)]
@@ -334,7 +334,6 @@ fn receive_messages<T>(
 
 // Main function becomes a simple state machine driver
 fn main() -> Result<(), Box<dyn Error>> {
-    // let (index, total, threshold, is_initiator) = parse_args();
     let args = CliArgs::parse();
     let index = args.index;
     let total = args.total;
@@ -384,8 +383,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Optional - Add delay between state transitions for clarity
         thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    // Unreachable code due to infinite loop above
+    // Ok(())
 }
+
 // Define the state machine states
 #[derive(Debug, Clone, PartialEq)]
 enum NodeState {

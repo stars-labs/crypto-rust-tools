@@ -40,105 +40,145 @@ The CLI node presents a terminal user interface (TUI) with the following section
 
 Type commands starting with `/` and press `Enter`.
 
-*   `/list`: Manually request an updated list of peers from the server. (The list also updates periodically and on peer join/disconnect).
-*   `/create <session_id> <total> <threshold> <peer1,peer2,...>`: Create a new MPC session.
+*   `/list`: Manually request an updated list of peers from the server. The list also updates periodically and on peer join/disconnect.
+*   `/propose <session_id> <total> <threshold> <peer1,peer2,...>`: Propose a new MPC session.
     *   `<session_id>`: A unique name for the session (e.g., `mywallet`).
     *   `<total>`: The total number of participants required (e.g., `3`).
     *   `<threshold>`: The signing threshold (e.g., `2`).
     *   `<peer1,peer2,...>`: A comma-separated list of the exact `peer_id`s of all participants (including yourself).
-    *   *Example:* `/create mywallet 3 2 mpc-1,mpc-2,mpc-3`
+    *   *Example:* `/propose mywallet 3 2 mpc-1,mpc-2,mpc-3`
 *   `/join <session_id>`: Join an existing session you were invited to.
     *   *Example:* `/join mywallet`
-*   `/invite <session_id>`: (Alternative to 'o') Accept a specific pending invite by its `session_id`. If the invite is not found, a message will be logged.
-    *   *Example:* `/invite mywallet`
-*   `/relay <target_peer_id> <json_data>`: Send an arbitrary JSON message to another peer via the signaling server. This is a low-level command intended for implementing peer-to-peer protocols.
+*   `/accept <session_id>`: (Alternative to 'o') Accept a specific pending session proposal by its `session_id`.
+    *   *Example:* `/accept mywallet`
+*   `/relay <target_peer_id> <json_data>`: Send an arbitrary JSON message to another peer via the signaling server.
     *   `<target_peer_id>`: The exact `peer_id` of the recipient.
-    *   `<json_data>`: A valid JSON object or value (e.g., `{"type":"hello","value":123}`). Ensure the JSON is properly formatted on a single line.
-    *   *Example:* `/relay mpc-2 {"action":"ping","id":1}`
-*   `/send <target_peer_id> <message>`: Send a direct WebRTC message to another peer (requires established WebRTC connection).
+    *   `<json_data>`: A valid JSON object or value (e.g., `{"type":"hello","value":123}`).
+    *   *Example:* `/relay mpc-2 {"type":"ping","payload":{"id":1}}`
+*   `/send <target_peer_id> <message>`: Send a direct WebRTC message to another peer.
     *   `<target_peer_id>`: The exact `peer_id` of the recipient.
     *   `<message>`: Any text message you want to send directly to the peer.
     *   *Example:* `/send mpc-2 Hello, this is a direct message!`
-    *   *Note:* This command will only work if a WebRTC connection exists with the peer, regardless of the displayed connection status.
+*   `/status`: Show detailed information about the current session and mesh state.
+*   `/mesh_ready`: Manually indicate this node is ready with all WebRTC connections established.
 *   `Esc`: Exit Input Mode without sending a command.
 *   `Backspace`: Delete the last character typed.
 
 ## Understanding WebRTC Connection Status
 
-After all participants have joined the session, the WebRTC connection establishment process begins automatically. In the **Peers** section, you'll see connection status indicators:
+After participants have agreed to join a session, the WebRTC connection establishment process begins:
 
-1.  **Check Connection State:** Look for state change messages in the TUI **Log** pane and the console output (where you ran `cargo run`). A successful connection between your node and another peer (e.g., `mpc-2`) will eventually result in logs like:
-    *   TUI Log: `WebRTC state with mpc-2: Connected`
-    *   Console: `Peer Connection State has changed: Connected`
-    You should see these "Connected" messages for each peer you are supposed to connect with in the session. The state might transition through `Connecting`, `Checking`, etc., before reaching `Connected`.
+1. **Signaling Exchange:** Peers exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server.
+   - The log will show messages about offers, answers, and ICE candidates being sent and received.
 
-2.  **Check Data Channel:** The underlying `webrtc` library often negotiates a default data channel. When this channel is successfully opened with a peer (e.g., `mpc-2`), you will see a message in the TUI **Log** pane:
-    *   TUI Log: `Data channel opened with mpc-2`
-    *   Console: `Peer Connection State has changed: Connected`
-Seeing both the `Connected` state and the `Data channel opened` message for a specific peer indicates that the WebRTC connection mesh is successfully established with that peer, allowing for direct peer-to-peer communication. If you see `Failed` states or don't see the "Connected" / "Data channel opened" messages after a reasonable time, there might be network issues (like firewalls blocking UDP) preventing the P2P connection. In such cases, a TURN server (which relays traffic) might be necessary; this example includes a public TURN server configuration for better NAT traversal compatibility.
+2. **Connection States:** In the **Peers** section, you'll see connection status indicators:
+   - `New`: Initial state
+   - `Connecting`: Connection attempt in progress
+   - `Connected`: WebRTC connection established
+   - `Failed`: Connection attempt failed
+   - `Disconnected`: Connection was established but then lost
+
+3. **Data Channel Status:** For successful MPC communication, data channels must be opened.
+   - TUI Log will show: `Data channel opened with mpc-2`
+   - Console may show: `WebRTC data channel state change: open`
+
+4. **Mesh Readiness:** A complete mesh is formed when all participants have established WebRTC connections with each other.
+   - Each node automatically sends a `channel_open` message when a data channel is successfully opened
+   - When all required connections are established, a node automatically signals `mesh_ready` to all peers
+   - Manual intervention with `/mesh_ready` command is only needed if the automatic process fails
+   - The TUI will show "Mesh Status: Ready (3/3)" when all peers report readiness
+   - When all peers report mesh readiness, the MPC protocol proceeds automatically
 
 ## Distributed Key Generation (DKG)
 
-Once all participants have joined the session and the WebRTC connections are established (status `Connected` for all peers in the session), the DKG process should start automatically.
+Once the full WebRTC mesh is established and all participants have signaled readiness, the DKG process begins:
 
-1.  **DKG Start:** The log will show messages like "All peers connected and session ready! Triggering DKG Round 1...".
-2.  **Rounds:** The DKG involves multiple rounds (Round 1, Round 2, Part 3 Finalization). You will see log messages indicating the progress through these rounds, including sending and receiving packages.
-3.  **Status Update:** The "DKG Status" line in the TUI will update: `Idle` -> `Round1InProgress` -> `Round1Complete` -> `Round2InProgress` -> `Complete` or `Failed`.
-4.  **Completion:** If successful, the status will show `Complete`, and the "Key Share" and "Group Public Key" fields will be populated (showing `Some(...)`).
-5.  **Failure:** If an error occurs (e.g., network issues, incorrect packages), the status will show `Failed` with an error message.
+1. **Commitment Exchange:** Each node sends its cryptographic commitments to all others.
+   - Log will show: `Sending commitments to all peers...`
+   
+2. **Share Distribution:** Nodes exchange encrypted key shares with each participant.
+   - Log will show: `Sending share to peer mpc-2...`
+   
+3. **Verification:** Each node verifies the received shares against the commitments.
+   - Log will show: `Verifying share from peer mpc-2...`
+   
+4. **Finalization:** Nodes complete the DKG process by computing their final key shares.
+   - Log will show: `Computing final key share...`
+
+The "DKG Status" in the TUI will update as the process progresses through these phases:
+- `Idle` → `CommitmentsInProgress` → `CommitmentsComplete` → `SharesInProgress` → `VerificationInProgress` → `Complete` or `Failed`
 
 ## Example Workflow (Creating a 2-of-3 MPC Wallet Session)
 
-This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`, `mpc-3`) where any 2 of them are required to sign (`threshold = 2`).
+This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`, `mpc-3`) where any 2 are required to sign (`threshold = 2`).
 
-1.  **Start Server:** Run `signal_server` in one terminal.
-    ```bash
-    cargo run -p solnana_mpc_frost --bin signal_server
-    ```
+1. **Start Server:**
+   ```bash
+   cargo run -p solnana_mpc_frost --bin signal_server
+   ```
 
-2.  **Start Nodes:** Open three separate terminals.
-    *   Terminal 1: Run `cargo run -p solnana_mpc_frost --bin cli_node`, enter `mpc-1` when prompted.
-    *   Terminal 2: Run `cargo run -p solnana_mpc_frost --bin cli_node`, enter `mpc-2` when prompted.
-    *   Terminal 3: Run `cargo run -p solnana_mpc_frost --bin cli_node`, enter `mpc-3` when prompted.
+2. **Start Nodes:** In three separate terminals:
+   - Terminal 1: Run node with peer ID `mpc-1`
+   - Terminal 2: Run node with peer ID `mpc-2`
+   - Terminal 3: Run node with peer ID `mpc-3`
 
-3.  **Observe Peers:** Wait a few seconds. Each node's "Peers" list should eventually show the other two nodes connected to the server.
+3. **Session Proposal:**
+   - On `mpc-1`, enter input mode (`i`) and type:
+   ```
+   /propose wallet_2of3 3 2 mpc-1,mpc-2,mpc-3
+   ```
+   - `mpc-1` will broadcast the session proposal to `mpc-2` and `mpc-3`
+   - On `mpc-2` and `mpc-3`, the proposal will appear in the TUI under the "Invites:" section
+   - The log will show: `Session proposal 'wallet_2of3' received from mpc-1`
 
-4.  **Create Session (e.g., from Node `mpc-1`):**
-    *   On node `mpc-1`, press `i` to enter input mode.
-    *   Type the command to create a session named `wallet_2of3` with 3 total participants and a threshold of 2:
-        ```bash
-        /create wallet_2of3 3 2 mpc-1,mpc-2,mpc-3
-        ```
-    *   Press `Enter`.
-    *   Node `mpc-1`'s log will show session info, and the session status line will update. Node `mpc-1` is now considered "in" the session.
-    *   Nodes `mpc-2` and `mpc-3` will receive an invite: "Invites: wallet_2of3" will appear, and the log will show "Session invite from mpc-1...".
+4. **Accepting the Proposal:**
+   - On `mpc-2`, press `o` (or type `/accept wallet_2of3`)
+   - The log will show: `You accepted session proposal 'wallet_2of3'`
+   - On `mpc-3`, press `o` (or type `/accept wallet_2of3`)
+   - All nodes will show the session as active once all participants have accepted
 
-5.  **Join Session (Nodes `mpc-2` and `mpc-3`):**
-    *   On node `mpc-2`, press `o` to accept the first invite (or use `/join wallet_2of3`).
-    *   On node `mpc-3`, press `o` to accept the first invite (or use `/join wallet_2of3`).
-    *   As each node joins, all *already joined* participants (including the joiner) will receive an updated `SessionInfo` message via the server. The log will show "Session info received/updated...".
-    *   Once the *last* participant joins (`mpc-3` in this case), all participants (`mpc-1`, `mpc-2`, `mpc-3`) will have the complete `SessionInfo`. At this point, the WebRTC connection process (offers, answers, candidates) should begin automatically between peers, visible in the logs.
-    *   **Wait for Connections:** Observe the logs until all peer connections show as `Connected`.
-    *   **DKG Starts:** The DKG process should then begin automatically. Monitor the logs and the "DKG Status" in the TUI.
+5. **WebRTC Connection Establishment:**
+   - Nodes will automatically exchange WebRTC signaling information via the server
+   - Watch the logs for connection state changes
+   - When all connections are established, each node will show all peers as "Connected"
+   - Data channels will be opened between all pairs of peers
 
-6.  **(Optional) Relay Test Message (e.g., Node `mpc-1` to `mpc-2`):**
-    *   On node `mpc-1`, press `i`.
-    *   Type: `/relay mpc-2 {"msg":"hello from mpc-1"}`
-    *   Press `Enter`.
-    *   Node `mpc-1` logs "Relaying message to mpc-2".
-    *   Node `mpc-2` logs `Received non-WebRTC signal JSON via Relay from mpc-1: ...` (or similar, as it's not a standard WebRTC signal).
+6. **Mesh Readiness:**
+   - Each node automatically reports channel open status to its peers
+   - When a node has all data channels open, it sends "mesh_ready" to all peers
+   - When all nodes are ready, the DKG process will start automatically
 
-7.  **Send Direct WebRTC Messages (after connections are established):**
-    *   Once WebRTC connections are established (you see "Connected" and "Data channel opened" messages in the logs for the relevant peers), you can send messages directly between peers.
-    *   On node `mpc-1`, press `i`.
-    *   Type: `/send mpc-2 Hello, this is a direct P2P message!`
-    *   Press `Enter`.
-    *   Node `mpc-1` logs "Sent direct message to mpc-2".
-    *   Node `mpc-2` logs "Received WebRTC message from mpc-1: SimpleMessage { text: \"Hello, this is a direct P2P message!\" }" (or similar).
+7. **DKG Process:**
+   - The log will show commitment messages being exchanged
+   - Share distribution messages will follow
+   - All nodes will calculate and verify their key shares
+   - Upon successful completion, the "DKG Status" will show "Complete" and display the group public key
 
-*(Note: This example covers session setup, signaling, WebRTC connection establishment, DKG, and direct peer-to-peer communication.)*
+8. **Verification:**
+   - To verify all nodes have the same group public key, check the "Group Public Key" field
+   - All nodes should display the same hex value
 
-# Why does `mpc-3`'s connection to `mpc-1` transition from Connected to New?
+## Protocol Messaging Flow
 
-## Key Log Excerpts
-```
+Behind the scenes, the CLI node implements the following protocol flow:
+
+1. **Registration:** Each node registers with the signaling server using a unique `peer_id`
+2. **Peer Discovery:** Nodes request lists of available peers from the server
+3. **Session Negotiation:** Nodes exchange session proposals and acceptances
+4. **WebRTC Signaling:** Peers exchange offers, answers, and ICE candidates via the server
+5. **Mesh Formation:** Nodes establish direct WebRTC connections and report readiness
+6. **DKG Protocol:** Once the mesh is complete, the DKG protocol executes over WebRTC
+7. **Wallet Creation:** The MPC wallet is created when DKG completes successfully
+
+Each of these steps involves specific message types defined in the protocol documentation.
+
+## Troubleshooting
+
+* **Peer not showing in list:** Try using `/list` to refresh the peer list.
+* **Failed WebRTC connections:** Check your network settings. WebRTC may be blocked by some firewalls.
+* **DKG fails to complete:** Ensure all nodes have proper WebRTC connections before starting DKG.
+* **Mesh formation issues:** If the mesh isn't completing automatically, check the logs for connection errors.
+* **Message not received:** Verify that all participants have joined the same session ID.
+* **State synchronization issues:** Sometimes restarting the affected nodes may help resolve state inconsistencies.
+
+For persistent issues, consult the protocol documentation for more detailed message flow information.
