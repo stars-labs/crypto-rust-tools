@@ -2,7 +2,7 @@ use crate::protocal::signal::{SDPInfo, WebRTCSignal};
 use crate::utils::state::AppState;
 use frost_ed25519::Ed25519Sha512;
 
-use solnana_mpc_frost::InternalCommand;
+use crate::utils::state::InternalCommand;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, mpsc};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;

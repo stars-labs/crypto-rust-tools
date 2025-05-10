@@ -1,13 +1,13 @@
 use crate::protocal::signal::WebRTCMessage;
 use crate::utils::peer::send_webrtc_message;
 use crate::utils::state::AppState;
+use crate::utils::state::DkgState; // Import DkgState directly from solnana_mpc_frost
 use frost_core::keys::PublicKeyPackage;
 use frost_core::keys::dkg::{part1, part2, part3, round1, round2};
 use frost_ed25519::Ed25519Sha512;
 use frost_ed25519::rand_core::OsRng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use solnana_mpc_frost::DkgState; // Import DkgState directly from solnana_mpc_frost
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;

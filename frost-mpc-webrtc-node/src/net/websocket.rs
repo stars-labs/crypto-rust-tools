@@ -30,8 +30,9 @@ pub async fn connect_to_signal_server() {
     let msg = ClientMsg::Register {
         peer_id: "my_peer_id".to_string(),
     };
+    
     let msg_str = serde_json::to_string(&msg).unwrap();
-    write.send(Message::Text(msg_str)).await.unwrap();
+    write.send(Message::Text(msg_str.into())).await.unwrap();
 
     // Listen for messages from the server
     while let Some(msg) = read.next().await {

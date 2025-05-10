@@ -1,6 +1,6 @@
 use crate::protocal::signal::*;
 use crate::utils::state::{AppState};
-use solnana_mpc_frost::{ DkgState};
+use crate::utils::state::{ DkgState, InternalCommand};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use frost_core::keys::dkg::round2;
 use frost_ed25519::Ed25519Sha512;
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
-use solnana_mpc_frost::InternalCommand;
+
 
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
 
@@ -203,12 +203,8 @@ pub async fn create_and_setup_peer_connection(
             let peer_id_on_state = peer_id.clone();
             // Fix the setup_peer_connection_callbacks function
             // Clone before moving into closure
-            let cmd_tx_for_state_change = cmd_tx.clone();
             let pc_arc_for_state = pc_arc.clone();
             pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-                // Using the cloned sender here
-                let cmd_tx_on_state = cmd_tx_for_state_change.clone();
-                
                 // Fix: Use pc_arc directly instead of undefined pc_arc_for_state
                 let pc_arc = pc_arc_for_state.clone();
                 

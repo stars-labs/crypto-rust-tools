@@ -108,6 +108,26 @@ Once the full WebRTC mesh is established and all participants have signaled read
 The "DKG Status" in the TUI will update as the process progresses through these phases:
 - `Idle` → `CommitmentsInProgress` → `CommitmentsComplete` → `SharesInProgress` → `VerificationInProgress` → `Complete` or `Failed`
 
+## WebRTC Mesh Formation
+
+Before DKG can begin, all participating nodes must establish a full peer-to-peer mesh network via WebRTC:
+
+1. **WebRTC Data Channel Establishment:**
+   - For each node pair, WebRTC connections must be established through the signaling server
+   - When a data channel successfully opens, nodes automatically exchange `channel_open` messages:
+     ```json
+     { "type": "channel_open", "payload": { "peer_id": "<peer_id>" } }
+     ```
+   - Each node tracks its connected peers against the session participant list
+
+2. **Mesh Readiness Notification:**
+   - When a node has open channels to all participants, it broadcasts a `mesh_ready` message:
+     ```json
+     { "type": "mesh_ready", "payload": { "session_id": "<session_id>", "peer_id": "<sender_peer_id>" } }
+     ```
+   - DKG begins only when all nodes have confirmed mesh readiness
+   - The TUI displays "Mesh Status: Ready (3/3)" when the mesh is complete
+
 ## Example Workflow (Creating a 2-of-3 MPC Wallet Session)
 
 This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`, `mpc-3`) where any 2 are required to sign (`threshold = 2`).
@@ -127,36 +147,56 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
    ```
    /propose wallet_2of3 3 2 mpc-1,mpc-2,mpc-3
    ```
-   - `mpc-1` will broadcast the session proposal to `mpc-2` and `mpc-3`
+   - This creates a `session_proposal` message that is relayed to other participants:
+     ```json
+     {
+       "type": "session_proposal", 
+       "payload": { 
+         "session_id": "wallet_2of3", 
+         "total": 3, 
+         "threshold": 2, 
+         "participants": ["mpc-1", "mpc-2", "mpc-3"] 
+       }
+     }
+     ```
    - On `mpc-2` and `mpc-3`, the proposal will appear in the TUI under the "Invites:" section
-   - The log will show: `Session proposal 'wallet_2of3' received from mpc-1`
 
 4. **Accepting the Proposal:**
-   - On `mpc-2`, press `o` (or type `/accept wallet_2of3`)
-   - The log will show: `You accepted session proposal 'wallet_2of3'`
-   - On `mpc-3`, press `o` (or type `/accept wallet_2of3`)
-   - All nodes will show the session as active once all participants have accepted
+   - On `mpc-2` and `mpc-3`, press `o` (or type `/accept wallet_2of3`)
+   - Each accepting node sends an acceptance message to the proposer
 
 5. **WebRTC Connection Establishment:**
-   - Nodes will automatically exchange WebRTC signaling information via the server
-   - Watch the logs for connection state changes
-   - When all connections are established, each node will show all peers as "Connected"
-   - Data channels will be opened between all pairs of peers
+   - Nodes automatically exchange WebRTC signaling information via the server:
+     - SDP Offers/Answers: Initial connection parameters
+     - ICE Candidates: Network path information
+   - These messages use the following format through the signaling server:
+     ```json
+     { "type": "relay", "to": "<peer_id>", "data": { "type": "offer|answer|candidate", ... } }
+     ```
 
 6. **Mesh Readiness:**
-   - Each node automatically reports channel open status to its peers
-   - When a node has all data channels open, it sends "mesh_ready" to all peers
-   - When all nodes are ready, the DKG process will start automatically
+   - As each data channel opens, nodes exchange `channel_open` messages
+   - When all required connections are established, nodes send `mesh_ready` messages
+   - The TUI will show "Mesh Status: Ready (3/3)" when all peers report readiness
 
 7. **DKG Process:**
-   - The log will show commitment messages being exchanged
-   - Share distribution messages will follow
-   - All nodes will calculate and verify their key shares
-   - Upon successful completion, the "DKG Status" will show "Complete" and display the group public key
+   - **Commitments:** Each node broadcasts its commitments to all peers:
+     ```json
+     { "type": "commitment", "payload": { "data": "<hex-encoded-commitment>" } }
+     ```
+   - **Shares:** Each node sends encrypted key shares to each participant:
+     ```json
+     { "type": "share", "payload": { "data": "<hex-encoded-share>" } }
+     ```
+   - **Verification:** Each node verifies received shares against commitments
+   - **Completion:** When verification completes, the final key shares are computed
 
 8. **Verification:**
-   - To verify all nodes have the same group public key, check the "Group Public Key" field
-   - All nodes should display the same hex value
+   - Upon successful completion, all nodes will display the same group public key
+   - Nodes may also exchange a final status message:
+     ```json
+     { "type": "wallet_created", "payload": { "session_id": "wallet_2of3", "pubkey": "<hex-group-pubkey>" } }
+     ```
 
 ## Protocol Messaging Flow
 
