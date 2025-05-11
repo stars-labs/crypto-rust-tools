@@ -100,10 +100,9 @@ pub enum DkgState {
     Round1InProgress, // Same as CommitmentsInProgress but with naming used in other files
     Round1Complete,   // All Round 1 packages received
     Round2InProgress, // Same as SharesInProgress but with naming used in other files
-    CommitmentsInProgress, // Keep original variants for backward compatibility
-    CommitmentsComplete,
+    Round2Complete,   // All Round 2 packages received
+    Finalizing,
     SharesInProgress,
-    VerificationInProgress,
     Complete,
     Failed(String),
 }
@@ -112,8 +111,10 @@ pub enum DkgState {
 #[derive(Debug, PartialEq, Clone)]
 pub enum MeshStatus {
     Incomplete,
-    PartiallyReady(usize, usize), // (ready_count, total_count)
-    SentSelfReady,
+    PartiallyReady {
+        ready_peers: HashSet<String>,
+        total_peers: usize,
+    },
     Ready,
 }
 
@@ -132,12 +133,11 @@ impl DkgStateDisplay for DkgState {
             DkgState::Round1InProgress => "Round 1 In Progress".to_string(),
             DkgState::Round1Complete => "Round 1 Complete".to_string(),
             DkgState::Round2InProgress => "Round 2 In Progress".to_string(),
-            DkgState::VerificationInProgress => "Verification In Progress".to_string(),
+
             DkgState::Complete => "Complete".to_string(),
             DkgState::Failed(reason) => format!("Failed: {}", reason),
-            DkgState::CommitmentsInProgress => "Commitments In Progress".to_string(),
+
             DkgState::SharesInProgress => "Shares In Progress".to_string(),
-            DkgState::CommitmentsComplete => "Commitments Complete".to_string(),
         }
     }
 
@@ -147,8 +147,6 @@ impl DkgStateDisplay for DkgState {
             DkgState::Round1InProgress
                 | DkgState::Round1Complete
                 | DkgState::Round2InProgress
-                | DkgState::VerificationInProgress
-                | DkgState::CommitmentsInProgress
                 | DkgState::SharesInProgress
         )
     }
@@ -180,7 +178,8 @@ pub struct AppState<C: Ciphersuite> {
     pub identifier_map: Option<BTreeMap<String, Identifier<C>>>, // peer_id -> FROST Identifier
     // pub identifier_to_index_map: Option<BTreeMap<Identifier<C>, u16>>, // Removed field
     // Fix: Use proper round1::SecretPackage and round1::Package types
-    pub local_dkg_part1_data: Option<(round1::SecretPackage<C>, round1::Package<C>)>,
+    pub dkg_part1_public_package: Option<round1::Package<C>>,
+    pub dkg_part1_secret_package: Option<round1::SecretPackage<C>>,
     // Fix: Store received round1 packages with correct type
     pub received_dkg_packages: BTreeMap<Identifier<C>, round1::Package<C>>,
     pub round2_secret_package: Option<round2::SecretPackage<C>>, // Secret needed for Part 3
@@ -195,7 +194,6 @@ pub struct AppState<C: Ciphersuite> {
     // Fix: Use proper round1::Package type
     pub queued_dkg_round1: Vec<(String, round1::Package<C>)>,
     /// Track which peers have reported mesh readiness
-    pub mesh_ready_peers: HashSet<String>,
     /// Overall mesh readiness status
     pub mesh_status: MeshStatus,
 }

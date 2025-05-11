@@ -1,7 +1,7 @@
-use crate::network::websocket;
-use crate::protocal::signal::*;
-use crate::utils::state::AppState;
-use crate::utils::state::{ DkgState, InternalCommand};
+// use crate::network::websocket; // Unused
+// use crate::protocal::signal::*; // Unused
+use crate::protocal::signal::{WebRTCMessage, WebRTCSignal};
+use crate::utils::state::{AppState, DkgState, InternalCommand};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use frost_ed25519::Ed25519Sha512;
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
-use crate::protocal::signal::{CandidateInfo, WebRTCMessage, WebRTCSignal, WebSocketMessage}; // Updated path
+use crate::protocal::signal::{CandidateInfo, WebSocketMessage}; // Updated path
 
 
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
@@ -224,7 +224,8 @@ pub async fn create_and_setup_peer_connection(
                                 guard.log.push(format!("Resetting DKG state due to disconnection with {}", peer_id));
                                 guard.dkg_state = DkgState::Failed(format!("Peer {} disconnected", peer_id));
                                 // Clear intermediate DKG data if needed
-                                guard.local_dkg_part1_data = None;
+                                guard.dkg_part1_public_package = None;
+                                guard.dkg_part1_secret_package = None;
                                 guard.received_dkg_packages.clear();
                             }
                             
@@ -249,7 +250,8 @@ pub async fn create_and_setup_peer_connection(
                             if guard.dkg_state != DkgState::Idle && guard.dkg_state != DkgState::Complete {
                                 guard.log.push(format!("Resetting DKG state due to connection failure with {}", peer_id));
                                 guard.dkg_state = DkgState::Failed(format!("Peer {} connection failed", peer_id));
-                                guard.local_dkg_part1_data = None;
+                                guard.dkg_part1_public_package = None;
+                                guard.dkg_part1_secret_package = None;
                                 guard.received_dkg_packages.clear();
                             }
                             

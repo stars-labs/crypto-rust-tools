@@ -145,15 +145,13 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         // Add mesh status information as documented in cli_usage.md
         let mesh_status_str = match &app.mesh_status {
             MeshStatus::Incomplete => "Incomplete".to_string(),
-            MeshStatus::PartiallyReady(ready, total) => format!("Partially Ready ({}/{})", ready, total),
-            MeshStatus::SentSelfReady => "Self Ready, Awaiting Peers".to_string(), // <-- ADD THIS LINE
+            MeshStatus::PartiallyReady { ready_peers, total_peers } => format!("Partially Ready ({}/{})", ready_peers.len(), total_peers),
             MeshStatus::Ready => "Ready".to_string(),
         };
         
         let mesh_style = match &app.mesh_status {
             MeshStatus::Incomplete => Style::default().fg(Color::Red),
-            MeshStatus::PartiallyReady(_, _) => Style::default().fg(Color::Yellow),
-            MeshStatus::SentSelfReady => Style::default().fg(Color::Cyan), // <-- ADD THIS LINE (or another suitable style)
+            MeshStatus::PartiallyReady { .. } => Style::default().fg(Color::Yellow),
             MeshStatus::Ready => Style::default().fg(Color::Green),
         };
         

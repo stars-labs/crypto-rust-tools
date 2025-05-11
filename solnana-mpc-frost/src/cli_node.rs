@@ -79,14 +79,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Shared state for TUI and networkthin the CLI app (uses InternalCommand from lib.rs)
     // Specify the Ciphersuite for AppStaterx) = mpsc::unbounded_channel::<InternalCommand>();
-    let state = Arc::new(Mutex::new(AppState::<Ed25519Sha512> {
-        // TUI state uses Mutex network
-        peer_id: peer_id.clone(),//r AppState
-        peers: vec![],//ew(Mutex::new(AppState::<Ed25519Sha512> {
-        log: vec!["Registered with server".to_string()], // Corrected typo
-        log_scroll: 0, // Initialize scroll state
+    let state = Arc::new(Mutex::new(AppState {
+        peer_id: peer_id.clone(),
+        peers: Vec::new(),
+        log: Vec::new(),
+        log_scroll: 0,
         session: None,
-        invites: vec![],//tered with server".to_string()],
+        invites: Vec::new(),
         peer_connections: Arc::new(Mutex::new(HashMap::new())), // Use TokioMutex here
         peer_statuses: HashMap::new(),                          // Initialize peer statuses
         reconnection_tracker: ReconnectionTracker::new(),
@@ -94,16 +93,16 @@ async fn main() -> anyhow::Result<()> {
         pending_ice_candidates: HashMap::new(),//er::new(),
         dkg_state: DkgState::Idle,//(),
         identifier_map: None, //::new(),
-        local_dkg_part1_data: None,//hMap::new(),
+        dkg_part1_public_package: None,
+        dkg_part1_secret_package: None,
         received_dkg_packages: BTreeMap::new(),
         key_package: None,//ne,
         group_public_key: None,//one,
         data_channels: HashMap::new(),//p::new(),
         solana_public_key: None,
-        queued_dkg_round1: vec![],
+        queued_dkg_round1: Vec::new(),
         round2_secret_package: None,//),
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
-        mesh_ready_peers: HashSet::new(),
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
     }));
     let state_main_net = state.clone();
@@ -370,7 +369,7 @@ async fn handle_internal_command(
 
             tokio::spawn(async move {
                 let mut map_created_and_check_dkg = false;
-                let mut participants_for_webrtc: Vec<String> = Vec::new(); 
+                let mut participants_for_webrtc: Vec<String> = Vec::new();
                 let mut peer_id_for_webrtc: String = String::new();    
                 let mut participants_for_map_creation_in_accept: Option<Vec<String>> = None;
 
@@ -550,7 +549,7 @@ async fn handle_internal_command(
                     if response.accepted {
                         let mut handled_in_active_session = false;
                         if let Some(session) = state_guard.session.as_mut() {
-                            if session.session_id == response.session_id {
+                            if (session.session_id == response.session_id) {
                                 handled_in_active_session = true; // Mark that we found a matching active session
                                 if !session.accepted_peers.contains(&from_peer_id) {
                                     session.accepted_peers.push(from_peer_id.clone());
@@ -755,27 +754,30 @@ async fn handle_internal_command(
                     if let Some(session) = &state_guard.session {
                         session_id_local = session.session_id.clone();
                         participants_local = session.participants.clone();
-                        let session_participants_count = session.participants.len(); 
-                        let current_mesh_ready_peers_count = state_guard.mesh_ready_peers.len(); 
+                        let session_participants_count = session.participants.len();
+                        
+                        let mut current_ready_peers = match &state_guard.mesh_status {
+                            MeshStatus::PartiallyReady { ready_peers, .. } => ready_peers.clone(),
+                            _ => HashSet::new(),
+                        };
+                        
+                        current_ready_peers.insert(self_peer_id_local.clone());
 
                         state_guard.log.push(format!(
-                            "Local node is mesh ready. Sending MeshReady signal to peers. Current mesh_ready_peers count: {}",
-                            current_mesh_ready_peers_count
+                            "Local node is mesh ready. Sending MeshReady signal to peers. Current ready peers count: {}",
+                            current_ready_peers.len()
                         ));
-                        state_guard.mesh_status = MeshStatus::SentSelfReady; 
 
-                        let all_others_reported_mesh_ready = if session_participants_count > 0 {
-                             current_mesh_ready_peers_count == (session_participants_count - 1)
-                        } else {
-                            false
-                        };
-
-                        if all_others_reported_mesh_ready {
+                        if current_ready_peers.len() == session_participants_count {
                             state_guard.mesh_status = MeshStatus::Ready;
                             mesh_became_ready = true; // Mark that mesh became ready
                             state_guard.log.push("All peers (including self) are mesh ready. Overall MeshStatus: Ready.".to_string());
+                        } else {
+                            state_guard.mesh_status = MeshStatus::PartiallyReady {
+                                ready_peers: current_ready_peers.clone(),
+                                total_peers: session_participants_count,
+                            };
                         }
-
                     } else {
                         state_guard.log.push("Tried to send own MeshReady signal, but no active session.".to_string());
                         return; 
@@ -833,44 +835,54 @@ async fn handle_internal_command(
 
                 { 
                     let mut state_guard = state_clone.lock().await;
-                    let already_known = state_guard.mesh_ready_peers.contains(&peer_id);
-                    state_guard.mesh_ready_peers.insert(peer_id.clone());
                     
-                    if already_known {
-                        log_messages.push(format!("Received duplicate MeshReady from {}. Ignoring.", peer_id));
-                    } else {
-                        log_messages.push(format!("Processing MeshReady from peer: {}", peer_id));
-                    }
-
                     if let Some(session) = &state_guard.session { 
                         let total_session_participants = session.participants.len();
-                        let num_known_other_mesh_ready_peers = state_guard.mesh_ready_peers.len();
+                        
+                        let mut current_ready_peers = match &state_guard.mesh_status {
+                            MeshStatus::PartiallyReady { ready_peers, .. } => ready_peers.clone(),
+                            MeshStatus::Ready => { // If already Ready, it implies all peers are known
+                                // We might receive a late/duplicate MeshReady, log it but don't change state from Ready
+                                log_messages.push(format!("Received MeshReady from {} but mesh is already Ready. Current ready peers: all {}.", peer_id, total_session_participants));
+                                final_mesh_status_after_processing = state_guard.mesh_status.clone();
+                                // Push logs and return early
+                                drop(state_guard);
+                                let mut log_guard_early = state_clone.lock().await;
+                                for msg in log_messages { log_guard_early.log.push(msg); }
+                                return;
+                            },
+                            _ => HashSet::new(), // Incomplete or other states
+                        };
 
+                        let already_known = current_ready_peers.contains(&peer_id);
+                        if !already_known {
+                            current_ready_peers.insert(peer_id.clone());
+                            log_messages.push(format!("Processing MeshReady from peer: {}. Added to ready set.", peer_id));
+                        } else {
+                            log_messages.push(format!("Received duplicate MeshReady from {}. Not changing ready set.", peer_id));
+                        }
+                        
                         log_messages.push(format!(
-                            "Mesh readiness update: {} other peers reported MeshReady. Total session participants: {}.",
-                            num_known_other_mesh_ready_peers, total_session_participants
+                            "Mesh readiness update: {} peers now in ready set. Total session participants: {}.",
+                            current_ready_peers.len(), total_session_participants
                         ));
 
-                        let all_others_reported_mesh_ready = if total_session_participants > 0 {
-                            num_known_other_mesh_ready_peers == (total_session_participants - 1)
-                        } else {
-                            false 
-                        };
-                        
-                        if state_guard.mesh_status == MeshStatus::SentSelfReady && all_others_reported_mesh_ready {
+                        if current_ready_peers.len() == total_session_participants {
                             state_guard.mesh_status = MeshStatus::Ready;
-                            mesh_became_ready = true; // Mark that mesh became ready
+                            mesh_became_ready = true;
                             log_messages.push(format!(
-                                "All peers (including self) are mesh ready. Overall MeshStatus set to: Ready. ({} other peers ready, self was SentSelfReady)",
-                                num_known_other_mesh_ready_peers
+                                "All {} participants are mesh ready. Overall MeshStatus set to: Ready.",
+                                total_session_participants
                             ));
-                        } else if state_guard.mesh_status != MeshStatus::Ready { 
-                            state_guard.mesh_status = MeshStatus::PartiallyReady(num_known_other_mesh_ready_peers + 1, total_session_participants);
+                        } else {
+                            state_guard.mesh_status = MeshStatus::PartiallyReady {
+                                ready_peers: current_ready_peers.clone(),
+                                total_peers: total_session_participants,
+                            };
                              log_messages.push(format!(
-                                "Mesh status updated to PartiallyReady ({}/{} participants known ready). Self status: {:?}.",
-                                num_known_other_mesh_ready_peers + 1, 
-                                total_session_participants,
-                                state_guard.mesh_status 
+                                "Mesh status updated to PartiallyReady ({}/{} participants known ready).",
+                                current_ready_peers.len(), 
+                                total_session_participants
                             ));
                         }
                         final_mesh_status_after_processing = state_guard.mesh_status.clone();
@@ -878,6 +890,9 @@ async fn handle_internal_command(
                         log_messages.push(format!( 
                             "Received MeshReady from {} but no active session.", peer_id
                         )); 
+                        // Optionally set to Incomplete if desired, or leave as is
+                        // state_guard.mesh_status = MeshStatus::Incomplete;
+                        final_mesh_status_after_processing = state_guard.mesh_status.clone();
                     }
                 } 
                 
@@ -947,21 +962,71 @@ async fn handle_internal_command(
             package,
         } => {
             let state_clone = state.clone();
+            let internal_cmd_tx_clone = internal_cmd_tx.clone(); 
             tokio::spawn(async move {
-                state_clone.lock().await.log.push(format!(
-                    "DKG Round 1: Received commitment package from peer {}...",
-                    from_peer_id
-                ));
-                ed25519_dkg::process_dkg_round1(state_clone, from_peer_id, package).await;
+                // Log receipt before calling process_dkg_round1, which might lock for a while
+                // However, process_dkg_round1 itself logs more detailed info.
+                // Let's keep the lock scope minimal around the state check post-processing.
+
+                ed25519_dkg::process_dkg_round1(state_clone.clone(), from_peer_id.clone(), package).await;
+
+                // After processing, check if Round 1 is complete
+                let mut guard = state_clone.lock().await;
+                if guard.dkg_state == DkgState::Round1Complete {
+                    guard.log.push(
+                        "DKG Round 1 complete. Triggering DKG Round 2.".to_string()
+                    );
+                    guard.dkg_state = DkgState::Round2InProgress; // Set state before sending command
+                    if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::TriggerDkgRound2) {
+                        guard.log.push(format!("Failed to send TriggerDkgRound2 command: {}", e));
+                        guard.dkg_state = DkgState::Failed(format!("Failed to trigger R2: {}", e)); 
+                    }
+                } else {
+                    let current_dkg_state = guard.dkg_state.clone(); // Clone state before logging
+                    guard.log.push(format!(
+                        "DKG Round 1: After processing package from {}, DKG state is {:?}. Waiting for more packages or other state change.",
+                        from_peer_id, current_dkg_state // Use cloned state
+                    ));
+                }
             });
         }
         InternalCommand::TriggerDkgRound2 => {
             let state_clone = state.clone();
+            let self_peer_id_clone = self_peer_id.clone();
             tokio::spawn(async move {
-                state_clone.lock().await.log.push(
-                    "DKG Round 2: All commitments received. Generating and distributing key shares...".to_string()
+                let mut guard = state_clone.lock().await;
+                let current_dkg_state_log = guard.dkg_state.clone(); // Clone for logging
+                guard.log.push(
+                    format!("DKG Round 2: Processing TriggerDkgRound2 command. Current state: {:?}", current_dkg_state_log) // Use cloned state
                 );
-                state_clone.lock().await.dkg_state = DkgState::SharesInProgress;
+                
+                // Ensure state is Round2InProgress (or SharesInProgress if that's the chosen variant)
+                // This state should have been set by the ProcessDkgRound1 handler.
+                if guard.dkg_state == DkgState::Round2InProgress || guard.dkg_state == DkgState::SharesInProgress {
+                    // If using SharesInProgress, ensure consistency. DkgState enum has Round2InProgress as preferred.
+                    // Let's assume Round2InProgress is the target.
+                    if guard.dkg_state == DkgState::SharesInProgress { // If it was SharesInProgress, align log/logic if needed
+                        guard.log.push("Note: DKG state was SharesInProgress, proceeding as Round2InProgress.".to_string());
+                        guard.dkg_state = DkgState::Round2InProgress; // Ensure it's the consistent one
+                    }
+                    
+                    guard.log.push(
+                        "DKG Round 2: State is correct. Generating and distributing key shares...".to_string()
+                    );
+                    // The line below that changes state is removed as state should already be Round2InProgress.
+                    // guard.dkg_state = DkgState::SharesInProgress; // REMOVE/COMMENT THIS
+                } else {
+                    let current_dkg_state_abort_log = guard.dkg_state.clone(); // Clone for logging
+                    guard.log.push(format!(
+                        "DKG Round 2: Triggered but DKG state is {:?}, expected Round2InProgress. Aborting Round 2.",
+                        current_dkg_state_abort_log // Use cloned state
+                    ));
+                    // Optionally set to Failed state if this is an unrecoverable error
+                    // guard.dkg_state = DkgState::Failed("Triggered R2 in wrong state".to_string());
+                    return;
+                }
+                drop(guard); // Release lock before calling async dkg function
+
                 ed25519_dkg::handle_trigger_dkg_round2(state_clone).await;
             });
         }   
@@ -970,23 +1035,98 @@ async fn handle_internal_command(
             package, 
         } => {
             let state_clone = state.clone();
-            let from_peer_id_clone = from_peer_id.clone();
+            let internal_cmd_tx_clone = internal_cmd_tx.clone();
             tokio::spawn(async move {
-                state_clone.lock().await.log.push(format!(
-                    "DKG Round 2: Received key share from peer {}. Verifying against commitments...",
-                    from_peer_id_clone
+                let mut guard = state_clone.lock().await;
+                guard.log.push(format!(
+                    "Processing DKG Round 2 package from {}",
+                    from_peer_id
                 ));
-                ed25519_dkg::process_dkg_round2(state_clone, from_peer_id, package).await;
+
+                if guard.dkg_state != DkgState::Round2InProgress {
+                    guard.log.push(format!(
+                        "Error: Received DKG Round 2 package from {} but DKG state is {:?}, not Round2InProgress.",
+                        from_peer_id, guard.dkg_state
+                    ));
+                    return;
+                }
+
+                // Assuming ed25519_dkg::handle_process_dkg_round2_package processes the package,
+                // stores it, and returns a Result<bool, String> where bool is true if round 2 is complete.
+                // This function needs to be implemented in your ed25519_dkg module.
+                match ed25519_dkg::handle_process_dkg_round2_package(
+                    &mut guard, // Pass mutable guard
+                    from_peer_id.clone(),
+                    package,
+                )
+                .await
+                {
+                    Ok(round2_complete) => {
+                        if round2_complete {
+                            guard.log.push(
+                                "All DKG Round 2 packages received. Setting state to Round2Complete and triggering FinalizeDkg."
+                                    .to_string(),
+                            );
+                            guard.dkg_state = DkgState::Round2Complete;
+                            // Drop guard before sending command to avoid potential deadlock
+                            drop(guard); 
+                            if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::FinalizeDkg) {
+                                state_clone.lock().await.log.push(format!(
+                                    "Failed to send FinalizeDkg command: {}",
+                                    e
+                                ));
+                            }
+                        } else {
+                            guard.log.push(format!(
+                                "DKG Round 2: After processing package from {}, DKG state is {:?}. Waiting for more packages.",
+                                from_peer_id, guard.dkg_state
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        guard.log.push(format!(
+                            "Error processing DKG Round 2 package from {}: {}. Resetting DKG state.",
+                            from_peer_id, e
+                        ));
+                        guard.dkg_state = DkgState::Failed; 
+                        // Consider more robust error handling, e.g., notifying other peers.
+                    }
+                }
             });
         }
         InternalCommand::FinalizeDkg => {
             let state_clone = state.clone();
+            let self_peer_id_clone = self_peer_id.clone(); // Capture self_peer_id if needed by finalize logic
             tokio::spawn(async move {
-                state_clone.lock().await.log.push(
-                    "DKG Finalization: Computing final key share and group public key..."
-                        .to_string(), //: Computing final key share and group public key..."
-                );
-                ed25519_dkg::finalize_dkg(state_clone).await;
+                let mut guard = state_clone.lock().await;
+                guard.log.push("FinalizeDkg: Processing command.".to_string());
+
+                if guard.dkg_state != DkgState::Round2Complete {
+                    guard.log.push(format!(
+                        "Error: Triggered FinalizeDkg but DKG state is {:?}, not Round2Complete.",
+                        guard.dkg_state
+                    ));
+                    // Optionally set to Failed or handle as appropriate
+                    return;
+                }
+                
+                guard.dkg_state = DkgState::Finalizing; // Mark as finalizing
+                
+                // Drop guard before potentially long-running async operation
+                drop(guard);
+
+                // Assuming ed25519_dkg::handle_finalize_dkg performs the final DKG steps
+                // and updates the state internally (e.g., sets DkgState::Complete or DkgState::Failed
+                // and stores the key material).
+                // This function needs to be implemented in your ed25519_dkg module.
+                ed25519_dkg::handle_finalize_dkg(state_clone.clone(), self_peer_id_clone).await;
+
+                // Log final status after handle_finalize_dkg has updated the state
+                let final_guard = state_clone.lock().await;
+                final_guard.log.push(format!(
+                    "FinalizeDkg: Completion attempt finished. DKG state is now: {:?}",
+                    final_guard.dkg_state
+                ));
             });
         }
     }
@@ -1420,7 +1560,7 @@ async fn check_and_send_mesh_ready( //all data channels are open and send mesh_r
                 .iter()
                 .all(|p| state_guard.data_channels.contains_key(p));
             
-            if matches!(state_guard.mesh_status, MeshStatus::SentSelfReady | MeshStatus::Ready) {
+            if matches!(state_guard.mesh_status, MeshStatus::PartiallyReady { .. } | MeshStatus::Ready) {
                 already_sent_own_ready_debug = true;
             }
         }
