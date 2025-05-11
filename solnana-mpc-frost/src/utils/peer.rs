@@ -1,5 +1,6 @@
+use crate::network::websocket;
 use crate::protocal::signal::*;
-use crate::utils::state::{AppState};
+use crate::utils::state::AppState;
 use crate::utils::state::{ DkgState, InternalCommand};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,18 +15,12 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
-use frost_core::keys::dkg::round2;
 use frost_ed25519::Ed25519Sha512;
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
+use crate::protocal::signal::{CandidateInfo, WebRTCMessage, WebRTCSignal, WebSocketMessage}; // Updated path
 
 
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct DataChannelEnvelope {
-    pub msg_type: String,
-    pub payload: serde_json::Value,
-}
 
 pub async fn send_webrtc_message(
     target_peer_id: &str,
@@ -41,25 +36,7 @@ pub async fn send_webrtc_message(
  
         if dc.ready_state() == RTCDataChannelState::Open {
    
-            let (msg_type, payload) = match message {
-                WebRTCMessage::DkgRound1Package { package } => (
-                    "dkg_round1",
-                    serde_json::to_value(package).unwrap_or(serde_json::Value::Null),
-                ),
-                WebRTCMessage::DkgRound2Package { package } => (
-                    "dkg_round2",
-                    serde_json::to_value(package).unwrap_or(serde_json::Value::Null),
-                ),
-                WebRTCMessage::SimpleMessage { text } => {
-                    ("simple", serde_json::json!({ "text": text }))
-                }
-                _ => ("unknown", serde_json::Value::String("unhandled_message_type".to_string())),
-            };
-            let envelope = DataChannelEnvelope {
-                msg_type: msg_type.to_string(),
-                payload,
-            };
-            let msg_json = serde_json::to_string(&envelope)
+            let msg_json = serde_json::to_string(&message)
                 .map_err(|e| format!("Failed to serialize envelope: {}", e))?;
 
             if let Err(e) = dc.send_text(msg_json).await {
@@ -69,6 +46,12 @@ pub async fn send_webrtc_message(
                 ));
                 return Err(format!("Failed to send message: {}", e));
             }
+            //         // udpate conncetion status
+            // let mut state_guard = state_log.lock().await;
+            // state_guard.peer_statuses.insert(
+            //             target_peer_id.to_string(),
+            //             webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected,
+            // );
 
             state_log.lock().await.log.push(format!(
                 "Successfully sent WebRTC message to {}",
@@ -162,7 +145,8 @@ pub async fn create_and_setup_peer_connection(
                                     sdp_mid: init.sdp_mid,
                                     sdp_mline_index: init.sdp_mline_index,
                                 });
-                                match serde_json::to_value(signal) {
+                                let websocket_msg = WebSocketMessage::WebRTCSignal(signal);
+                                match serde_json::to_value(websocket_msg) {
                                     Ok(json_val) => {
                                         // Wrap the Relay message inside SendToServer command
                                         let relay_cmd =
@@ -427,33 +411,17 @@ pub async fn setup_data_channel_callbacks(
 
             if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
                 // Parse envelope
-                match serde_json::from_str::<DataChannelEnvelope>(&text) {
+                match serde_json::from_str::<WebRTCMessage>(&text) {
                     Ok(envelope) => {
-                        match envelope.msg_type.as_str() {
-                            "dkg_round1" => {
-                                if let Ok(package) = serde_json::from_value(envelope.payload) {
-                                    state_log.lock().await.log.push(format!(
-                                        "Received DKG Round 1 package from {}",
-                                        peer_id
-                                    ));
+                        match envelope {
+                            WebRTCMessage::DkgRound1Package { package } => {
                                     let _ = cmd_tx.send(InternalCommand::ProcessDkgRound1 {
                                         from_peer_id: peer_id.clone(),
                                         package,
                                     });
-                                } else {
-                                    state_log.lock().await.log.push(format!(
-                                        "Failed to parse DKG Round 1 payload from {}",
-                                        peer_id
-                                    ));
-                                }
                             }
-                            "dkg_round2" => {
+                            WebRTCMessage::DkgRound2Package { package } => {
                                 // FIX: Add type annotation for from_value
-                                if let Ok(package) =
-                                    serde_json::from_value::<round2::Package<Ed25519Sha512>>(
-                                        envelope.payload,
-                                    )
-                                {
                                     state_log.lock().await.log.push(format!(
                                         "Received DKG Round 2 package from {}",
                                         peer_id
@@ -462,34 +430,31 @@ pub async fn setup_data_channel_callbacks(
                                         from_peer_id: peer_id.clone(),
                                         package,
                                     });
-                                } else {
-                                    state_log.lock().await.log.push(format!(
-                                        "Failed to parse DKG Round 2 payload from {}",
-                                        peer_id
-                                    ));
-                                }
                             }
-                            "simple" => {
-                                if let Some(text) =
-                                    envelope.payload.get("text").and_then(|v| v.as_str())
-                                {
+                            WebRTCMessage::SimpleMessage { text } => {
                                     state_log.lock().await.log.push(format!(
                                         "Receiver: Message from {}: {}",
                                         peer_id, text
                                     ));
-                                } else {
-                                    state_log
-                                        .lock()
-                                        .await
-                                        .log
-                                        .push(format!("Malformed simple message from {}", peer_id));
-                                }
-                            }
-                            _ => {
+                            },
+                            WebRTCMessage::ChannelOpen { peer_id: _ } => {
+                                // FIX: Add type annotation for from_value
                                 state_log.lock().await.log.push(format!(
-                                    "Unknown message type '{}' from {}",
-                                    envelope.msg_type, peer_id
+                                    "Data channel opened with {}",
+                                    peer_id
                                 ));
+                                let _ = cmd_tx.send(InternalCommand::ReportChannelOpen {
+                                    peer_id: peer_id.clone(),
+                                });
+                            },
+                            WebRTCMessage::MeshReady { session_id, peer_id } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Mesh ready notification from {}: session_id: {}, peer_id: {}",
+                                    peer_id, session_id, peer_id
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessMeshReady {
+                                    peer_id: peer_id.clone(),
+                                });
                             }
                         }
                     }

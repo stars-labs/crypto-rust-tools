@@ -23,7 +23,7 @@ pub enum ServerMsg {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Register { peer_id: String },

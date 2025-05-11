@@ -28,7 +28,7 @@ use webrtc_signal_server::ClientMsg as SharedClientMsg;
 
 use crate::protocal::signal::SessionResponse;
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum InternalCommand {
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
@@ -67,6 +67,9 @@ pub enum InternalCommand {
     ProcessMeshReady {
         peer_id: String,
     },
+
+    /// Check if conditions are met to trigger DKG and do so if appropriate
+    CheckAndTriggerDkg,
 
     /// Trigger DKG Round 1 (Commitments)
     TriggerDkgRound1,
@@ -112,16 +115,6 @@ pub enum MeshStatus {
     PartiallyReady(usize, usize), // (ready_count, total_count)
     SentSelfReady,
     Ready,
-}
-
-pub enum NodeState {
-    DisconnectedFromSignalServer,
-    ConnectedToSignalServer,
-    InSession,
-    AllPeersConnected,
-    DkgStarted,
-    DkgCompleted,
-    WaitingForSign,
 }
 
 // DkgStateDisplay trait - defines display behavior for DkgState
@@ -181,7 +174,6 @@ pub struct AppState<C: Ciphersuite> {
     pub reconnection_tracker: ReconnectionTracker,
     // Perfect Negotiation Flags
     pub making_offer: HashMap<String, bool>,
-    pub ignore_offer: HashMap<String, bool>,
     pub pending_ice_candidates: HashMap<String, Vec<RTCIceCandidateInit>>,
     // --- DKG State ---
     pub dkg_state: DkgState,
@@ -202,7 +194,6 @@ pub struct AppState<C: Ciphersuite> {
     pub solana_public_key: Option<String>,
     // Fix: Use proper round1::Package type
     pub queued_dkg_round1: Vec<(String, round1::Package<C>)>,
-    pub peer_connected_history: HashMap<String, Vec<RTCPeerConnectionState>>,
     /// Track which peers have reported mesh readiness
     pub mesh_ready_peers: HashSet<String>,
     /// Overall mesh readiness status

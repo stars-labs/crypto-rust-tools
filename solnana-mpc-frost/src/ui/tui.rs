@@ -102,7 +102,7 @@ pub fn draw_main_ui<B: Backend>(
             format!("> {}", input)
         } else {
             // Add "Save Log: s" to the help text
-            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Quit: q".to_string()
+            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Mesh Ready: r | Quit: q".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -346,13 +346,6 @@ pub fn handle_key_event(
                                 .to_string(),
                         );
                     }
-                } else if cmd_str.starts_with("/join") {
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 2 {
-                    } else {
-                        app.log
-                            .push("Invalid /join format. Use: /join <session_id>".to_string());
-                    }
                 } else if cmd_str.starts_with("/accept") {
                     // Add support for the /accept command
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
@@ -369,25 +362,6 @@ pub fn handle_key_event(
                         }
                     } else {
                         app.log.push("Invalid /accept format. Use: /accept <session_id>".to_string());
-                    }
-                } else if cmd_str.starts_with("/invite") {
-                    // Check invites directly on app state
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 2 {
-                        let session_id_to_join = parts[1].to_string();
-                        let invite_found = app
-                            .invites
-                            .iter()
-                            .any(|s| s.session_id == session_id_to_join);
-
-                        if invite_found {
-                        } else {
-                            app.log
-                                .push(format!("Invite '{}' not found.", session_id_to_join));
-                        }
-                    } else {
-                        app.log
-                            .push("Invalid /invite format. Use: /invite <session_id>".to_string());
                     }
                 } else if cmd_str.starts_with("/relay") {
                     let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();
@@ -445,34 +419,7 @@ pub fn handle_key_event(
                     }
                 } else if cmd_str.starts_with("/mesh_ready") {
                     // Add support for manually signaling mesh readiness
-                    let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal); // Changed from MeshReady
-                    app.log.push("Manually signaled mesh readiness to all peers".to_string());
-                } else if cmd_str.starts_with("/status") {
-                    // Display detailed session and mesh status
-                    if let Some(session) = &app.session {
-                        app.log.push("=== Session Status ===".to_string());
-                        app.log.push(format!(
-                            "Session ID: {}, Participants: {}/{}, Threshold: {}", 
-                            session.session_id, session.participants.len(), session.total, session.threshold
-                        ));
-                        
-                        let connected_peers = app.peer_statuses
-                            .iter()
-                            .filter(|(_, status)| 
-                                matches!(status, webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected)
-                            )
-                            .count();
-                        
-                        app.log.push(format!(
-                            "WebRTC Connections: {}/{} peers connected", 
-                            connected_peers, session.participants.len() - 1
-                        ));
-                        
-                        app.log.push(format!("Mesh Status: {:?}", app.mesh_status));
-                        app.log.push(format!("DKG Status: {:?}", app.dkg_state));
-                    } else {
-                        app.log.push("No active session".to_string());
-                    }
+                    let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal);                
                 } else if !cmd_str.is_empty() {
                     app.log.push(format!("Unknown command: {}", cmd_str));
                 }
@@ -519,20 +466,14 @@ pub fn handle_key_event(
                     Err(e) => app.log.push(format!("Failed to save log: {}", e)),
                 }
             }
+            KeyCode::Char('r') => {
+                let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal);                
+            }
             KeyCode::Up => {
-                // Scroll log up
                 app.log_scroll = app.log_scroll.saturating_sub(1);
             }
             KeyCode::Down => {
-                // Scroll log down (don't scroll past the end)
-                // A simple upper bound - might need refinement depending on terminal height and wrap
                 app.log_scroll = app.log_scroll.saturating_add(1);
-                // Basic check: prevent scrolling too far down past the number of lines
-                // This is approximate due to wrapping. A more precise calculation would
-                // involve layout information which isn't easily available here.
-                if app.log_scroll > app.log.len().saturating_sub(1) as u16 {
-                    app.log_scroll = app.log.len().saturating_sub(1) as u16;
-                }
             }
             _ => {}
         }

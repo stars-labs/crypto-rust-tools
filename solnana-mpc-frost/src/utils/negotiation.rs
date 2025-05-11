@@ -1,4 +1,4 @@
-use crate::protocal::signal::{SDPInfo, WebRTCSignal};
+use crate::protocal::signal::{SDPInfo, WebRTCSignal, WebSocketMessage};
 use crate::utils::state::AppState;
 use frost_ed25519::Ed25519Sha512;
 
@@ -176,7 +176,9 @@ pub async fn initiate_offers_for_session(
                                 ));
 
                                 let signal = WebRTCSignal::Offer(SDPInfo { sdp: offer.sdp });
-                                match serde_json::to_value(signal) {
+                                let websocket_message = WebSocketMessage::WebRTCSignal(signal); // Wrap it
+
+                                match serde_json::to_value(websocket_message) { // Serialize the wrapped message
                                     Ok(json_val) => {
                                         // Wrap the Relay message inside SendToServer command
                                         let relay_cmd = InternalCommand::SendToServer(SharedClientMsg::Relay {
