@@ -3,12 +3,12 @@ use crate::utils::peer::send_webrtc_message;
 use crate::utils::state::AppState;
 use crate::utils::state::DkgState; // Import DkgState directly from solnana_mpc_frost
 use frost_core::keys::PublicKeyPackage;
-use frost_core::keys::dkg::{part1, part3, round1, round2}; // Removed unused 'part2'
+use frost_core::keys::dkg::{part1, part2, part3, round1, round2};
 use frost_ed25519::Ed25519Sha512;
 use frost_ed25519::rand_core::OsRng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -257,294 +257,44 @@ pub async fn process_dkg_round2(
     state: Arc<Mutex<AppState<Ed25519Sha512>>>,
     from_peer_id: String,
     package: round2::Package<Ed25519Sha512>,
-) {
+) -> Result<bool, String> {
     let mut guard = state.lock().await;
-    // Ensure session and identifier map are ready
-    let (session, identifier_map) = match (&guard.session, &guard.identifier_map) {
-        (Some(s), Some(m)) => (s.clone(), m.clone()),
-        _ => {
-            // This shouldn't happen if Round 1/2 completed, but log just in case
-            let current_dkg_state = guard.dkg_state.clone();
-            guard.log.push(format!(
-                "DKG Round 2: Session/Map not ready when receiving package from {}. DKG state: {:?}",
-                from_peer_id, current_dkg_state
-            ));
-            return; // Skip processing
-        }
-    };
-
-    // Only process if Round 2 is in progress
-    if guard.dkg_state != DkgState::Round2InProgress {
-        let current_dkg_state = guard.dkg_state.clone();
-        guard.log.push(format!(
-            "DKG Round 2: Received package from {}, but DKG state is {:?}. Ignoring.",
-            from_peer_id, current_dkg_state
-        ));
-        return;
-    }
-
     guard.log.push(format!(
-        "Processing DKG Round 2 package from {}",
+        "Processing Round 2 package from {}...",
         from_peer_id
     ));
-    // --- Log Hash of Received Part 2 Package ---
-    let package_hash = hash_data(&package);
-    guard.log.push(format!(
-        "DEBUG: Received Part2 Package Hash from {}: {}",
-        from_peer_id, package_hash
-    ));
-    // --- End Log ---
 
-    let sender_identifier = match identifier_map.get(&from_peer_id) {
-        Some(id) => *id,
-        None => {
-            guard.log.push(format!(
-                "Error: Identifier not found for sender {} in Round 2.",
-                from_peer_id
-            ));
-            guard.dkg_state = DkgState::Failed(format!("Identifier missing for {}", from_peer_id));
-            return; // Skip processing
-        }
+    // Need to look up the identifier for from_peer_id
+    let identifier_map = match &guard.identifier_map {
+        Some(m) => m.clone(),
+        None => return Err("Identifier map not found".to_string()),
     };
 
-    // Store the received package
+    // Get the identifier for the peer
+    let from_identifier = match identifier_map.get(&from_peer_id) {
+        Some(id) => *id,
+        None => return Err(format!("Identifier not found for peer {}", from_peer_id)),
+    };
+
+    // Store the received package with the correct identifier type
     guard
         .received_dkg_round2_packages
-        .insert(sender_identifier, package);
+        .insert(from_identifier, package);
 
-    // --- FIX: Only count packages from other participants (exclude self) ---
-    let my_identifier = match identifier_map.get(&guard.peer_id) {
-        Some(id) => *id,
-        None => {
-            guard.log.push(
-                "Error: Own identifier not found in identifier_map during DKG Round 2.".to_string(),
-            );
-            guard.dkg_state = DkgState::Failed("Own identifier missing".to_string());
-            return;
-        }
-    };
+    // Check if we have received packages from all peers
+    if let Some(session) = &guard.session {
+        let expected_packages = session.participants.len() - 1; // Exclude self
+        let received_packages = guard.received_dkg_round2_packages.len();
 
-    // Count only packages from other participants
-    let filtered_count = guard
-        .received_dkg_round2_packages
-        .iter()
-        .filter(|(id, _)| **id != my_identifier)
-        .count();
-    let expected_packages = session.total as usize - 1;
-    guard.log.push(format!(
-        "DKG Round 2: Received {}/{} packages from other participants.",
-        filtered_count, expected_packages
-    ));
-
-    // --- Check for Round 2 completion and Trigger Part 3 ---
-    if filtered_count == expected_packages {
-        guard.log.push("All DKG Round 2 packages from other participants received. Proceeding to Part 3 (Finalization)...".to_string());
-
-        // --- Execute DKG Part 3 ---
-        let round2_secret_package_opt = guard.round2_secret_package.clone(); // Clone needed data
-        // --- FIX: Filter Round 1 packages similar to Round 2 ---
-        let filtered_round1: BTreeMap<_, _> = guard
-            .received_dkg_packages // Use the map containing N packages
-            .iter()
-            .filter(|(id, _)| **id != my_identifier) // Exclude self
-            .map(|(id, pkg)| (*id, pkg.clone()))
-            .collect();
-        // --- End FIX ---
-        // Only include packages from other participants (already done)
-        let filtered_round2: BTreeMap<_, _> = guard
-            .received_dkg_round2_packages
-            .iter()
-            .filter(|(id, _)| **id != my_identifier)
-            .map(|(id, pkg)| (*id, pkg.clone()))
-            .collect();
-
-        // --- Add More Detailed Logging Right Before part3 ---
-        guard
-            .log
-            .push("--- Pre-part3 Input Verification ---".to_string());
-        guard
-            .log
-            .push(format!("  My Identifier: {:?}", my_identifier));
-        if let Some(secret) = &round2_secret_package_opt {
-            guard.log.push(format!(
-                "  Round 2 Secret Package Identifier: {:?}",
-                secret.identifier()
-            ));
-        } else {
-            guard.log.push("  Round 2 Secret Package: None".to_string());
-        }
-        // --- FIX: Log filtered Round 1 packages ---
         guard.log.push(format!(
-            "  Round 1 Packages (Filtered Keys): {:?}",
-            filtered_round1.keys().collect::<Vec<_>>(),
+            "Round 2 packages received: {}/{}",
+            received_packages, expected_packages
         ));
-        guard.log.push(format!(
-            "  Round 1 Packages (Filtered Count): {}",
-            filtered_round1.len()
-        ));
-        // --- End FIX ---
-        guard.log.push(format!(
-            "  Round 2 Packages (Filtered Keys): {:?}",
-            filtered_round2.keys().collect::<Vec<_>>(),
-        ));
-        guard.log.push(format!(
-            "  Round 2 Packages (Filtered Count): {}",
-            filtered_round2.len()
-        ));
-        guard
-            .log
-            .push("--- End Pre-part3 Input Verification ---".to_string());
-        // --- End Detailed Logging ---
 
-        // --- Add Type and Count Logging from References ---
-        let round2_secret_ref_opt = round2_secret_package_opt.as_ref(); // Get optional ref
-        // --- FIX: Use filtered Round 1 map ---
-        let round1_packages_ref = &filtered_round1;
-        // --- End FIX ---
-        let round2_packages_ref = &filtered_round2;
-
-        // Calculate expected counts based on session total (N)
-        // --- FIX: Both Round 1 and Round 2 expect N-1 packages for part3 ---
-        let expected_part3_round1_count = session.total as usize - 1; // Expect N-1 packages
-        let expected_part3_round2_count = session.total as usize - 1; // Expect N-1 packages
-        // --- End FIX ---
-
-        guard
-            .log
-            .push("--- Pre-part3 Type/Count Verification (Refs) ---".to_string());
-        if let Some(secret_ref) = round2_secret_ref_opt {
-            guard.log.push(format!(
-                "  Type R2SecretRef: {}",
-                std::any::type_name::<&frost_core::keys::dkg::round2::SecretPackage<Ed25519Sha512>>(
-                )
-            ));
-            guard.log.push(format!(
-                "  Identifier R2SecretRef: {:?}",
-                secret_ref.identifier()
-            ));
-        } else {
-            guard.log.push("  Type R2SecretRef: None".to_string());
-        }
-        guard.log.push(format!(
-            "  Type R1MapRef: {}",
-            std::any::type_name::<
-                &BTreeMap<
-                    frost_core::Identifier<Ed25519Sha512>,
-                    frost_core::keys::dkg::round1::Package<Ed25519Sha512>,
-                >,
-            >()
-        ));
-        guard.log.push(format!(
-            "  Count R1MapRef: {} (Expected: {})",
-            round1_packages_ref.len(),
-            expected_part3_round1_count // Log expected N-1
-        ));
-        guard.log.push(format!(
-            "  Type R2MapRef: {}",
-            std::any::type_name::<
-                &BTreeMap<
-                    frost_core::Identifier<Ed25519Sha512>,
-                    frost_core::keys::dkg::round2::Package<Ed25519Sha512>,
-                >,
-            >()
-        ));
-        guard.log.push(format!(
-            "  Count R2MapRef: {} (Expected: {})",
-            round2_packages_ref.len(),
-            expected_part3_round2_count // Log expected N-1
-        ));
-        guard
-            .log
-            .push("--- End Pre-part3 Type/Count Verification (Refs) ---".to_string());
-        // --- End Type/Count Logging ---
-
-        // --- Strict Check: Ensure correct number of packages for part3 ---
-        if round1_packages_ref.len() != expected_part3_round1_count {
-            guard.log.push(format!(
-                "Error: Incorrect number of Round 1 packages for part3. Expected {}, Got {}. Aborting.",
-                expected_part3_round1_count, round1_packages_ref.len()
-            ));
-            guard.dkg_state = DkgState::Failed("Part 3 Round 1 package count mismatch".to_string()); // Corrected string
-            return; // Skip part3 call
-        }
-        if round2_packages_ref.len() != expected_part3_round2_count {
-            guard.log.push(format!(
-                "Error: Incorrect number of Round 2 packages for part3. Expected {}, Got {}. Aborting.",
-                expected_part3_round2_count, round2_packages_ref.len()
-            ));
-            guard.dkg_state = DkgState::Failed("Part 3 Round 2 package count mismatch".to_string()); // Corrected string
-            return; // Skip part3 call
-        }
-        // --- End Strict Check ---
-
-        let round2_secret_package = match round2_secret_package_opt {
-            Some(secret) => secret,
-            None => {
-                guard
-                    .log
-                    .push("Error: Local DKG Round 2 secret share missing for Part 3.".to_string());
-                guard.dkg_state = DkgState::Failed("Missing Round 2 secret share".to_string()); // Corrected string
-                return; // Skip
-            }
-        };
-
-        // Drop guard before potentially long computation
-        drop(guard);
-
-        // Call part3 with references derived from clones
-        let part3_result = part3::<Ed25519Sha512>(
-            &round2_secret_package, // Use the owned secret from match
-            round1_packages_ref,    // Use the ref to the filtered R1 clone (N-1 packages)
-            round2_packages_ref,    // Use the ref to the filtered R2 clone (N-1 packages)
-        );
-
-        // Re-acquire lock to update state
-        let mut guard = state.lock().await;
-        // --- FIX: Log filtered Round 1 keys ---
-        guard.log.push(format!(
-            "part3: my_identifier={:?}, round1_keys={:?}, round2_keys={:?}",
-            my_identifier,
-            filtered_round1.keys().collect::<Vec<_>>(), // Log filtered R1 keys
-            filtered_round2.keys().collect::<Vec<_>>(), // Log filtered R1 keys
-        ));
-        // --- End FIX ---
-
-        match part3_result {
-            Ok((key_package, group_public_key)) => {
-                guard.log.push(format!(
-                    "DKG Part 3 successful! Generated KeyPackage for identifier {:?} and GroupPublicKey.",
-                    key_package.identifier()
-                ));
-                guard.key_package = Some(key_package);
-                guard.group_public_key = Some(group_public_key.clone()); // Clone group_public_key here
-                guard.dkg_state = DkgState::Complete; // Mark DKG as complete
-
-                // Generate Solana public key from group key
-                generate_solana_public_key(&mut *guard, &group_public_key);
-
-                // Optionally clear intermediate DKG data now
-                guard.dkg_part1_public_package = None;
-                guard.dkg_part1_secret_package = None;
-                guard.received_dkg_packages.clear();
-                guard.round2_secret_package = None;
-                guard.received_dkg_round2_packages.clear();
-                guard.queued_dkg_round1.clear();
-                guard
-                    .log
-                    .push("DKG process completed successfully.".to_string());
-            }
-            Err(e) => {
-                // Log the inputs again on error for easier comparison
-                guard.log.push(format!("DKG Part 3 failed: {:?}", e));
-                // --- FIX: Log filtered Round 1 keys on error ---
-                guard.log.push(format!(
-                    "Failed part3 inputs: R1 keys={:?}, R2 keys={:?}",
-                    filtered_round1.keys().collect::<Vec<_>>(), // Log filtered R1 keys
-                    filtered_round2.keys().collect::<Vec<_>>(), // Log filtered R1 keys
-                ));
-                guard.dkg_state = DkgState::Failed(format!("DKG Part 3 Error: {:?}", e));
-            }
-        }
+        // Return true if we have all packages
+        return Ok(received_packages >= expected_packages);
+    } else {
+        return Err("No active session found".to_string());
     }
 }
 
@@ -569,51 +319,208 @@ where
 }
 
 /// Handle trigger for DKG Round 2 (Share distribution)
-pub async fn handle_trigger_dkg_round2(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
-    let mut state_guard = state.lock().await;
-    state_guard
-        .log
-        .push("Starting share distribution phase...".to_string());
+pub async fn handle_trigger_dkg_round2(
+    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+) -> Result<(), anyhow::Error> {
+    // --- Extract data and perform part2 under lock ---
+    let round2_broadcast_data = {
+        // Scope for state_guard
+        let mut state_guard = state.lock().await;
+        state_guard
+            .log
+            .push("handle_trigger_dkg_round2: Starting share distribution phase...".to_string());
 
-    // Extract the data we need before mutating state_guard
-    let session_clone = state_guard.session.clone();
-    let own_peer_id = state_guard.peer_id.clone();
-    let round1_data_exists = state_guard.dkg_part1_public_package.is_some();
+        // Check DKG state
+        if state_guard.dkg_state != DkgState::Round1Complete {
+            let err_msg = format!(
+                "DKG Round 2 triggered but state is {:?}, not Round1Complete.",
+                state_guard.dkg_state
+            );
+            state_guard.log.push(err_msg.clone());
+            return Err(anyhow::anyhow!(err_msg));
+        }
 
-    // Now handle the logic based on extracted data
-    if let Some(session) = session_clone {
-        if round1_data_exists {
-            state_guard
-                .log
-                .push("Generating round 2 packages...".to_string());
+        // Retrieve necessary components from state
+        let secret_package_p1 = match state_guard.dkg_part1_secret_package.as_ref() {
+            Some(sp) => sp,
+            None => {
+                let err_msg = "DKG Round 2 Error: DKG Part 1 secret package not found.".to_string();
+                state_guard.log.push(err_msg.clone());
+                state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+                return Err(anyhow::anyhow!(err_msg));
+            }
+        };
 
-            // Generate round 2 packages for each participant
-            let participant_peers: Vec<String> = session
-                .participants
-                .into_iter()
-                .filter(|p| *p != own_peer_id)
-                .collect();
+        let received_packages_p1 = &state_guard.received_dkg_packages;
+        if received_packages_p1.is_empty() {
+            let err_msg = "DKG Round 2 Error: No DKG Part 1 packages received.".to_string();
+            state_guard.log.push(err_msg.clone());
+            state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+            return Err(anyhow::anyhow!(err_msg));
+        }
 
-            // Log for each peer
-            for peer_id in &participant_peers {
+        // Determine self_identifier before the iterator chain
+        let self_identifier = match state_guard.identifier_map.as_ref() {
+            Some(map) => match map.get(&state_guard.peer_id) {
+                Some(id) => *id,
+                None => {
+                    let err_msg = format!(
+                        "DKG Round 2 Error: Self identifier not found in map for peer_id {}.",
+                        state_guard.peer_id
+                    );
+                    state_guard.log.push(err_msg.clone());
+                    state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+                    return Err(anyhow::anyhow!(err_msg));
+                }
+            },
+            None => {
+                let err_msg = "DKG Round 2 Error: Identifier map not found.".to_string();
+                state_guard.log.push(err_msg.clone());
+                state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+                return Err(anyhow::anyhow!(err_msg));
+            }
+        };
+
+        let round1_packages_from_others: std::collections::BTreeMap<_, _> = received_packages_p1
+            .iter()
+            .filter(|(id, _)| **id != self_identifier) // Compare with pre-fetched self_identifier
+            .map(|(id, pkg)| (*id, pkg.clone()))
+            .collect();
+
+        match part2(secret_package_p1.clone(), &round1_packages_from_others) {
+            // Pass as reference
+            Ok((round2_secret_package, round2_packages_to_send)) => {
+                state_guard.log.push(
+                    "DKG Round 2: Successfully generated shares (part2 complete).".to_string(),
+                );
+                // insert the round2_secret_package into the state
+                // Store the round2 secret package, which is needed for part3 (finalization)
+                state_guard.round2_secret_package = Some(round2_secret_package);
+
+                // Prepare data for broadcasting outside the lock
+                let identifier_map = match state_guard.identifier_map.as_ref() {
+                    Some(map) => map.clone(),
+                    None => {
+                        let err_msg = "DKG Round 2 Error: Identifier map not found.".to_string();
+                        state_guard.log.push(err_msg.clone());
+                        state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+                        return Err(anyhow::anyhow!(err_msg));
+                    }
+                };
+
+                let self_peer_id = state_guard.peer_id.clone(); // Not strictly needed for sending logic if using peer_id_map
+
+                // Update DKG state
+                state_guard.dkg_state = DkgState::Round2InProgress;
                 state_guard
                     .log
-                    .push(format!("Sending share to peer {}...", peer_id));
+                    .push("DKG state transitioned to Round2InProgress.".to_string());
+
+                Ok((
+                    round2_packages_to_send,
+                    identifier_map,
+                    self_peer_id,
+                    self_identifier, // Pass self_identifier out
+                ))
+            }
+            Err(e) => {
+                let err_msg = format!("DKG Round 2 (part2) failed: {:?}", e);
+                state_guard.log.push(err_msg.clone());
+                state_guard.dkg_state = DkgState::Failed(err_msg.clone());
+                Err(anyhow::anyhow!(err_msg))
+            }
+        }
+    }; // --- MutexGuard `state_guard` is dropped here ---
+
+    // --- Perform async broadcast operations if successful ---
+    match round2_broadcast_data {
+        Ok((round2_packages_to_send, identifier_map, _self_peer_id, self_identifier)) => {
+            // Destructure self_identifier
+            let mut sent_count = 0;
+            let mut failed_count = 0;
+
+            // Create a reverse map from Identifier to PeerId for easier lookup
+            // This avoids iterating the identifier_map for each package to send.
+            let peer_id_map: std::collections::HashMap<_, _> = identifier_map
+                .iter()
+                .map(|(peer_id, identifier)| (*identifier, peer_id.clone()))
+                .collect();
+
+            for (target_identifier, package) in round2_packages_to_send {
+                // Find the peer_id for the target_identifier
+                if let Some(target_peer_id) = peer_id_map.get(&target_identifier) {
+                    let dkg_msg = WebRTCMessage::DkgRound2Package {
+                        package: package.clone(),
+                    }; // Clone package for sending
+
+                    // Log package details before sending
+                    let state_clone_log_pre = state.clone();
+                    let target_peer_id_clone_pre = target_peer_id.clone();
+                    let package_hash = hash_data(&package); // Assuming hash_data works for round2::Package
+
+                    tokio::spawn(async move {
+                        state_clone_log_pre.lock().await.log.push(format!(
+                            "DKG Round 2: Preparing to send package (Hash: {}) to {} (identifier {:?})",
+                            package_hash, target_peer_id_clone_pre, target_identifier
+                        ));
+                    });
+
+                    match send_webrtc_message(target_peer_id, &dkg_msg, state.clone()).await {
+                        Ok(_) => {
+                            sent_count += 1;
+                            let state_clone_log = state.clone();
+                            let target_peer_id_clone = target_peer_id.clone();
+                            tokio::spawn(async move {
+                                state_clone_log.lock().await.log.push(format!(
+                                    "DKG Round 2: Successfully sent package to {} (identifier {:?})",
+                                    target_peer_id_clone, target_identifier
+                                ));
+                            });
+                        }
+                        Err(e) => {
+                            failed_count += 1;
+                            let state_clone_err = state.clone();
+                            let target_peer_id_clone = target_peer_id.clone();
+                            tokio::spawn(async move {
+                                state_clone_err.lock().await.log.push(format!(
+                                    "DKG Round 2: Failed to send package to {} (identifier {:?}): {:?}",
+                                    target_peer_id_clone, target_identifier, e
+                                ));
+                            });
+                        }
+                    }
+                } else {
+                    failed_count += 1;
+                    let state_clone_err = state.clone();
+                    tokio::spawn(async move {
+                        state_clone_err.lock().await.log.push(format!(
+                            "DKG Round 2: Error - Peer ID not found for identifier {:?}. Cannot send package.",
+                            target_identifier
+                        ));
+                    });
+                }
             }
 
-            // This is where you'd actually create and send the shares
-            // For now we'll just log it
-        } else {
-            state_guard
-                .log
-                .push("Error: Cannot start DKG round 2 - missing round 1 data".to_string());
-            state_guard.dkg_state = DkgState::Failed("Missing round 1 data".to_string());
+            // Log summary
+            let state_clone_summary = state.clone();
+            tokio::spawn(async move {
+                state_clone_summary.lock().await.log.push(format!(
+                    "DKG Round 2 broadcast summary: {} packages sent successfully, {} failed.",
+                    sent_count, failed_count
+                ));
+            });
+
+            Ok(())
+        }
+        Err(e) => {
+            // Error already logged by the inner scope, just propagate it
+            Err(e)
         }
     }
 }
 
 /// Finalize the DKG process
-pub async fn finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
+pub async fn handle_finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
     let mut guard = state.lock().await;
 
     guard.log.push("Finalizing DKG...".to_string());
@@ -635,7 +542,7 @@ pub async fn finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
     guard.dkg_part1_secret_package = None;
 
     // Check if dkg_part1_public_package is Some, if so, it means we are the dealer/proposer
-    // and we need to use our own dkg_part1_public_package.
+    // and we need to use our own dkg_part1_public_package.Daily
     // Otherwise, we are a participant and we need to find our package in received_dkg_packages.
     // This logic seems to be based on an older model.
     // The current model is that dkg_part1_public_package holds *our* public package,
@@ -644,6 +551,33 @@ pub async fn finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
     // Collect all round 1 public packages.
     // This should already include our own if handle_trigger_dkg_round1 worked correctly.
     let round1_packages = guard.received_dkg_packages.clone(); // Clone to satisfy borrow checker for part3
+    // Determine self_identifier before the iterator chain
+    let self_identifier = match guard.identifier_map.as_ref() {
+        Some(map) => match map.get(&guard.peer_id) {
+            Some(id) => *id,
+            None => {
+                let err_msg = format!(
+                    "DKG Round 2 Error: Self identifier not found in map for peer_id {}.",
+                    guard.peer_id
+                );
+                guard.log.push(err_msg.clone());
+                guard.dkg_state = DkgState::Failed(err_msg.clone());
+                return;
+            }
+        },
+        None => {
+            let err_msg = "DKG Round 2 Error: Identifier map not found.".to_string();
+            guard.log.push(err_msg.clone());
+            guard.dkg_state = DkgState::Failed(err_msg.clone());
+            return;
+        }
+    };
+
+    let round1_packages_for_others: std::collections::BTreeMap<_, _> = round1_packages
+        .iter()
+        .filter(|(id, _)| **id != self_identifier) // Compare with pre-fetched self_identifier
+        .map(|(id, pkg)| (*id, pkg.clone()))
+        .collect();
 
     // Collect all round 2 packages (shares sent to us by others).
     let round2_packages = guard.received_dkg_round2_packages.clone(); // Clone for part3
@@ -659,8 +593,8 @@ pub async fn finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
 
     match part3(
         &secret_package,
-        &round1_packages, // Should be all public packages from round 1
-        &round2_packages, // Should be all shares received in round 2
+        &round1_packages_for_others, // Should be all public packages from round 1
+        &round2_packages,            // Should be all shares received in round 2
     ) {
         Ok((key_package, group_public_key)) => {
             guard.log.push(format!(
@@ -680,7 +614,7 @@ pub async fn finalize_dkg(state: Arc<Mutex<AppState<Ed25519Sha512>>>) {
             guard.received_dkg_packages.clear();
             guard.round2_secret_package = None;
             guard.received_dkg_round2_packages.clear();
-            guard.queued_dkg_round1.clear();
+
             guard
                 .log
                 .push("DKG process completed successfully.".to_string());

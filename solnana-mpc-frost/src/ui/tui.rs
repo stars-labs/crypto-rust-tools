@@ -202,21 +202,15 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
     }
 
     // DKG Status using the new display trait - enhanced with more detailed state info
-    let dkg_status = match app.dkg_state {
+    let dkg_status = match &app.dkg_state {
         crate::DkgState::Idle => "Idle".to_string(),
-        crate::DkgState::CommitmentsInProgress => "Commitments In Progress".to_string(),
-        crate::DkgState::CommitmentsComplete => "Commitments Complete".to_string(),
-        crate::DkgState::SharesInProgress => "Share Distribution In Progress".to_string(),
-        crate::DkgState::VerificationInProgress => "Verification In Progress".to_string(),
-        crate::DkgState::Complete => {
-            if let Some(pubkey) = &app.group_public_key {
-                format!("Complete - Group Public Key: {:?}", pubkey) // Use debug formatting
-            } else {
-                "Complete".to_string()
-            }
-        },
-        crate::DkgState::Failed(_) => "Failed".to_string(), // Fix: Use tuple variant pattern
-        _ => app.dkg_state.display_status(),
+        crate::DkgState::Round1InProgress => "Round 1 In Progress".to_string(),
+        crate::DkgState::Round1Complete => "Round 1 Complete".to_string(),
+        crate::DkgState::Round2InProgress => "Round 2 In Progress".to_string(),
+        crate::DkgState::Round2Complete => "Round 2 Complete".to_string(),
+        crate::DkgState::Finalizing => "Finalizing".to_string(),
+        crate::DkgState::Complete => "DKG Complete".to_string(),
+        crate::DkgState::Failed(reason) => format!("DKG Failed: {}", reason),
     };
     
     let dkg_style = if app.dkg_state.is_active() {

@@ -102,7 +102,6 @@ pub enum DkgState {
     Round2InProgress, // Same as SharesInProgress but with naming used in other files
     Round2Complete,   // All Round 2 packages received
     Finalizing,
-    SharesInProgress,
     Complete,
     Failed(String),
 }
@@ -133,11 +132,10 @@ impl DkgStateDisplay for DkgState {
             DkgState::Round1InProgress => "Round 1 In Progress".to_string(),
             DkgState::Round1Complete => "Round 1 Complete".to_string(),
             DkgState::Round2InProgress => "Round 2 In Progress".to_string(),
-
-            DkgState::Complete => "Complete".to_string(),
+            DkgState::Round2Complete => "Round 2 Complete".to_string(),
+            DkgState::Finalizing => "Finalizing".to_string(),
+            DkgState::Complete => "DKG Complete".to_string(),
             DkgState::Failed(reason) => format!("Failed: {}", reason),
-
-            DkgState::SharesInProgress => "Shares In Progress".to_string(),
         }
     }
 
@@ -147,7 +145,8 @@ impl DkgStateDisplay for DkgState {
             DkgState::Round1InProgress
                 | DkgState::Round1Complete
                 | DkgState::Round2InProgress
-                | DkgState::SharesInProgress
+                | DkgState::Round2Complete
+                | DkgState::Finalizing
         )
     }
 
@@ -191,10 +190,6 @@ pub struct AppState<C: Ciphersuite> {
     pub data_channels: HashMap<String, Arc<RTCDataChannel>>,
     // Add Solana public key
     pub solana_public_key: Option<String>,
-    // Fix: Use proper round1::Package type
-    pub queued_dkg_round1: Vec<(String, round1::Package<C>)>,
-    /// Track which peers have reported mesh readiness
-    /// Overall mesh readiness status
     pub mesh_status: MeshStatus,
 }
 

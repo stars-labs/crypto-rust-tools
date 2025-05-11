@@ -100,7 +100,6 @@ async fn main() -> anyhow::Result<()> {
         group_public_key: None,//one,
         data_channels: HashMap::new(),//p::new(),
         solana_public_key: None,
-        queued_dkg_round1: Vec::new(),
         round2_secret_package: None,//),
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
@@ -549,7 +548,7 @@ async fn handle_internal_command(
                     if response.accepted {
                         let mut handled_in_active_session = false;
                         if let Some(session) = state_guard.session.as_mut() {
-                            if (session.session_id == response.session_id) {
+                            if session.session_id == response.session_id {
                                 handled_in_active_session = true; // Mark that we found a matching active session
                                 if !session.accepted_peers.contains(&from_peer_id) {
                                     session.accepted_peers.push(from_peer_id.clone());
@@ -957,6 +956,21 @@ async fn handle_internal_command(
                 ed25519_dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
             });
         }
+        InternalCommand::TriggerDkgRound2 => {
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                match ed25519_dkg::handle_trigger_dkg_round2(state_clone.clone()).await {
+                    Ok(_) => {
+                        state_clone.lock().await.log.push("Successfully completed handle_trigger_dkg_round2".to_string());
+                    },
+                    Err(e) => {
+                        state_clone.lock().await.log.push(format!(
+                            "Error in handle_trigger_dkg_round2: {}", e
+                        ));
+                    }
+                }
+            });
+        }
         InternalCommand::ProcessDkgRound1 {
             from_peer_id,
             package,
@@ -964,72 +978,64 @@ async fn handle_internal_command(
             let state_clone = state.clone();
             let internal_cmd_tx_clone = internal_cmd_tx.clone(); 
             tokio::spawn(async move {
-                // Log receipt before calling process_dkg_round1, which might lock for a while
-                // However, process_dkg_round1 itself logs more detailed info.
-                // Let's keep the lock scope minimal around the state check post-processing.
-
-                ed25519_dkg::process_dkg_round1(state_clone.clone(), from_peer_id.clone(), package).await;
-
-                // After processing, check if Round 1 is complete
                 let mut guard = state_clone.lock().await;
-                if guard.dkg_state == DkgState::Round1Complete {
+                guard.log.push(format!(
+                    "Processing DKG Round 1 package from {}",
+                    from_peer_id
+                ));
+
+                // Fix borrow error by cloning the state
+                let current_dkg_state = guard.dkg_state.clone();
+                if current_dkg_state != DkgState::Round1InProgress {
+                    guard.log.push(format!(
+                        "Error: Received DKG Round 1 package from {} but DKG state is {:?}, not Round1InProgress.",
+                        from_peer_id, current_dkg_state
+                    ));
+                    return;
+                }
+
+                // Release the lock before calling the processing function
+                drop(guard);
+
+                // Call process_dkg_round1 without matching on its return
+                ed25519_dkg::process_dkg_round1(
+                    state_clone.clone(), 
+                    from_peer_id.clone(),
+                    package,
+                )
+                .await;
+
+                // After processing, check if all packages are received
+                let mut guard = state_clone.lock().await;
+                let all_packages_received = if let Some(session) = &guard.session {
+                    // Compare count of received packages to participants count
+                    guard.received_dkg_packages.len() == session.participants.len()
+                } else {
+                    false
+                };
+
+                if all_packages_received {
                     guard.log.push(
-                        "DKG Round 1 complete. Triggering DKG Round 2.".to_string()
+                        "All DKG Round 1 packages received. Setting state to Round1Complete and triggering DKG Round 2."
+                            .to_string(),
                     );
-                    guard.dkg_state = DkgState::Round2InProgress; // Set state before sending command
+                    guard.dkg_state = DkgState::Round1Complete;
+                    // Drop guard before sending command to avoid potential deadlock
+                    drop(guard); 
                     if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::TriggerDkgRound2) {
-                        guard.log.push(format!("Failed to send TriggerDkgRound2 command: {}", e));
-                        guard.dkg_state = DkgState::Failed(format!("Failed to trigger R2: {}", e)); 
+                        state_clone.lock().await.log.push(format!(
+                            "Failed to send TriggerDkgRound2 command: {}",
+                            e
+                        ));
                     }
                 } else {
-                    let current_dkg_state = guard.dkg_state.clone(); // Clone state before logging
                     guard.log.push(format!(
-                        "DKG Round 1: After processing package from {}, DKG state is {:?}. Waiting for more packages or other state change.",
-                        from_peer_id, current_dkg_state // Use cloned state
+                        "DKG Round 1: After processing package from {}, still waiting for more packages.",
+                        from_peer_id
                     ));
                 }
             });
         }
-        InternalCommand::TriggerDkgRound2 => {
-            let state_clone = state.clone();
-            let self_peer_id_clone = self_peer_id.clone();
-            tokio::spawn(async move {
-                let mut guard = state_clone.lock().await;
-                let current_dkg_state_log = guard.dkg_state.clone(); // Clone for logging
-                guard.log.push(
-                    format!("DKG Round 2: Processing TriggerDkgRound2 command. Current state: {:?}", current_dkg_state_log) // Use cloned state
-                );
-                
-                // Ensure state is Round2InProgress (or SharesInProgress if that's the chosen variant)
-                // This state should have been set by the ProcessDkgRound1 handler.
-                if guard.dkg_state == DkgState::Round2InProgress || guard.dkg_state == DkgState::SharesInProgress {
-                    // If using SharesInProgress, ensure consistency. DkgState enum has Round2InProgress as preferred.
-                    // Let's assume Round2InProgress is the target.
-                    if guard.dkg_state == DkgState::SharesInProgress { // If it was SharesInProgress, align log/logic if needed
-                        guard.log.push("Note: DKG state was SharesInProgress, proceeding as Round2InProgress.".to_string());
-                        guard.dkg_state = DkgState::Round2InProgress; // Ensure it's the consistent one
-                    }
-                    
-                    guard.log.push(
-                        "DKG Round 2: State is correct. Generating and distributing key shares...".to_string()
-                    );
-                    // The line below that changes state is removed as state should already be Round2InProgress.
-                    // guard.dkg_state = DkgState::SharesInProgress; // REMOVE/COMMENT THIS
-                } else {
-                    let current_dkg_state_abort_log = guard.dkg_state.clone(); // Clone for logging
-                    guard.log.push(format!(
-                        "DKG Round 2: Triggered but DKG state is {:?}, expected Round2InProgress. Aborting Round 2.",
-                        current_dkg_state_abort_log // Use cloned state
-                    ));
-                    // Optionally set to Failed state if this is an unrecoverable error
-                    // guard.dkg_state = DkgState::Failed("Triggered R2 in wrong state".to_string());
-                    return;
-                }
-                drop(guard); // Release lock before calling async dkg function
-
-                ed25519_dkg::handle_trigger_dkg_round2(state_clone).await;
-            });
-        }   
         InternalCommand::ProcessDkgRound2 {
             from_peer_id, 
             package, 
@@ -1042,69 +1048,116 @@ async fn handle_internal_command(
                     "Processing DKG Round 2 package from {}",
                     from_peer_id
                 ));
+                drop(guard);
 
-                if guard.dkg_state != DkgState::Round2InProgress {
-                    guard.log.push(format!(
-                        "Error: Received DKG Round 2 package from {} but DKG state is {:?}, not Round2InProgress.",
-                        from_peer_id, guard.dkg_state
-                    ));
-                    return;
-                }
-
-                // Assuming ed25519_dkg::handle_process_dkg_round2_package processes the package,
-                // stores it, and returns a Result<bool, String> where bool is true if round 2 is complete.
-                // This function needs to be implemented in your ed25519_dkg module.
-                match ed25519_dkg::handle_process_dkg_round2_package(
-                    &mut guard, // Pass mutable guard
+                // Call process_dkg_round2 with explicit error handling
+                match ed25519_dkg::process_dkg_round2(
+                    state_clone.clone(), 
                     from_peer_id.clone(),
                     package,
-                )
-                .await
-                {
-                    Ok(round2_complete) => {
-                        if round2_complete {
-                            guard.log.push(
-                                "All DKG Round 2 packages received. Setting state to Round2Complete and triggering FinalizeDkg."
-                                    .to_string(),
-                            );
-                            guard.dkg_state = DkgState::Round2Complete;
-                            // Drop guard before sending command to avoid potential deadlock
-                            drop(guard); 
-                            if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::FinalizeDkg) {
-                                state_clone.lock().await.log.push(format!(
-                                    "Failed to send FinalizeDkg command: {}",
-                                    e
-                                ));
-                            }
-                        } else {
-                            guard.log.push(format!(
-                                "DKG Round 2: After processing package from {}, DKG state is {:?}. Waiting for more packages.",
-                                from_peer_id, guard.dkg_state
-                            ));
-                        }
-                    }
+                ).await {
+                    Ok(_) => {
+                        state_clone.lock().await.log.push(format!(
+                            "DKG Round 2: Successfully processed package from {}",
+                            from_peer_id
+                        ));
+                    },
                     Err(e) => {
-                        guard.log.push(format!(
-                            "Error processing DKG Round 2 package from {}: {}. Resetting DKG state.",
+                        state_clone.lock().await.log.push(format!(
+                            "DKG Round 2: Error processing package from {}: {}",
                             from_peer_id, e
                         ));
-                        guard.dkg_state = DkgState::Failed; 
-                        // Consider more robust error handling, e.g., notifying other peers.
+                        return; // Exit early on error
                     }
+                }
+
+                // After processing, check if all round 2 packages are received
+                let mut guard = state_clone.lock().await;
+                
+                // Debug log to verify the round2 packages are being stored correctly
+                // Fix borrow checker errors by extracting values before formatting
+                let package_count = guard.received_dkg_round2_packages.len();
+                let package_keys = guard.received_dkg_round2_packages.keys().collect::<Vec<_>>();
+                let self_identifier = guard.identifier_map.as_ref()
+                    .and_then(|map| map.get(&guard.peer_id)).cloned();
+                
+                // Create the log message first, completing the immutable borrow
+                let log_message = format!(
+                    "DKG Round 2: Current received_dkg_round2_packages count: {}, keys: {:?}, self identifier: {:?}",
+                    package_count,
+                    package_keys,
+                    self_identifier
+                );
+                // Now perform the mutable borrow
+                guard.log.push(log_message);
+                
+                // Check if own package is included in the count (it should be)
+                let own_package_counted = if let Some(self_id) = self_identifier {
+                    guard.received_dkg_round2_packages.contains_key(&self_id)
+                } else {
+                    false
+                };
+                
+                guard.log.push(format!(
+                    "DKG Round 2: Own package in received map: {}", own_package_counted
+                ));
+                
+                let all_packages_received = if let Some(session) = &guard.session {
+                    // Compare count of received round 2 packages to participants count
+                    let current_count = guard.received_dkg_round2_packages.len();
+                    let expected_count = session.participants.len() - 1;
+                    let result = current_count == expected_count;
+                    
+                    guard.log.push(format!(
+                        "DKG Round 2: Checking completion: {}/{} packages received",
+                        current_count, expected_count
+                    ));
+                    
+                    result
+                } else {
+                    guard.log.push("DKG Round 2: No active session found when checking for completion".to_string());
+                    false
+                };
+
+                if all_packages_received {
+                    guard.log.push(
+                        "All DKG Round 2 packages received. Setting state to Round2Complete and triggering FinalizeDkg."
+                            .to_string(),
+                    );
+                    guard.dkg_state = DkgState::Round2Complete;
+                    drop(guard); 
+                    
+                    // Add more explicit logging around the FinalizeDkg command
+                    state_clone.lock().await.log.push("Sending FinalizeDkg command now...".to_string());
+                    
+                    if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::FinalizeDkg) {
+                        state_clone.lock().await.log.push(format!(
+                            "Failed to send FinalizeDkg command: {}",
+                            e
+                        ));
+                    } else {
+                        state_clone.lock().await.log.push("Successfully sent FinalizeDkg command".to_string());
+                    }
+                } else {
+                    guard.log.push(format!(
+                        "DKG Round 2: After processing package from {}, still waiting for more packages.",
+                        from_peer_id
+                    ));
                 }
             });
         }
         InternalCommand::FinalizeDkg => {
             let state_clone = state.clone();
-            let self_peer_id_clone = self_peer_id.clone(); // Capture self_peer_id if needed by finalize logic
             tokio::spawn(async move {
                 let mut guard = state_clone.lock().await;
                 guard.log.push("FinalizeDkg: Processing command.".to_string());
 
-                if guard.dkg_state != DkgState::Round2Complete {
+                // Clone dkg_state before using it in the format string
+                let current_dkg_state = guard.dkg_state.clone();
+                if current_dkg_state != DkgState::Round2Complete {
                     guard.log.push(format!(
                         "Error: Triggered FinalizeDkg but DKG state is {:?}, not Round2Complete.",
-                        guard.dkg_state
+                        current_dkg_state
                     ));
                     // Optionally set to Failed or handle as appropriate
                     return;
@@ -1112,20 +1165,39 @@ async fn handle_internal_command(
                 
                 guard.dkg_state = DkgState::Finalizing; // Mark as finalizing
                 
+                // Add enhanced logging with more detail about the state
+                guard.log.push(format!(
+                    "FinalizeDkg: All prerequisites met. Current state: {:?}. Moving to Finalizing state.",
+                    current_dkg_state
+                ));
+                
+                // Fix: Extract the package count before using it in format!
+                let package_count = guard.received_dkg_round2_packages.len();
+                guard.log.push(format!(
+                    "FinalizeDkg: Preparing to finalize with {} round2 packages", 
+                    package_count
+                ));
+                
                 // Drop guard before potentially long-running async operation
                 drop(guard);
 
-                // Assuming ed25519_dkg::handle_finalize_dkg performs the final DKG steps
-                // and updates the state internally (e.g., sets DkgState::Complete or DkgState::Failed
-                // and stores the key material).
-                // This function needs to be implemented in your ed25519_dkg module.
-                ed25519_dkg::handle_finalize_dkg(state_clone.clone(), self_peer_id_clone).await;
+                // More explicit logging
+                state_clone.lock().await.log.push("FinalizeDkg: Calling ed25519_dkg::handle_finalize_dkg function...".to_string());
+
+                // Fix: Don't try to match on the return value since it's not a Result
+                ed25519_dkg::handle_finalize_dkg(state_clone.clone()).await;
+                
+                // Add logging after the function call
+                state_clone.lock().await.log.push(
+                    "FinalizeDkg: Completed DKG finalization process".to_string()
+                );
 
                 // Log final status after handle_finalize_dkg has updated the state
-                let final_guard = state_clone.lock().await;
+                let mut final_guard = state_clone.lock().await;
+                let final_dkg_state = final_guard.dkg_state.clone();
                 final_guard.log.push(format!(
                     "FinalizeDkg: Completion attempt finished. DKG state is now: {:?}",
-                    final_guard.dkg_state
+                    final_dkg_state
                 ));
             });
         }
