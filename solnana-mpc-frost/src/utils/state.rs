@@ -22,14 +22,13 @@ use std::{
                                                // Remove Arc import from here if only used for peer_connections
 };
 
-
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
 // Add this import
 
 use crate::protocal::signal::SessionResponse;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub enum InternalCommand<C: Ciphersuite>  {
+pub enum InternalCommand<C: Ciphersuite> {
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
 
@@ -190,6 +189,7 @@ pub struct AppState<C: Ciphersuite> {
     pub data_channels: HashMap<String, Arc<RTCDataChannel>>,
     // Add Solana public key
     pub solana_public_key: Option<String>,
+    pub etherum_public_key: Option<String>,
     pub mesh_status: MeshStatus,
 }
 

@@ -1,11 +1,16 @@
 use crate::protocal::signal::WebRTCMessage;
+use crate::utils::eth_helper;
 use crate::utils::peer::send_webrtc_message;
 use crate::utils::state::AppState;
 use crate::utils::state::DkgState; // Import DkgState directly from solnana_mpc_frost
 use frost_core::keys::dkg::{part1, part2, part3, round1, round2};
 use frost_core::{Ciphersuite, keys::PublicKeyPackage};
+use frost_ed25519::Ed25519Sha512; // Added for ciphersuite check
 use frost_ed25519::rand_core::OsRng;
+use frost_secp256k1::Secp256K1Sha256; // Added for ciphersuite check // Added for Ethereum address derivation
 
+use std::any::TypeId; // Added for ciphersuite check
+use std::mem; // Added for unsafe transmute
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -293,22 +298,50 @@ where
 }
 
 // Helper function to call the solana module
-fn generate_solana_public_key<C>(guard: &mut AppState<C>, group_public_key: &PublicKeyPackage<C>)
+fn generate_public_key<C>(guard: &mut AppState<C>, group_public_key: &PublicKeyPackage<C>)
 where
     C: Ciphersuite,
 {
-    // Call the solana module's function
-    if let Some(pubkey) =
-        crate::utils::solana_helper::derive_solana_public_key::<C>(group_public_key)
-    {
-        guard
-            .log
-            .push(format!("Generated Solana Public Key: {}", pubkey));
-        guard.solana_public_key = Some(pubkey);
+    let c_type_id = TypeId::of::<C>();
+
+    if c_type_id == TypeId::of::<Ed25519Sha512>() {
+        // Call the solana module's function
+        if let Some(pubkey) =
+            crate::utils::solana_helper::derive_solana_public_key::<C>(group_public_key)
+        {
+            guard
+                .log
+                .push(format!("Generated Solana Public Key: {}", pubkey));
+            guard.solana_public_key = Some(pubkey);
+        } else {
+            guard
+                .log
+                .push("Error generating Solana public key from group key".to_string());
+        }
+    } else if c_type_id == TypeId::of::<Secp256K1Sha256>() {
+        let concrete_group_public_key: &PublicKeyPackage<Secp256K1Sha256> =
+            unsafe { mem::transmute(group_public_key) };
+        match eth_helper::derive_eth_address(concrete_group_public_key) {
+            Ok(address) => {
+                // Format the address to ensure it shows the complete string
+                // ethers Address has a fixed 20-byte length (40 hex chars + 0x prefix)
+                let address_str = format!("0x{}", hex::encode(address.as_bytes()));
+                guard
+                    .log
+                    .push(format!("Generated Ethereum Address: 0x{:x}", address));
+                guard.etherum_public_key = Some(address_str); // Store the full address
+            }
+            Err(e) => {
+                guard
+                    .log
+                    .push(format!("Error generating Ethereum address: {}", e));
+            }
+        }
     } else {
-        guard
-            .log
-            .push("Error generating Solana public key from group key".to_string());
+        guard.log.push(format!(
+            "Unsupported ciphersuite for public key derivation: {:?}",
+            c_type_id
+        ));
     }
 }
 
@@ -605,7 +638,7 @@ where
             guard.dkg_state = DkgState::Complete; // Mark DKG as complete
 
             // Generate Solana public key from group key
-            generate_solana_public_key(&mut *guard, &group_public_key);
+            generate_public_key(&mut *guard, &group_public_key);
 
             // Optionally clear intermediate DKG data now
             guard.dkg_part1_public_package = None;

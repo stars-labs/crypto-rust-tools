@@ -1,8 +1,8 @@
 use crate::protocal::signal::SessionInfo;
 use crate::utils::state::{AppState, DkgStateDisplay}; // Now correctly imports DkgStateDisplay trait
-use crate::{InternalCommand, SharedClientMsg, MeshStatus}; // Add MeshStatus import
+use crate::{InternalCommand, ClientMsg, MeshStatus}; // Add MeshStatus import
 use crossterm::event::{KeyCode, KeyEvent};
-
+use std::any::TypeId; // Added for ciphersuite check
 use ratatui::{
     Frame, // Add Frame import
     Terminal,
@@ -15,10 +15,7 @@ use ratatui::{
 use std::collections::HashSet;
 use std::io;
 use tokio::sync::mpsc; // For command channel // Import SessionInfo
-use frost_core::{
-    Ciphersuite, 
-    
-};
+use frost_core::Ciphersuite;
 
 pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
     terminal: &mut Terminal<B>,
@@ -106,7 +103,7 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             format!("> {}", input)
         } else {
             // Add "Save Log: s" to the help text
-            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Mesh Ready: r | Quit: q".to_string()
+            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Mesh Ready: r | Demo Start: d | Quit: q".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -132,6 +129,21 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
     area: Rect,
 ) {
     let mut status_items = Vec::new();
+
+    // show curve 
+    let c_type_id = TypeId::of::<T>();
+
+    let curve_name = if c_type_id == TypeId::of::<frost_secp256k1::Secp256K1Sha256>() {
+        "secp256k1"
+    } else if c_type_id == TypeId::of::<frost_ed25519::Ed25519Sha512>() {
+        "ed25519"
+    } else {
+        "unknown"
+    };
+    status_items.push(Line::from(vec![
+        Span::styled("Curve: ", Style::default().fg(Color::Yellow)),
+        Span::raw(curve_name),
+    ]));
 
     // Session display - show active session only
     if let Some(session) = &app.session {
@@ -205,18 +217,6 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         ]));
     }
 
-    // DKG Status using the new display trait - enhanced with more detailed state info
-    let dkg_status = match &app.dkg_state {
-        crate::DkgState::Idle => "Idle".to_string(),
-        crate::DkgState::Round1InProgress => "Round 1 In Progress".to_string(),
-        crate::DkgState::Round1Complete => "Round 1 Complete".to_string(),
-        crate::DkgState::Round2InProgress => "Round 2 In Progress".to_string(),
-        crate::DkgState::Round2Complete => "Round 2 Complete".to_string(),
-        crate::DkgState::Finalizing => "Finalizing".to_string(),
-        crate::DkgState::Complete => "DKG Complete".to_string(),
-        crate::DkgState::Failed(reason) => format!("DKG Failed: {}", reason),
-    };
-    
     let dkg_style = if app.dkg_state.is_active() {
         Style::default().fg(Color::Green)
     } else if app.dkg_state.is_completed() {
@@ -229,8 +229,25 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
 
     status_items.push(Line::from(vec![
         Span::styled("DKG Status: ", Style::default().fg(Color::Yellow)),
-        Span::styled(dkg_status, dkg_style),
+        Span::styled(app.dkg_state.display_status(), dkg_style),
     ]));
+
+    if curve_name == "secp256k1" && app.etherum_public_key.is_some() {
+        status_items.push(Line::from(vec![
+            Span::styled("Ethereum Address: ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.etherum_public_key.clone().unwrap()),
+        ]));
+    } else if curve_name == "ed25519" && app.solana_public_key.is_some() {
+        status_items.push(Line::from(vec![
+            Span::styled("Solana Address: ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.solana_public_key.clone().unwrap()),
+        ]));
+    } else {
+        status_items.push(Line::from(vec![
+            Span::styled("Address: ", Style::default().fg(Color::Yellow)),
+            Span::raw("N/A"),
+        ]));        
+    }
 
     // Display additional connection info if in a session
     if let Some(session) = &app.session {
@@ -285,7 +302,7 @@ pub fn handle_key_event<C>(
                 // Parse and handle command
                 // Wrap shared messages when sending
                 if cmd_str.starts_with("/list") {
-                    let _ = cmd_tx.send(InternalCommand::SendToServer(SharedClientMsg::ListPeers));
+                    let _ = cmd_tx.send(InternalCommand::SendToServer(ClientMsg::ListPeers));
                 } else if cmd_str.starts_with("/propose") {
                     // Handle the propose command as per documentation
                     // Format: /propose <session_id> <total> <threshold> <peer1,peer2,...>
@@ -367,7 +384,7 @@ pub fn handle_key_event<C>(
                         match serde_json::from_str::<serde_json::Value>(json_str) {
                             Ok(data) => {
                                 let _ = cmd_tx.send(InternalCommand::SendToServer(
-                                    SharedClientMsg::Relay {
+                                    ClientMsg::Relay {
                                         to: target_peer_id.clone(),
                                         data,
                                     },
@@ -464,6 +481,23 @@ pub fn handle_key_event<C>(
             }
             KeyCode::Char('r') => {
                 let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal);                
+            }
+            KeyCode::Char('d') => {
+                // Quick test - Send predefined session proposal
+                let session_id = "wallet_2of3".to_string();
+                let participants = vec!["mpc-1".to_string(), "mpc-2".to_string(), "mpc-3".to_string()];
+                
+                let _ = cmd_tx.send(InternalCommand::ProposeSession {
+                    session_id: session_id.clone(),
+                    total: 3,
+                    threshold: 2,
+                    participants: participants.clone(),
+                });
+                
+                app.log.push(format!(
+                    "Quick test: Proposed session '{}' with {} participants (threshold: {})",
+                    session_id, 3, 2
+                ));
             }
             KeyCode::Up => {
                 app.log_scroll = app.log_scroll.saturating_sub(1);
