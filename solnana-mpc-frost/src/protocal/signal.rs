@@ -1,13 +1,10 @@
+use frost_core::Ciphersuite;
 use serde::{Deserialize, Serialize};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 // Import the DKG Package type
-use frost_core::keys::dkg::round1::Package as DkgRound1Package;
-use frost_ed25519::Ed25519Sha512; // Needed for type parameter
-
 // Import round1 and round2 packages
-use frost_core::keys::dkg::round2;
 
 // --- Session Info Struct ---
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -71,25 +68,26 @@ pub struct SessionResponse {
 // --- Application-Level Messages (sent over established WebRTC Data Channel) ---
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "webrtc_msg_type")]
-pub enum WebRTCMessage {
+#[serde(bound(
+    serialize = "frost_core::keys::dkg::round1::Package<C>: serde::Serialize, frost_core::keys::dkg::round2::Package<C>: serde::Serialize",
+    deserialize = "frost_core::keys::dkg::round1::Package<C>: serde::Deserialize<'de>, frost_core::keys::dkg::round2::Package<C>: serde::Deserialize<'de>"
+))]
+pub enum WebRTCMessage<C: Ciphersuite> {
     // DKG Messages
     SimpleMessage {
         text: String,
     },
     DkgRound1Package {
-        // Use the imported Package type directly (it derives Serialize/Deserialize)
-        package: DkgRound1Package<Ed25519Sha512>,
+        package: frost_core::keys::dkg::round1::Package<C>,
     },
     // Add other message types as needed (e.g., for signing)
     DkgRound2Package {
-        // Add this variant
-        package: round2::Package<Ed25519Sha512>,
+        package: frost_core::keys::dkg::round2::Package<C>,
     },
     /// Data channel opened notification
     ChannelOpen {
         peer_id: String,
     },
-
     /// Mesh readiness notification
     MeshReady {
         session_id: String,

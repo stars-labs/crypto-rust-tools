@@ -10,7 +10,7 @@ use frost_core::{
 
 use std::sync::Arc; // Use TokioMutex for peer_connections
 use std::time::{Duration, Instant}; // Import Duration and Instant
-use tokio::sync::Mutex as TokioMutex; // Use TokioMutex for async WebRTC state
+use tokio::sync::Mutex; // Use TokioMutex for async WebRTC state
 use webrtc::{
     data_channel::RTCDataChannel, ice_transport::ice_candidate::RTCIceCandidateInit,
     peer_connection::RTCPeerConnection,
@@ -22,14 +22,14 @@ use std::{
                                                // Remove Arc import from here if only used for peer_connections
 };
 
-use frost_ed25519::Ed25519Sha512;
+
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
 // Add this import
 
 use crate::protocal::signal::SessionResponse;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub enum InternalCommand {
+pub enum InternalCommand<C: Ciphersuite>  {
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
 
@@ -77,7 +77,7 @@ pub enum InternalCommand {
     /// Process DKG Round 1 data from a peer
     ProcessDkgRound1 {
         from_peer_id: String,
-        package: round1::Package<Ed25519Sha512>,
+        package: round1::Package<C>,
     },
 
     /// Trigger DKG Round 2 (Shares)
@@ -86,7 +86,7 @@ pub enum InternalCommand {
     /// Process DKG Round 2 data from a peer
     ProcessDkgRound2 {
         from_peer_id: String,
-        package: round2::Package<Ed25519Sha512>,
+        package: round2::Package<C>,
     },
 
     /// Finalize the DKG process
@@ -165,7 +165,7 @@ pub struct AppState<C: Ciphersuite> {
     pub session: Option<SessionInfo>,
     pub invites: Vec<SessionInfo>, // Store full SessionInfo for invites
     // WebRTC related state (needs TokioMutex for async access)
-    pub peer_connections: Arc<TokioMutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    pub peer_connections: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     // TUI related state (can use StdMutex)
     pub peer_statuses: HashMap<String, RTCPeerConnectionState>,
     pub reconnection_tracker: ReconnectionTracker,

@@ -2255,42 +2255,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "frost-mpc-webrtc-node"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode 2.0.1",
- "bs58",
- "clap 2.34.0",
- "crossterm 0.29.0",
- "curve25519-dalek 3.2.0",
- "elliptic-curve",
- "ethers-core",
- "ethers-providers",
- "ethers-signers",
- "frost-core",
- "frost-ed25519",
- "frost-secp256k1",
- "futures-util",
- "hex",
- "k256",
- "lazy_static",
- "rand 0.7.3",
- "rand_core 0.5.1",
- "ratatui",
- "serde",
- "serde_json",
- "sha2 0.9.9",
- "solana-client",
- "solana-sdk",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "url",
- "webrtc",
- "webrtc-signal-server",
-]
-
-[[package]]
 name = "frost-rerandomized"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

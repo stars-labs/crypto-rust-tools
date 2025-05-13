@@ -15,18 +15,19 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
-use frost_ed25519::Ed25519Sha512;
+use frost_core::Ciphersuite;
+
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
 use crate::protocal::signal::{CandidateInfo, WebSocketMessage}; // Updated path
 
 
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
 
-pub async fn send_webrtc_message(
+pub async fn send_webrtc_message<C>(
     target_peer_id: &str,
-    message: &WebRTCMessage,
-    state_log: Arc<Mutex<AppState<Ed25519Sha512>>>,
-) -> Result<(), String> {
+    message: &WebRTCMessage<C>,
+    state_log: Arc<Mutex<AppState<C>>>,
+) -> Result<(), String> where C: Ciphersuite {
     let data_channel = {
         let guard = state_log.lock().await;
         guard.data_channels.get(target_peer_id).cloned()
@@ -74,15 +75,18 @@ pub async fn send_webrtc_message(
     }
 }
 
-pub async fn create_and_setup_peer_connection(
+pub async fn create_and_setup_peer_connection<C>(
     peer_id: String,
     self_peer_id: String, // Pass self_peer_id
     peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
-    state_log: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Use InternalCommand
+    state_log: Arc<Mutex<AppState<C>>>,
     api: &'static webrtc::api::API,
     config: &'static RTCConfiguration,
-) -> Result<Arc<RTCPeerConnection>, String> {
+) -> Result<Arc<RTCPeerConnection>, String> where C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+{
     {
         let peer_conns = peer_connections_arc.lock().await;
         if let Some(existing_pc) = peer_conns.get(&peer_id) {
@@ -361,13 +365,16 @@ pub async fn create_and_setup_peer_connection(
     }
 }
 
-pub async fn setup_data_channel_callbacks(
+pub async fn setup_data_channel_callbacks<C>(
     dc: Arc<RTCDataChannel>,
     peer_id: String,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    state: Arc<Mutex<AppState<C>>>,
     // Update the sender type here
-    cmd_tx: mpsc::UnboundedSender<InternalCommand>, // Use InternalCommand
-) {
+    cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Use InternalCommand
+) where C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+ {
     let dc_arc = dc.clone(); // Clone the Arc for the data channel
 
     // Only store and set up callbacks for the main data channel
@@ -413,7 +420,7 @@ pub async fn setup_data_channel_callbacks(
 
             if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
                 // Parse envelope
-                match serde_json::from_str::<WebRTCMessage>(&text) {
+                match serde_json::from_str::<WebRTCMessage<C>>(&text) {
                     Ok(envelope) => {
                         match envelope {
                             WebRTCMessage::DkgRound1Package { package } => {
@@ -506,11 +513,11 @@ pub async fn setup_data_channel_callbacks(
 }
 
 // Apply any pending ICE candidates for a peer
-pub async fn apply_pending_candidates(
+pub async fn apply_pending_candidates<C>(
     peer_id: &str,
     pc: Arc<RTCPeerConnection>,
-    state_log: Arc<Mutex<AppState<Ed25519Sha512>>>,
-) {
+    state_log: Arc<Mutex<AppState<C>>>,
+) where C: Ciphersuite {
     // Take the pending candidates for this peer
     let candidates = {
         let mut state_guard = state_log.lock().await;

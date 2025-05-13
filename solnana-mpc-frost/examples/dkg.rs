@@ -5,9 +5,16 @@ use frost_core::keys::dkg::{part1, part2, part3};
 use frost_core::keys::{KeyPackage, PublicKeyPackage};
 use frost_ed25519::Ed25519Sha512;
 use frost_secp256k1::Secp256K1Sha256;
-use rand::{CryptoRng, RngCore};
+// Import rand_core directly from frost_ed25519 to ensure version compatibility
+use frost_ed25519::rand_core::{CryptoRng, OsRng, RngCore};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+
+// Remove direct rand_core import and instead use traits from frost_core
+// This ensures we use the same version of rand_core that frost is expecting
+// Add serde imports
+// Remove incorrect SerdeCiphersuite import
+// use frost_core::traits::SerdeCiphersuite; // This was causing the error
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Curve {
@@ -53,6 +60,7 @@ fn main() {
 }
 
 // New struct to represent a participant in the DKG protocol
+// Update Ciphersuite bound to Ciphersuite (it will have serde capabilities via feature flag)
 struct Participant<C: Ciphersuite> {
     id: Identifier<C>,
     round1_secret_package: Option<frost_core::keys::dkg::round1::SecretPackage<C>>,
@@ -64,6 +72,7 @@ struct Participant<C: Ciphersuite> {
     pubkey_package: Option<PublicKeyPackage<C>>,
 }
 
+// Update Ciphersuite bound to Ciphersuite
 impl<C: Ciphersuite> Participant<C> {
     fn new(id: Identifier<C>) -> Self {
         Self {
@@ -79,11 +88,12 @@ impl<C: Ciphersuite> Participant<C> {
     }
 
     // Generate and store Round 1 package
-    fn generate_round1<R: RngCore + CryptoRng>(
+    // Fix the trait bounds to match what FROST expects
+    fn generate_round1(
         &mut self,
         max_signers: u16,
         min_signers: u16,
-        rng: &mut R,
+        rng: &mut (impl RngCore + CryptoRng),
     ) -> Result<&frost_core::keys::dkg::round1::Package<C>, frost_core::Error<C>> {
         let (secret, package) = part1(self.id, max_signers, min_signers, rng)?;
         self.round1_secret_package = Some(secret);
@@ -93,12 +103,10 @@ impl<C: Ciphersuite> Participant<C> {
         Ok(self.round1_package.as_ref().unwrap())
     }
 
-    // Add a received Round 1 package
-    fn add_round1_package(
-        &mut self,
-        sender_id: Identifier<C>,
-        package: frost_core::keys::dkg::round1::Package<C>,
-    ) {
+    // Add a received Round 1 package (now takes serialized package)
+    fn add_round1_package(&mut self, sender_id: Identifier<C>, package_json: &str) {
+        let package: frost_core::keys::dkg::round1::Package<C> =
+            serde_json::from_str(package_json).expect("Failed to deserialize Round 1 package");
         self.round1_packages_received.insert(sender_id, package);
     }
 
@@ -113,7 +121,7 @@ impl<C: Ciphersuite> Participant<C> {
         let round1_packages_from_others: BTreeMap<_, _> = self
             .round1_packages_received
             .iter()
-            .filter(|(id, _)| **id != self.id)
+            .filter(|(id, _)| *id != &self.id)
             .map(|(id, pkg)| (*id, pkg.clone()))
             .collect();
 
@@ -126,12 +134,10 @@ impl<C: Ciphersuite> Participant<C> {
         Ok(packages)
     }
 
-    // Add a received Round 2 package
-    fn add_round2_package(
-        &mut self,
-        sender_id: Identifier<C>,
-        package: frost_core::keys::dkg::round2::Package<C>,
-    ) {
+    // Add a received Round 2 package (now takes serialized package)
+    fn add_round2_package(&mut self, sender_id: Identifier<C>, package_json: &str) {
+        let package: frost_core::keys::dkg::round2::Package<C> =
+            serde_json::from_str(package_json).expect("Failed to deserialize Round 2 package");
         self.round2_packages_received.insert(sender_id, package);
     }
 
@@ -141,7 +147,7 @@ impl<C: Ciphersuite> Participant<C> {
         let round1_packages_from_others: BTreeMap<_, _> = self
             .round1_packages_received
             .iter()
-            .filter(|(id, _)| **id != self.id)
+            .filter(|(id, _)| *id != &self.id)
             .map(|(id, pkg)| (*id, pkg.clone()))
             .collect();
 
@@ -158,37 +164,40 @@ impl<C: Ciphersuite> Participant<C> {
 }
 
 // Helper function to distribute Round 1 packages to all participants
+// Update Ciphersuite bound
 fn distribute_round1_packages<C: Ciphersuite>(
     participants: &mut BTreeMap<Identifier<C>, Participant<C>>,
-    packages: &BTreeMap<Identifier<C>, frost_core::keys::dkg::round1::Package<C>>,
+    packages_json: &BTreeMap<Identifier<C>, String>,
 ) {
-    for (&sender_id, package) in packages {
+    for (&sender_id, package_str) in packages_json {
         for (receiver_id, receiver) in participants.iter_mut() {
             if *receiver_id != sender_id {
-                receiver.add_round1_package(sender_id, package.clone());
+                receiver.add_round1_package(sender_id, package_str.as_str());
             }
         }
     }
 }
 
 // Helper function to distribute a Round 2 package to its recipient
+// Update Ciphersuite bound
 fn distribute_round2_package<C: Ciphersuite>(
     participants: &mut BTreeMap<Identifier<C>, Participant<C>>,
     sender_id: Identifier<C>,
     receiver_id: Identifier<C>,
-    package: frost_core::keys::dkg::round2::Package<C>,
+    package_json: String,
 ) {
     if let Some(receiver) = participants.get_mut(&receiver_id) {
-        receiver.add_round2_package(sender_id, package);
+        receiver.add_round2_package(sender_id, &package_json);
     }
 }
 
+// Update Ciphersuite bound
 fn run_dkg<C>(max_signers: u16, min_signers: u16) -> Result<(), frost_core::Error<C>>
 where
-    C: Ciphersuite,
+    C: Ciphersuite, // Updated bound
 {
-    // Use rand::OsRng instead of rand_core::OsRng
-    let mut rng = rand::rngs::OsRng;
+    // Use OsRng from the same rand_core version that frost uses
+    let mut rng = OsRng;
 
     println!(
         "\nStarting DKG with max_signers={}, min_signers={}",
@@ -204,28 +213,32 @@ where
 
     // === Round 1: Generate packages ===
     println!("\n=== DKG Round 1 ===");
-    let mut round1_packages = BTreeMap::new();
+    let mut round1_packages_json = BTreeMap::new(); // Store serialized packages
 
     // Each participant generates their Round 1 package
     for (&id, participant) in participants.iter_mut() {
         println!("\nParticipant {:?} generating Round 1 package...", id);
         let package = participant.generate_round1(max_signers, min_signers, &mut rng)?;
-        round1_packages.insert(id, package.clone());
+        // Serialize the package to JSON
+        let package_json =
+            serde_json::to_string(&package).expect("Failed to serialize Round 1 package");
+        round1_packages_json.insert(id, package_json.clone()); // Store serialized version
         println!(
-            "  Participant {:?} generated Round 1 package: {:?}",
-            id, package
+            "  Participant {:?} generated Round 1 package (serialized): {:?}", // Log serialized version or keep original
+            id,
+            package_json // package // Or keep original package for logging if preferred
         );
     }
 
-    // Distribute Round 1 packages to all participants
-    distribute_round1_packages(&mut participants, &round1_packages);
+    // Distribute serialized Round 1 packages to all participants
+    distribute_round1_packages(&mut participants, &round1_packages_json);
 
     // === Round 2: Process Round 1 packages and generate Round 2 packages ===
     println!("\n=== DKG Round 2 ===");
 
     // Each participant processes received Round 1 packages and generates Round 2 packages
-    // Collect all (sender_id, receiver_id, package) into a temporary vector to avoid double mutable borrow
-    let mut round2_to_distribute = Vec::new();
+    // Collect all (sender_id, receiver_id, serialized_package) into a temporary vector
+    let mut round2_to_distribute_json = Vec::new();
     for (&sender_id, sender) in participants.iter_mut() {
         println!(
             "\nParticipant {:?} processing Round 1 packages and generating Round 2 packages...",
@@ -233,23 +246,25 @@ where
         );
 
         // Generate Round 2 packages
-        let round2_packages = sender.generate_round2()?;
+        let round2_packages_map = sender.generate_round2()?;
 
         println!(
             "  Participant {:?} generated Round 2 packages for others: {:?}",
             sender_id,
-            round2_packages.keys().collect::<Vec<_>>()
+            round2_packages_map.keys().collect::<Vec<_>>()
         );
 
-        // Collect Round 2 packages to distribute later
-        for (receiver_id, package) in round2_packages {
-            round2_to_distribute.push((sender_id, receiver_id, package));
+        // Collect and serialize Round 2 packages to distribute later
+        for (receiver_id, package) in round2_packages_map {
+            let package_json =
+                serde_json::to_string(&package).expect("Failed to serialize Round 2 package");
+            round2_to_distribute_json.push((sender_id, receiver_id, package_json));
         }
     }
 
-    // Distribute Round 2 packages to each recipient (after mutable borrow from iter_mut() is done)
-    for (sender_id, receiver_id, package) in round2_to_distribute {
-        distribute_round2_package(&mut participants, sender_id, receiver_id, package);
+    // Distribute serialized Round 2 packages to each recipient
+    for (sender_id, receiver_id, package_json) in round2_to_distribute_json {
+        distribute_round2_package(&mut participants, sender_id, receiver_id, package_json);
     }
 
     // === Part 3: Finalize DKG ===
@@ -266,11 +281,7 @@ where
             id,
             participant.key_package.as_ref().unwrap()
         );
-        println!(
-            "  Participant {:?} generated PublicKeyPackage: {:?}",
-            id,
-            participant.pubkey_package.as_ref().unwrap()
-        );
+        println!();
     }
 
     // Collect all final key packages and public key packages

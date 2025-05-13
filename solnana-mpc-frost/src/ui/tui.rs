@@ -2,7 +2,7 @@ use crate::protocal::signal::SessionInfo;
 use crate::utils::state::{AppState, DkgStateDisplay}; // Now correctly imports DkgStateDisplay trait
 use crate::{InternalCommand, SharedClientMsg, MeshStatus}; // Add MeshStatus import
 use crossterm::event::{KeyCode, KeyEvent};
-use frost_ed25519::Ed25519Sha512; // Keep for AppState generic
+
 use ratatui::{
     Frame, // Add Frame import
     Terminal,
@@ -15,10 +15,14 @@ use ratatui::{
 use std::collections::HashSet;
 use std::io;
 use tokio::sync::mpsc; // For command channel // Import SessionInfo
+use frost_core::{
+    Ciphersuite, 
+    
+};
 
-pub fn draw_main_ui<B: Backend>(
+pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
     terminal: &mut Terminal<B>,
-    app: &AppState<Ed25519Sha512>,
+    app: &AppState<C>,
     input: &str,
     input_mode: bool,
 ) -> io::Result<()> {
@@ -260,15 +264,15 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
 }
 
 // Returns Ok(true) to continue, Ok(false) to quit, Err on error.
-pub fn handle_key_event(
+pub fn handle_key_event<C>(
     key: KeyEvent,
     // Add generic parameter here
-    app: &mut AppState<Ed25519Sha512>, // Now mutable
+    app: &mut AppState<C>, // Now mutable and generic
     input: &mut String,                // Now mutable
     input_mode: &mut bool,             // Now mutable
     // Update the sender type to use the new InternalCommand
-    cmd_tx: &mpsc::UnboundedSender<InternalCommand>, // Pass as reference
-) -> anyhow::Result<bool> {
+    cmd_tx: &mpsc::UnboundedSender<InternalCommand<C>>, // Pass as reference
+) -> anyhow::Result<bool> where C: Ciphersuite {
     if *input_mode {
         // --- Input Mode Key Handling (mostly unchanged) ---
         match key.code {

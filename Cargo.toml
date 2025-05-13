@@ -7,7 +7,6 @@ version = "0.1.0"
 
 [workspace]
 members = [
-    "frost-mpc-webrtc-node",
     "solnana-mpc-frost",
     "ssh-to-solana",
     "webrtc-signal-server",

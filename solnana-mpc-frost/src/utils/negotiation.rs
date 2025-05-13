@@ -1,6 +1,6 @@
 use crate::protocal::signal::{SDPInfo, WebRTCSignal, WebSocketMessage};
 use crate::utils::state::AppState;
-use frost_ed25519::Ed25519Sha512;
+use frost_core::Ciphersuite;
 
 use crate::utils::state::InternalCommand;
 use std::{collections::HashMap, sync::Arc};
@@ -10,13 +10,18 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
 
-pub async fn initiate_offers_for_session(
+pub async fn initiate_offers_for_session<C>(
     participants: Vec<String>,
     self_peer_id: String,
     peer_connections: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-) {
+    cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
+    state: Arc<Mutex<AppState<C>>>,
+) where
+    C: Ciphersuite + Send + Sync + 'static,
+    <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync,
+    <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar:
+        Send + Sync,
+{
     state
         .lock()
         .await

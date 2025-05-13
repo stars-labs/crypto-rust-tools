@@ -3,6 +3,7 @@ use protocal::signal::WebRTCMessage; // Updated path
 use protocal::signal::WebSocketMessage;  // Updated path
 use protocal::signal::SessionResponse;
 use protocal::signal::WebRTCSignal;
+use protocal::dkg;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -30,6 +31,9 @@ use webrtc::peer_connection::RTCPeerConnection;
 
 use webrtc_signal_server::{ClientMsg as SharedClientMsg, ServerMsg};
 // Add display-related imports for better status handling
+use frost_core::{
+    Ciphersuite, Identifier,
+};
 
 mod utils;
 // --- Use items from modules ---
@@ -45,8 +49,6 @@ use utils::state::{AppState, ReconnectionTracker}; // Remove DkgState import
 
 mod ui;
 use ui::tui::{draw_main_ui, handle_key_event};
-
-use utils::ed25519_dkg;
 
 use network::webrtc::{WEBRTC_API, WEBRTC_CONFIG};
 
@@ -75,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Channel for INTERNAL commands within the CLI app (uses InternalCommand from lib.rs)
-    let (internal_cmd_tx, mut internal_cmd_rx) = mpsc::unbounded_channel::<InternalCommand>();
+    let (internal_cmd_tx, mut internal_cmd_rx) = mpsc::unbounded_channel::<InternalCommand<Ed25519Sha512>>();
 
     // Shared state for TUI and networkthin the CLI app (uses InternalCommand from lib.rs)
     // Specify the Ciphersuite for AppStaterx) = mpsc::unbounded_channel::<InternalCommand>();
@@ -192,19 +194,23 @@ async fn main() -> anyhow::Result<()> {
 }       // No sleep needed - event::poll has a timeout already
     //} // Duplicate removed
 /// Handler for internal commands sent via MPSC channel
-use frost_core::Identifier; // Add this import for Identifier::try_from
-async fn handle_internal_command(
-    cmd: InternalCommand, //kend_mut(), LeaveAlternateScreen)?;
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+
+async fn handle_internal_command<C>(
+    cmd: InternalCommand<C>, //kend_mut(), LeaveAlternateScreen)?;
+    state: Arc<Mutex<AppState<C>>>,
     self_peer_id: String,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>, // Fix: add parameter here
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Fix: add parameter here
     ws_sink: &mut futures_util::stream::SplitSink< // Add ws_sink parameter
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         Message,
     >,
-) {
+) where
+C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+{
     match cmd { // internal commands sent via MPSC channel
         InternalCommand::SendToServer(shared_msg) => {
                     if let Ok(msg_str) = serde_json::to_string(&shared_msg) {
@@ -953,13 +959,13 @@ async fn handle_internal_command(
                 state_clone.lock().await.log.push(
                     "DKG Round 1: Generating and sending commitments to all peers...".to_string(),
                 );
-                ed25519_dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
+                dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
             });
         }
         InternalCommand::TriggerDkgRound2 => {
             let state_clone = state.clone();
             tokio::spawn(async move {
-                match ed25519_dkg::handle_trigger_dkg_round2(state_clone.clone()).await {
+                match dkg::handle_trigger_dkg_round2(state_clone.clone()).await {
                     Ok(_) => {
                         state_clone.lock().await.log.push("Successfully completed handle_trigger_dkg_round2".to_string());
                     },
@@ -998,7 +1004,7 @@ async fn handle_internal_command(
                 drop(guard);
 
                 // Call process_dkg_round1 without matching on its return
-                ed25519_dkg::process_dkg_round1(
+                dkg::process_dkg_round1(
                     state_clone.clone(), 
                     from_peer_id.clone(),
                     package,
@@ -1051,7 +1057,7 @@ async fn handle_internal_command(
                 drop(guard);
 
                 // Call process_dkg_round2 with explicit error handling
-                match ed25519_dkg::process_dkg_round2(
+                match dkg::process_dkg_round2(
                     state_clone.clone(), 
                     from_peer_id.clone(),
                     package,
@@ -1185,7 +1191,7 @@ async fn handle_internal_command(
                 state_clone.lock().await.log.push("FinalizeDkg: Calling ed25519_dkg::handle_finalize_dkg function...".to_string());
 
                 // Fix: Don't try to match on the return value since it's not a Result
-                ed25519_dkg::handle_finalize_dkg(state_clone.clone()).await;
+                dkg::handle_finalize_dkg(state_clone.clone()).await;
                 
                 // Add logging after the function call
                 state_clone.lock().await.log.push(
@@ -1204,11 +1210,11 @@ async fn handle_internal_command(
     }
 }
 /// Handler for WebSocket messages received from the server
-async fn handle_websocket_message(
+async fn handle_websocket_message<C>(
     msg: Message,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    state: Arc<Mutex<AppState<C>>>,
     self_peer_id: String,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
     peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     ws_sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream< 
@@ -1216,7 +1222,10 @@ async fn handle_websocket_message(
         >,
         Message,
     >,
-) {
+) where  C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+ {
     match msg {
         Message::Text(txt) => {
             match serde_json::from_str::<ServerMsg>(&txt) {
@@ -1321,14 +1330,17 @@ async fn handle_websocket_message(
 
 
 /// Handler for WebRTC signaling messages
-async fn handle_webrtc_signal(
+async fn handle_webrtc_signal<C>(
     from_peer_id: String,
     signal: WebRTCSignal,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
+    state: Arc<Mutex<AppState<C>>>,
     self_peer_id: String,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
     peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
-) {
+) where C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+{
     // Clone necessary variables for the spawned task
     let from_clone = from_peer_id.clone();
     let state_log_clone = state.clone();
@@ -1402,13 +1414,13 @@ async fn handle_webrtc_signal(
     });
 }
 
-async fn handle_webrtc_offer(
+async fn handle_webrtc_offer<C>(
     from_peer_id: &str,
     offer_info: SDPInfo, // Add offer_info parameter
     pc: Arc<RTCPeerConnection>,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
-) {    
+    state: Arc<Mutex<AppState<C>>>,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
+) where C: Ciphersuite {    
     let pc_to_use = pc.clone(); // Start with the assumption we use the passed pc
 
     match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
@@ -1498,12 +1510,12 @@ async fn handle_webrtc_offer(
 }
 
 
-async fn handle_webrtc_answer(
+async fn handle_webrtc_answer<C>(
     from_peer_id: &str,
     answer_info: SDPInfo,
     pc: Arc<RTCPeerConnection>,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-) {
+    state: Arc<Mutex<AppState<C>>>,
+) where C: Ciphersuite {
     state
         .lock()
         .await
@@ -1537,12 +1549,12 @@ async fn handle_webrtc_answer(
 }
 
 /// Handler for WebRTC ICE candidate signals
-async fn handle_webrtc_candidate(
+async fn handle_webrtc_candidate<C>(
     from_peer_id: &str,
     candidate_info: CandidateInfo,
     pc: Arc<RTCPeerConnection>,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-) {
+    state: Arc<Mutex<AppState<C>>>,
+) where C: Ciphersuite {
     state
         .lock()
         .await
@@ -1601,10 +1613,13 @@ async fn handle_webrtc_candidate(
 }  
 
 
-async fn check_and_send_mesh_ready( //all data channels are open and send mesh_ready if needed
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-    cmd_tx: mpsc::UnboundedSender<InternalCommand>,
-) {
+async fn check_and_send_mesh_ready<C>( //all data channels are open and send mesh_ready if needed
+   state: Arc<Mutex<AppState<C>>>,
+    cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
+) where C: Ciphersuite + Send + Sync + 'static, 
+<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
+<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
+{
     let mut all_channels_open_debug = false;
     let mut already_sent_own_ready_debug = false;
     let mut session_exists_debug = false;
@@ -1686,12 +1701,16 @@ async fn check_and_send_mesh_ready( //all data channels are open and send mesh_r
     }
 }
 
-async fn initiate_webrtc_connections( //bRTC connections with all session participants
+async fn initiate_webrtc_connections<C>( //bRTC connections with all session participants
     participants: Vec<String>,
     self_peer_id: String,
-    state: Arc<Mutex<AppState<Ed25519Sha512>>>,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand>,
-) {
+    state: Arc<Mutex<AppState<C>>>,
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
+) where
+    C: Ciphersuite + Send + Sync + 'static,
+    <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync,
+    <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,
+{
     let peer_connections_arc = state.lock().await.peer_connections.clone();
 
     // Step 1: Ensure RTCPeerConnection objects exist for all other participants.
