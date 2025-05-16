@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use worker::*;
 
+// Global config: if true, newer registration overrides older for same peer_id
+const OVERRIDE_EXISTING_PEER: bool = true;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
@@ -84,7 +87,7 @@ impl DurableObject for Peers {
                                             .unwrap_or_else(|_| Some(vec![]))
                                             .unwrap_or(vec![]);
                                         let already_registered = peer_list.contains(&reg_id);
-                                        if already_registered {
+                                        if already_registered && !OVERRIDE_EXISTING_PEER {
                                             let err = ServerMsg::Error {
                                                 error: "peer_id already registered".to_string(),
                                             };
@@ -93,9 +96,15 @@ impl DurableObject for Peers {
                                             );
                                             break;
                                         }
+                                        // If override is enabled, remove the old connection if present
+                                        if already_registered && OVERRIDE_EXISTING_PEER {
+                                            peers.borrow_mut().remove(&reg_id);
+                                        }
                                         peer_id = Some(reg_id.clone());
                                         peers.borrow_mut().insert(reg_id.clone(), server.clone());
-                                        peer_list.push(reg_id.clone());
+                                        if !already_registered {
+                                            peer_list.push(reg_id.clone());
+                                        }
                                         // Save updated peer list to storage
                                         let _ = state.storage().put("peer_list", &peer_list).await;
 

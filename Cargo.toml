@@ -11,5 +11,5 @@ members = [
     "ssh-to-solana",
     "webrtc-signal-server",
     "webrtc-signal-server-cloudflare-worker",
-    "yubikey-ed25519-crpyto",
+    "yubikey-crpyto",
 ]
