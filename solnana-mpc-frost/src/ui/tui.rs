@@ -102,8 +102,8 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
         let input_display_text = if input_mode {
             format!("> {}", input)
         } else {
-            // Add "Save Log: s" to the help text
-            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Mesh Ready: r | Demo Start: d | Quit: q".to_string()
+            // Remove mesh ready commands from help text since it's now automatic
+            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Demo Start: d | Quit: q".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -430,9 +430,6 @@ pub fn handle_key_event<C>(
                             "Invalid /send format. Use: /send <peer_id> <message>".to_string(),
                         );
                     }
-                } else if cmd_str.starts_with("/mesh_ready") {
-                    // Add support for manually signaling mesh readiness
-                    let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal);                
                 } else if !cmd_str.is_empty() {
                     app.log.push(format!("Unknown command: {}", cmd_str));
                 }
@@ -478,9 +475,6 @@ pub fn handle_key_event<C>(
                     Ok(_) => app.log.push(format!("Log saved to {}", filename)),
                     Err(e) => app.log.push(format!("Failed to save log: {}", e)),
                 }
-            }
-            KeyCode::Char('r') => {
-                let _ = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal);                
             }
             KeyCode::Char('d') => {
                 // Quick test - Send predefined session proposal

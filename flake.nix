@@ -49,6 +49,7 @@
                 opensc
                 cargo-generate
                 worker-build
+                wasm-pack
                 lld
               ];
             };

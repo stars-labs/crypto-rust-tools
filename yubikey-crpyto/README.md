@@ -1,6 +1,7 @@
 # Solana YubiKey Signer (`yubikey_ed25519_crpyto`)
 
-A Rust library and CLI example for constructing and signing Solana transactions using a YubiKey's OpenPGP card (Ed25519).
+A Rust library and CLI example for constructing and signing Solana transactions using a YubiKey's OpenPGP card (Ed25519), and etherum secp256k1 keys.
+This library allows you to securely sign Solana and eth transactions using your YubiKey, leveraging its cryptographic capabilities to ensure private key security.
 
 ---
 
