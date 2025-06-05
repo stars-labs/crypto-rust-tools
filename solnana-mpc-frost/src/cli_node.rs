@@ -128,6 +128,8 @@ where
         round2_secret_package: None,//),
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
+        pending_mesh_ready_signals: Vec::new(), // Initialize the buffer
+        own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
     }));
     let state_main_net = state.clone();
     let self_peer_id_main_net = peer_id.clone(); //mmunication + Internal Commands) ---
@@ -302,6 +304,7 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
 <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
 {
     let mut all_channels_open_debug = false;
+    let mut all_responses_received_debug = false;
     let mut already_sent_own_ready_debug = false;
     let mut session_exists_debug = false;
     let mut participants_to_check_debug: Vec<String> = Vec::new();
@@ -310,15 +313,16 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
     let current_mesh_status_debug: MeshStatus;
 
     {
-        let state_guard = state.lock().await;
+        let mut state_guard = state.lock().await;
         self_peer_id_debug = state_guard.peer_id.clone();
         current_mesh_status_debug = state_guard.mesh_status.clone(); // Clone for logging
         if let Some(session) = &state_guard.session {
             session_exists_debug = true;
+            let peer_id_clone = state_guard.peer_id.clone(); // Clone to avoid borrow issues
             participants_to_check_debug = session
                 .participants
                 .iter()
-                .filter(|p| **p != state_guard.peer_id)
+                .filter(|p| **p != peer_id_clone)
                 .cloned()
                 .collect();
             
@@ -327,35 +331,42 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
             all_channels_open_debug = participants_to_check_debug
                 .iter()
                 .all(|p| state_guard.data_channels.contains_key(p));
+
+            // Check if all session responses received (all participants accepted)
+            all_responses_received_debug = session.accepted_peers.len() == session.participants.len();
             
-            if matches!(state_guard.mesh_status, MeshStatus::PartiallyReady { .. } | MeshStatus::Ready) {
-                already_sent_own_ready_debug = true;
-            }
+            // Clone values before the match to avoid borrowing conflicts
+            let current_session_size = session.participants.len();
+            
+            // Check if we've already sent our own mesh ready signal using explicit tracking
+            // This replaces the flawed logic that incorrectly inferred from mesh status
+            already_sent_own_ready_debug = state_guard.own_mesh_ready_sent;
         }
     } // state_guard is dropped
 
     // Log outside the lock to minimize lock holding time
     let mut log_guard = state.lock().await;
     log_guard.log.push(format!(
-        "[MeshCheck-{}] Status: {:?}, SessionExists: {}, ParticipantsToCheck: {:?}, OpenDCKeys: {:?}, AllOpenCalc: {}, AlreadySentCalc: {}",
+        "[MeshCheck-{}] Status: {:?}, SessionExists: {}, ParticipantsToCheck: {:?}, OpenDCKeys: {:?}, AllOpenCalc: {}, AllResponsesReceivedCalc: {}, AlreadySentCalc: {}",
         self_peer_id_debug,
         current_mesh_status_debug, // Log current status
         session_exists_debug,
         participants_to_check_debug,
         data_channels_keys_debug,
         all_channels_open_debug,
+        all_responses_received_debug,
         already_sent_own_ready_debug
     ));
     drop(log_guard);
 
 
-    if session_exists_debug && all_channels_open_debug && !already_sent_own_ready_debug {
+    if session_exists_debug && all_channels_open_debug && all_responses_received_debug && !already_sent_own_ready_debug {
         // Re-acquire lock for the specific log message and subsequent command sending
         state 
             .lock()
             .await
             .log
-            .push(format!("[MeshCheck-{}] All local data channels open! Signaling to process own mesh readiness...", self_peer_id_debug));
+            .push(format!("[MeshCheck-{}] All local data channels open AND all session responses received! Signaling to process own mesh readiness...", self_peer_id_debug));
         
         if let Err(e) = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal) {
             // Clone necessary items for the async logging task
@@ -376,6 +387,8 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
             final_log_guard.log.push(format!("[MeshCheck-{}] No active session, cannot send SendOwnMeshReadySignal.", self_peer_id_debug));
         } else if !all_channels_open_debug {
             final_log_guard.log.push(format!("[MeshCheck-{}] Not all channels open yet (expected {:?}, have {:?}), cannot send SendOwnMeshReadySignal.", self_peer_id_debug, participants_to_check_debug, data_channels_keys_debug));
+        } else if !all_responses_received_debug {
+            final_log_guard.log.push(format!("[MeshCheck-{}] Not all session responses received yet, cannot send SendOwnMeshReadySignal.", self_peer_id_debug));
         } else if already_sent_own_ready_debug {
             final_log_guard.log.push(format!("[MeshCheck-{}] Already sent own ready signal (Status: {:?}), not sending again.", self_peer_id_debug, current_mesh_status_debug));
         }

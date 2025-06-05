@@ -120,6 +120,10 @@ pub async fn handle_send_own_mesh_ready_signal<C>(
                 
                 let mut current_ready_peers = match &state_guard.mesh_status {
                     MeshStatus::PartiallyReady { ready_peers, .. } => ready_peers.clone(),
+                    MeshStatus::Ready => {
+                        // When status is Ready, we should include all session participants as ready
+                        session.participants.iter().cloned().collect()
+                    },
                     _ => HashSet::new(),
                 };
                 
@@ -157,6 +161,10 @@ pub async fn handle_send_own_mesh_ready_signal<C>(
             session_id: session_id_local.clone(), 
             peer_id: self_peer_id_local.clone(), 
         };  
+        
+        // Set the flag to true immediately when we send our mesh ready signal
+        // This prevents the race condition where we receive others' signals before sending our own
+        state_clone.lock().await.own_mesh_ready_sent = true;
         
         state_clone.lock().await.log.push(format!(
             "Constructed WebRTCMessage::MeshReady to send to peers: {:?}",
@@ -212,7 +220,19 @@ pub async fn handle_process_mesh_ready<C>(
             if let Some(session) = &state_guard.session { 
                 let total_session_participants = session.participants.len();
                 
-                let mut current_ready_peers = match &state_guard.mesh_status {
+                // Check if all session responses have been received
+                let all_session_responses_received = session.accepted_peers.len() == session.participants.len();
+                
+                if !all_session_responses_received {
+                    log_messages.push(format!(
+                        "Received MeshReady from {} but not all session responses received yet ({}/{} responses). Buffering for later processing.",
+                        peer_id, session.accepted_peers.len(), session.participants.len()
+                    ));
+                    // Buffer the signal for later processing when all session responses are received
+                    state_guard.pending_mesh_ready_signals.push(peer_id.clone());
+                } else {
+                    // All session responses received, process mesh ready normally
+                    let mut current_ready_peers = match &state_guard.mesh_status {
                     MeshStatus::PartiallyReady { ready_peers, .. } => ready_peers.clone(),
                     MeshStatus::Ready => { 
                         log_messages.push(format!("Received MeshReady from {} but mesh is already Ready. Current ready peers: all {}.", peer_id, total_session_participants));
@@ -221,7 +241,26 @@ pub async fn handle_process_mesh_ready<C>(
                         for msg_item in log_messages { log_guard_early.log.push(msg_item); }
                         return;
                     },
-                    _ => HashSet::new(),
+                    _ => {
+                        // When status is Incomplete, check if current node has already sent mesh ready
+                        // by looking at data channels - if we have channels to all peers, we should include ourselves
+                        let mut initial_set = HashSet::new();
+                        let session_peers_except_self: Vec<String> = session
+                            .participants
+                            .iter()
+                            .filter(|p| **p != state_guard.peer_id)
+                            .cloned()
+                            .collect();
+                        
+                        let self_has_sent_mesh_ready = session_peers_except_self.iter()
+                            .all(|peer_id| state_guard.data_channels.contains_key(peer_id));
+                        
+                        if self_has_sent_mesh_ready {
+                            initial_set.insert(state_guard.peer_id.clone());
+                            log_messages.push(format!("Status is Incomplete but current node has data channels to all peers, including self in ready count."));
+                        }
+                        initial_set
+                    },
                 };
 
                 let already_known = current_ready_peers.contains(&peer_id);
@@ -255,10 +294,13 @@ pub async fn handle_process_mesh_ready<C>(
                         total_session_participants
                     ));
                 }
+                } // End of else block for all_session_responses_received
             } else {
                 log_messages.push(format!( 
-                    "Received MeshReady from {} but no active session.", peer_id
-                )); 
+                    "Received MeshReady from {} but no active session. Buffering for later processing.", peer_id
+                ));
+                // Buffer the signal for later processing when session becomes active
+                state_guard.pending_mesh_ready_signals.push(peer_id.clone());
             }
         } 
         

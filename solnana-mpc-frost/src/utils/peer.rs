@@ -389,16 +389,23 @@ pub async fn setup_data_channel_callbacks<C>(
     let state_log_open = state.clone();
     let peer_id_open = peer_id.clone();
     let dc_clone = dc_arc.clone();
+    let cmd_tx_open = cmd_tx.clone();
     dc_arc.on_open(Box::new(move || {
         let state_log_open = state_log_open.clone();
         let peer_id_open = peer_id_open.clone();
         let dc_clone = dc_clone.clone();
+        let cmd_tx_open = cmd_tx_open.clone();
         Box::pin(async move {
             state_log_open.lock().await.log.push(format!(
                 "Data channel '{}' open confirmed with {}",
                 dc_clone.label(),
                 peer_id_open
             ));
+            
+            // Send ReportChannelOpen command to trigger mesh ready signaling
+            let _ = cmd_tx_open.send(InternalCommand::ReportChannelOpen {
+                peer_id: peer_id_open.clone(),
+            });
         })
     }));
 
@@ -447,14 +454,12 @@ pub async fn setup_data_channel_callbacks<C>(
                                     ));
                             },
                             WebRTCMessage::ChannelOpen { peer_id: _ } => {
-                                // FIX: Add type annotation for from_value
+                                // Just log the channel open notification, don't trigger ReportChannelOpen
+                                // to avoid infinite feedback loops
                                 state_log.lock().await.log.push(format!(
-                                    "Data channel opened with {}",
+                                    "Received channel open notification from {}",
                                     peer_id
                                 ));
-                                let _ = cmd_tx.send(InternalCommand::ReportChannelOpen {
-                                    peer_id: peer_id.clone(),
-                                });
                             },
                             WebRTCMessage::MeshReady { session_id, peer_id } => {
                                 state_log.lock().await.log.push(format!(

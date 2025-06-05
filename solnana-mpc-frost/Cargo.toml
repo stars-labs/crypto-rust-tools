@@ -36,9 +36,5 @@ clap = { version = "4.5.37", features = ["derive"] }
 webrtc-signal-server = { path = "../webrtc-signal-server" }
 
 [[bin]]
-name = "signal_server"
-path = "src/signal_server.rs"
-
-[[bin]]
 name = "cli_node"
 path = "src/cli_node.rs"

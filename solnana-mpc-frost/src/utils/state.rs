@@ -191,6 +191,10 @@ pub struct AppState<C: Ciphersuite> {
     pub solana_public_key: Option<String>,
     pub etherum_public_key: Option<String>,
     pub mesh_status: MeshStatus,
+    // Buffer for MeshReady signals received before session is active
+    pub pending_mesh_ready_signals: Vec<String>,
+    // Explicit flag to track if THIS node has sent its own mesh ready signal
+    pub own_mesh_ready_sent: bool,
 }
 
 // --- Reconnection Tracker ---
