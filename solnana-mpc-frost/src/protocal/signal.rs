@@ -69,8 +69,8 @@ pub struct SessionResponse {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "webrtc_msg_type")]
 #[serde(bound(
-    serialize = "frost_core::keys::dkg::round1::Package<C>: serde::Serialize, frost_core::keys::dkg::round2::Package<C>: serde::Serialize",
-    deserialize = "frost_core::keys::dkg::round1::Package<C>: serde::Deserialize<'de>, frost_core::keys::dkg::round2::Package<C>: serde::Deserialize<'de>"
+    serialize = "frost_core::keys::dkg::round1::Package<C>: serde::Serialize, frost_core::keys::dkg::round2::Package<C>: serde::Serialize, frost_core::round1::SigningCommitments<C>: serde::Serialize, frost_core::round2::SignatureShare<C>: serde::Serialize, frost_core::Identifier<C>: serde::Serialize",
+    deserialize = "frost_core::keys::dkg::round1::Package<C>: serde::Deserialize<'de>, frost_core::keys::dkg::round2::Package<C>: serde::Deserialize<'de>, frost_core::round1::SigningCommitments<C>: serde::Deserialize<'de>, frost_core::round2::SignatureShare<C>: serde::Deserialize<'de>, frost_core::Identifier<C>: serde::Deserialize<'de>"
 ))]
 pub enum WebRTCMessage<C: Ciphersuite> {
     // DKG Messages
@@ -92,6 +92,46 @@ pub enum WebRTCMessage<C: Ciphersuite> {
     MeshReady {
         session_id: String,
         peer_id: String,
+    },
+    
+    // --- Signing Messages ---
+    /// Transaction signing request
+    SigningRequest {
+        signing_id: String,
+        transaction_data: String, // Hex-encoded transaction data
+        required_signers: usize,
+    },
+    
+    /// Acceptance of a signing request
+    SigningAcceptance {
+        signing_id: String,
+        accepted: bool,
+    },
+    
+    /// Selected signers for threshold signing
+    SignerSelection {
+        signing_id: String,
+        selected_signers: Vec<frost_core::Identifier<C>>,
+    },
+    
+    /// FROST signing commitments (Round 1)
+    SigningCommitment {
+        signing_id: String,
+        sender_identifier: frost_core::Identifier<C>,
+        commitment: frost_core::round1::SigningCommitments<C>,
+    },
+    
+    /// FROST signature shares (Round 2)
+    SignatureShare {
+        signing_id: String,
+        sender_identifier: frost_core::Identifier<C>,
+        share: frost_core::round2::SignatureShare<C>,
+    },
+    
+    /// Final aggregated signature
+    AggregatedSignature {
+        signing_id: String,
+        signature: Vec<u8>, // The final signature bytes
     },
 }
 

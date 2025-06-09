@@ -90,6 +90,67 @@ pub enum InternalCommand<C: Ciphersuite> {
 
     /// Finalize the DKG process
     FinalizeDkg,
+
+    // --- Signing Commands ---
+    /// Initiate a signing process with transaction data
+    InitiateSigning {
+        transaction_data: String, // Hex-encoded transaction data
+    },
+
+    /// Accept a signing request
+    AcceptSigning {
+        signing_id: String,
+    },
+
+    /// Process a signing request from a peer
+    ProcessSigningRequest {
+        from_peer_id: String,
+        signing_id: String,
+        transaction_data: String,
+        timestamp: String,
+    },
+
+    /// Process signing acceptance from a peer
+    ProcessSigningAcceptance {
+        from_peer_id: String,
+        signing_id: String,
+        timestamp: String,
+    },
+
+    /// Process signing commitment from a peer (FROST Round 1)
+    ProcessSigningCommitment {
+        from_peer_id: String,
+        signing_id: String,
+        commitment: frost_core::round1::SigningCommitments<C>,
+    },
+
+    /// Process signature share from a peer (FROST Round 2)
+    ProcessSignatureShare {
+        from_peer_id: String,
+        signing_id: String,
+        share: frost_core::round2::SignatureShare<C>,
+    },
+
+    /// Process aggregated signature result
+    ProcessAggregatedSignature {
+        from_peer_id: String,
+        signing_id: String,
+        signature: Vec<u8>, // The final signature bytes
+    },
+
+    /// Process signer selection message
+    ProcessSignerSelection {
+        from_peer_id: String,
+        signing_id: String,
+        selected_signers: Vec<Identifier<C>>,
+    },
+
+    /// Initiate FROST Round 1 commitment generation
+    InitiateFrostRound1 {
+        signing_id: String,
+        transaction_data: String,
+        selected_signers: Vec<Identifier<C>>,
+    },
 }
 
 /// DKG status tracking enum
@@ -114,6 +175,87 @@ pub enum MeshStatus {
         total_peers: usize,
     },
     Ready,
+}
+
+/// Signing status tracking enum
+#[derive(Debug, PartialEq, Clone)]
+pub enum SigningState<C: Ciphersuite> {
+    Idle,
+    AwaitingAcceptance {
+        signing_id: String,
+        transaction_data: String,
+        initiator: String,
+        required_signers: usize,
+        accepted_signers: HashSet<String>,
+    },
+    CommitmentPhase {
+        signing_id: String,
+        transaction_data: String,
+        selected_signers: Vec<Identifier<C>>,
+        commitments: BTreeMap<Identifier<C>, frost_core::round1::SigningCommitments<C>>,
+        own_commitment: Option<frost_core::round1::SigningCommitments<C>>,
+        nonces: Option<frost_core::round1::SigningNonces<C>>,
+    },
+    SharePhase {
+        signing_id: String,
+        transaction_data: String,
+        selected_signers: Vec<Identifier<C>>,
+        signing_package: Option<frost_core::SigningPackage<C>>,
+        shares: BTreeMap<Identifier<C>, frost_core::round2::SignatureShare<C>>,
+        own_share: Option<frost_core::round2::SignatureShare<C>>,
+    },
+    Complete {
+        signing_id: String,
+        signature: Vec<u8>,
+    },
+    Failed {
+        signing_id: String,
+        reason: String,
+    },
+}
+
+impl<C: Ciphersuite> SigningState<C> {
+    pub fn display_status(&self) -> String {
+        match self {
+            SigningState::Idle => "Idle".to_string(),
+            SigningState::AwaitingAcceptance { signing_id, required_signers, accepted_signers, .. } => {
+                format!("Awaiting Acceptance ({}): {}/{} signers", signing_id, accepted_signers.len(), required_signers)
+            },
+            SigningState::CommitmentPhase { signing_id, commitments, selected_signers, .. } => {
+                format!("Commitment Phase ({}): {}/{} commitments", signing_id, commitments.len(), selected_signers.len())
+            },
+            SigningState::SharePhase { signing_id, shares, selected_signers, .. } => {
+                format!("Share Phase ({}): {}/{} shares", signing_id, shares.len(), selected_signers.len())
+            },
+            SigningState::Complete { signing_id, .. } => {
+                format!("Complete ({})", signing_id)
+            },
+            SigningState::Failed { signing_id, reason } => {
+                format!("Failed ({}): {}", signing_id, reason)
+            },
+        }
+    }
+
+    /// Check if a signing process is currently active (not idle or complete)
+    pub fn is_active(&self) -> bool {
+        match self {
+            SigningState::Idle => false,
+            SigningState::Complete { .. } => false,
+            SigningState::Failed { .. } => false,
+            _ => true,
+        }
+    }
+
+    pub fn get_signing_id(&self) -> Option<&str> {
+        match self {
+            SigningState::Idle => None,
+            SigningState::AwaitingAcceptance { signing_id, .. } |
+            SigningState::CommitmentPhase { signing_id, .. } |
+            SigningState::SharePhase { signing_id, .. } |
+            SigningState::Complete { signing_id, .. } |
+            SigningState::Failed { signing_id, .. } => Some(signing_id),
+        }
+    }
 }
 
 // DkgStateDisplay trait - defines display behavior for DkgState
@@ -195,6 +337,8 @@ pub struct AppState<C: Ciphersuite> {
     pub pending_mesh_ready_signals: Vec<String>,
     // Explicit flag to track if THIS node has sent its own mesh ready signal
     pub own_mesh_ready_sent: bool,
+    // --- Signing State ---
+    pub signing_state: SigningState<C>,
 }
 
 // --- Reconnection Tracker ---

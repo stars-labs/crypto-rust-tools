@@ -426,6 +426,12 @@ pub async fn setup_data_channel_callbacks<C>(
             }
 
             if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
+                // DEBUG: Log the raw message content to see exactly what we're receiving
+                state_log.lock().await.log.push(format!(
+                    "Raw message from {}: {}",
+                    peer_id, text
+                ));
+                
                 // Parse envelope
                 match serde_json::from_str::<WebRTCMessage<C>>(&text) {
                     Ok(envelope) => {
@@ -468,6 +474,74 @@ pub async fn setup_data_channel_callbacks<C>(
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessMeshReady {
                                     peer_id: peer_id.clone(),
+                                });
+                            },
+                            // Signing message handlers
+                            WebRTCMessage::SigningRequest { signing_id, transaction_data, required_signers } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received signing request from {}: id={}, required_signers={}",
+                                    peer_id, signing_id, required_signers
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessSigningRequest {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    transaction_data,
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                });
+                            },
+                            WebRTCMessage::SigningAcceptance { signing_id, accepted } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received signing acceptance from {}: id={}, accepted={}",
+                                    peer_id, signing_id, accepted
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessSigningAcceptance {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                });
+                            },
+                            WebRTCMessage::SignerSelection { signing_id, selected_signers } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received signer selection from {}: id={}, signers={:?}",
+                                    peer_id, signing_id, selected_signers
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessSignerSelection {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    selected_signers,
+                                });
+                            },
+                            WebRTCMessage::SigningCommitment { signing_id, sender_identifier, commitment } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received signing commitment from {}: id={}, sender_id={:?}",
+                                    peer_id, signing_id, sender_identifier
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessSigningCommitment {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    commitment,
+                                });
+                            },
+                            WebRTCMessage::SignatureShare { signing_id, sender_identifier, share } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received signature share from {}: id={}, sender_id={:?}",
+                                    peer_id, signing_id, sender_identifier
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessSignatureShare {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    share,
+                                });
+                            },
+                            WebRTCMessage::AggregatedSignature { signing_id, signature } => {
+                                state_log.lock().await.log.push(format!(
+                                    "Received aggregated signature from {}: id={}",
+                                    peer_id, signing_id
+                                ));
+                                let _ = cmd_tx.send(InternalCommand::ProcessAggregatedSignature {
+                                    from_peer_id: peer_id.clone(),
+                                    signing_id,
+                                    signature,
                                 });
                             }
                         }

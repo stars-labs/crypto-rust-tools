@@ -16,7 +16,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::collections::BTreeMap; // Add HashSet import
 
 // Import from lib.rs
-use utils::state::{DkgState, InternalCommand, MeshStatus}; // <-- Add SessionResponse here
+use utils::state::{DkgState, InternalCommand, MeshStatus, SigningState}; // <-- Add SessionResponse here
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,6 +130,7 @@ where
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
         pending_mesh_ready_signals: Vec::new(), // Initialize the buffer
         own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
+        signing_state: SigningState::Idle, // Initialize signing state to idle
     }));
     let state_main_net = state.clone();
     let self_peer_id_main_net = peer_id.clone(); //mmunication + Internal Commands) ---
@@ -292,6 +293,35 @@ C: Ciphersuite + Send + Sync + 'static,
         }
         InternalCommand::FinalizeDkg => {
             handle_finalize_dkg(state).await;
+        }
+        
+        // --- Signing Command Handlers ---
+        InternalCommand::InitiateSigning { transaction_data } => {
+            handle_initiate_signing(transaction_data, state, internal_cmd_tx).await;
+        }
+        InternalCommand::AcceptSigning { signing_id } => {
+            handle_accept_signing(signing_id, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessSigningRequest { from_peer_id, signing_id, transaction_data, timestamp } => {
+            handle_process_signing_request(from_peer_id, signing_id, transaction_data, timestamp, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessSigningAcceptance { from_peer_id, signing_id, timestamp } => {
+            handle_process_signing_acceptance(from_peer_id, signing_id, timestamp, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessSigningCommitment { from_peer_id, signing_id, commitment } => {
+            handle_process_signing_commitment(from_peer_id, signing_id, commitment, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessSignatureShare { from_peer_id, signing_id, share } => {
+            handle_process_signature_share(from_peer_id, signing_id, share, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessAggregatedSignature { from_peer_id, signing_id, signature } => {
+            handle_process_aggregated_signature(from_peer_id, signing_id, signature, state, internal_cmd_tx).await;
+        }
+        InternalCommand::ProcessSignerSelection { from_peer_id, signing_id, selected_signers } => {
+            handle_process_signer_selection(from_peer_id, signing_id, selected_signers, state, internal_cmd_tx).await;
+        }
+        InternalCommand::InitiateFrostRound1 { signing_id, transaction_data, selected_signers } => {
+            handle_initiate_frost_round1(signing_id, transaction_data, selected_signers, state, internal_cmd_tx).await;
         }
     }
 }
