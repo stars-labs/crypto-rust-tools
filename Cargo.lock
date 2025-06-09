@@ -8026,6 +8026,7 @@ dependencies = [
  "anyhow",
  "bincode 2.0.1",
  "bs58",
+ "chrono",
  "clap 4.5.37",
  "crossterm 0.29.0",
  "curve25519-dalek 4.1.3",

@@ -102,8 +102,8 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
         let input_display_text = if input_mode {
             format!("> {}", input)
         } else {
-            // Remove mesh ready commands from help text since it's now automatic
-            "Scroll Log: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Demo Start: d | Quit: q".to_string()
+            // Updated help text to include signing commands
+            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Save Log: s | Demo: d | Sign: /sign <hex> | Accept Sign: /acceptSign <id> | Quit: q".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -230,6 +230,22 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
     status_items.push(Line::from(vec![
         Span::styled("DKG Status: ", Style::default().fg(Color::Yellow)),
         Span::styled(app.dkg_state.display_status(), dkg_style),
+    ]));
+
+    // Add signing status display
+    let signing_style = if app.signing_state.is_active() {
+        Style::default().fg(Color::Green)
+    } else if matches!(app.signing_state, crate::utils::state::SigningState::Complete { .. }) {
+        Style::default().fg(Color::Blue)
+    } else if matches!(app.signing_state, crate::utils::state::SigningState::Failed { .. }) {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    status_items.push(Line::from(vec![
+        Span::styled("Signing Status: ", Style::default().fg(Color::Yellow)),
+        Span::styled(app.signing_state.display_status(), signing_style),
     ]));
 
     if curve_name == "secp256k1" && app.etherum_public_key.is_some() {
@@ -360,21 +376,66 @@ pub fn handle_key_event<C>(
                         );
                     }
                 } else if cmd_str.starts_with("/accept") {
-                    // Add support for the /accept command
+                    // Enhanced /accept command that handles both session proposals and signing requests
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
                     if parts.len() == 2 {
-                        let session_id = parts[1].to_string();
+                        let id = parts[1].to_string();
                         
-                        // Check if the session proposal exists
-                        if app.invites.iter().any(|invite| invite.session_id == session_id) {
+                        // First, check if it's a session proposal
+                        if app.invites.iter().any(|invite| invite.session_id == id) {
                             // Send command to accept the session proposal
-                            let _ = cmd_tx.send(InternalCommand::AcceptSessionProposal(session_id.clone()));
-                            app.log.push(format!("Accepting session proposal '{}'", session_id));
-                        } else {
-                            app.log.push(format!("No session proposal found with ID '{}'", session_id));
+                            let _ = cmd_tx.send(InternalCommand::AcceptSessionProposal(id.clone()));
+                            app.log.push(format!("Accepting session proposal '{}'", id));
+                        }
+                        // If not a session proposal, check if it's a signing request
+                        else if let Some(signing_id) = app.signing_state.get_signing_id() {
+                            if signing_id == id && matches!(app.signing_state, crate::utils::state::SigningState::AwaitingAcceptance { .. }) {
+                                // Send command to accept the signing request
+                                let _ = cmd_tx.send(InternalCommand::AcceptSigning {
+                                    signing_id: id.clone(),
+                                });
+                                app.log.push(format!("Accepting signing request '{}'", id));
+                            } else {
+                                app.log.push(format!("No pending signing request with ID '{}'. Current signing state: {}", id, app.signing_state.display_status()));
+                            }
+                        }
+                        // Neither session proposal nor signing request found
+                        else {
+                            app.log.push(format!("No session proposal or signing request found with ID '{}'. Use /acceptSign <id> for signing requests or check available invites.", id));
                         }
                     } else {
-                        app.log.push("Invalid /accept format. Use: /accept <session_id>".to_string());
+                        app.log.push("Invalid /accept format. Use: /accept <id> (works for both session proposals and signing requests)".to_string());
+                    }
+                } else if cmd_str.starts_with("/sign") {
+                    // Handle the /sign command for transaction signing
+                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        let transaction_data = parts[1].to_string();
+                        
+                        // Validate transaction data is hex
+                        if transaction_data.chars().all(|c| c.is_ascii_hexdigit()) {
+                            let _ = cmd_tx.send(InternalCommand::InitiateSigning {
+                                transaction_data: transaction_data.clone(),
+                            });
+                            app.log.push(format!("Initiating signing for transaction: {}", transaction_data));
+                        } else {
+                            app.log.push("Invalid transaction data. Must be hexadecimal string.".to_string());
+                        }
+                    } else {
+                        app.log.push("Invalid /sign format. Use: /sign <transaction_hex>".to_string());
+                    }
+                } else if cmd_str.starts_with("/acceptSign") {
+                    // Handle the /acceptSign command
+                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        let signing_id = parts[1].to_string();
+                        
+                        let _ = cmd_tx.send(InternalCommand::AcceptSigning {
+                            signing_id: signing_id.clone(),
+                        });
+                        app.log.push(format!("Accepting signing request: {}", signing_id));
+                    } else {
+                        app.log.push("Invalid /acceptSign format. Use: /acceptSign <signing_id>".to_string());
                     }
                 } else if cmd_str.starts_with("/relay") {
                     let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();

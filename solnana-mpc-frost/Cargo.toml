@@ -33,6 +33,7 @@ ethers-signers = "*"
 k256 = "*"
 elliptic-curve = "*"
 clap = { version = "4.5.37", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 webrtc-signal-server = { path = "../webrtc-signal-server" }
 
 [[bin]]

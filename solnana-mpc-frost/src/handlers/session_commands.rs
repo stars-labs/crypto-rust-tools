@@ -495,23 +495,29 @@ pub async fn handle_process_session_response<C>(
                     }
 
                     // Process any buffered mesh ready signals now that all session responses are received
-                    let buffered_signals = std::mem::take(&mut state_guard.pending_mesh_ready_signals);
+                    let buffered_signals =
+                        std::mem::take(&mut state_guard.pending_mesh_ready_signals);
                     if !buffered_signals.is_empty() {
                         log_msgs.push(format!(
                             "Processing {} buffered mesh ready signals now that all session responses are received",
                             buffered_signals.len()
                         ));
                         drop(state_guard); // Drop the lock before sending commands
-                        
+
                         for buffered_peer_id in buffered_signals {
-                            log_msgs.push(format!("Processing buffered mesh ready from peer: {}", buffered_peer_id));
-                            if let Err(e) = internal_cmd_tx_clone.send(InternalCommand::ProcessMeshReady {
-                                peer_id: buffered_peer_id.clone(),
-                            }) {
+                            log_msgs.push(format!(
+                                "Processing buffered mesh ready from peer: {}",
+                                buffered_peer_id
+                            ));
+                            if let Err(e) =
+                                internal_cmd_tx_clone.send(InternalCommand::ProcessMeshReady {
+                                    peer_id: buffered_peer_id.clone(),
+                                })
+                            {
                                 log_msgs.push(format!("Failed to send ProcessMeshReady for buffered signal from {}: {}", buffered_peer_id, e));
                             }
                         }
-                        
+
                         // Note: We don't need to reacquire the lock here since we'll handle
                         // the rest of the processing outside the lock scope
                     } else {
