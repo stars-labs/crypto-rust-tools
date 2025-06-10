@@ -35,6 +35,11 @@ elliptic-curve = "*"
 clap = { version = "4.5.37", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 webrtc-signal-server = { path = "../webrtc-signal-server" }
+thiserror = "1.0"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+aes-gcm = "0.10.3"
+argon2 = "0.5.6"
+
 
 [[bin]]
 name = "cli_node"

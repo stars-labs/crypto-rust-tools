@@ -29,6 +29,46 @@ use crate::protocal::signal::SessionResponse;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum InternalCommand<C: Ciphersuite> {
+    // --- Keystore Commands ---
+    /// Initialize a keystore
+    InitKeystore {
+        path: String,
+        device_name: String,
+    },
+    
+    /// List available wallets
+    ListWallets,
+    
+    /// Create a new wallet
+    CreateWallet {
+        name: String,
+        password: String,
+        description: Option<String>,
+        tags: Option<Vec<String>>,
+    },
+    
+    /// Load a wallet
+    LoadWallet {
+        wallet_id: String,
+        password: String,
+    },
+    
+    /// Export a share
+    ExportShare {
+        wallet_id: String,
+        file_path: String,
+        password: String,
+    },
+    
+    /// Import a share
+    ImportShare {
+        wallet_id: String,
+        file_path: String,
+        password: String,
+    },
+    
+    /// Delete a wallet
+    DeleteWallet(String),
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
 
@@ -337,6 +377,10 @@ pub struct AppState<C: Ciphersuite> {
     pub pending_mesh_ready_signals: Vec<String>,
     // Explicit flag to track if THIS node has sent its own mesh ready signal
     pub own_mesh_ready_sent: bool,
+    // --- Keystore State ---
+    pub keystore: Option<Arc<crate::keystore::Keystore>>,
+    pub current_wallet_id: Option<String>,
+    
     // --- Signing State ---
     pub signing_state: SigningState<C>,
 }
