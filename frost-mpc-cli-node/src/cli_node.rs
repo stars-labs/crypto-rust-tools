@@ -1,4 +1,5 @@
 mod protocal;
+mod keystore;
 
 use crossterm::{
     event::{self, Event},
