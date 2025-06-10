@@ -1,5 +1,5 @@
 [package]
-name = "solnana-mpc-frost"
+name = "frost-mpc-cli-node"
 version = "0.1.0"
 edition = "2024"
 
