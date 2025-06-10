@@ -39,6 +39,7 @@ thiserror = "1.0"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 aes-gcm = "0.10.3"
 argon2 = "0.5.2"
+dirs = "5.0.1"
 
 
 [[bin]]

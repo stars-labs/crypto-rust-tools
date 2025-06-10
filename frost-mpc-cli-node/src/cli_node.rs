@@ -39,6 +39,7 @@ use ui::tui::{draw_main_ui, handle_key_event};
 mod network;
 use clap::{Parser, ValueEnum};
 use network::websocket::handle_websocket_message;
+use crate::keystore::Keystore;
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Curve {
@@ -104,10 +105,38 @@ where
 
     // Shared state for TUI and networkthin the CLI app (uses InternalCommand from lib.rs)
     // Specify the Ciphersuite for AppStaterx) = mpsc::unbounded_channel::<InternalCommand>();
+    // Initialize keystore automatically at startup
+    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let keystore_path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
+    let device_name = format!("device-{}", peer_id.clone());
+    
+    // Try to initialize the keystore
+    let keystore = match Keystore::new(&keystore_path, &device_name) {
+        Ok(ks) => {
+            let device_wallets_path = format!("{}/wallets/{}", keystore_path, device_name);
+            println!("Keystore initialized at {} with wallets directory at {}", keystore_path, device_wallets_path);
+            Some(Arc::new(ks))
+        },
+        Err(e) => {
+            println!("Failed to initialize keystore: {}", e);
+            None
+        }
+    };
+    
+    // Prepare initial log messages including keystore status
+    let mut initial_logs = Vec::new();
+    if keystore.is_some() {
+        let device_wallets_path = format!("{}/wallets/{}", keystore_path, device_name);
+        initial_logs.push(format!("🔑 Keystore initialized at {}", keystore_path));
+        initial_logs.push(format!("📂 Wallet files will be stored in {}", device_wallets_path));
+    } else {
+        initial_logs.push("⚠️ Failed to initialize keystore automatically.".to_string());
+    }
+
     let state = Arc::new(Mutex::new(AppState {
         peer_id: peer_id.clone(),
         peers: Vec::new(),
-        log: Vec::new(),
+        log: initial_logs,
         log_scroll: 0,
         session: None,
         invites: Vec::new(),
@@ -131,6 +160,8 @@ where
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
         pending_mesh_ready_signals: Vec::new(), // Initialize the buffer
         own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
+        keystore: keystore, // Initialize keystore automatically
+        current_wallet_id: None, // Initialize current wallet ID to None
         signing_state: SigningState::Idle // Initialize signing state to idle
     }));
     let state_main_net = state.clone();
@@ -224,6 +255,7 @@ where
 
 mod handlers;
 use handlers::*;
+use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, handle_create_wallet};
 
 async fn handle_internal_command<C>(
     cmd: InternalCommand<C>, //kend_mut(), LeaveAlternateScreen)?;
@@ -292,6 +324,17 @@ C: Ciphersuite + Send + Sync + 'static,
         } => {
             handle_process_dkg_round2(from_peer_id, package, state, internal_cmd_tx).await;
         }
+        // --- Keystore Commands ---
+        InternalCommand::InitKeystore { path, device_name } => {
+            handle_init_keystore(path, device_name, state).await;
+        }
+        InternalCommand::ListWallets => {
+            handle_list_wallets(state).await;
+        }
+        InternalCommand::CreateWallet { name, description, password, tags } => {
+            handle_create_wallet(name, description, password, tags, state).await;
+        }
+        
         // --- DKG Commands ---
         InternalCommand::FinalizeDkg => {
             handle_finalize_dkg(state).await;

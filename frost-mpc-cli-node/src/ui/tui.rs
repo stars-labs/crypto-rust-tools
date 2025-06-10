@@ -103,7 +103,7 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             format!("> {}", input)
         } else {
             // Help text for commands
-            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Quit: q | Sign: /sign <hex>".to_string()
+            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Quit: q | Keys auto-saved after DKG | Sign: /sign <hex>".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -317,8 +317,12 @@ pub fn handle_key_event<C>(
 
                 // Parse and handle command
                 // Wrap shared messages when sending
-                if cmd_str.starts_with("/list") {
+                if cmd_str == "/list" {
                     let _ = cmd_tx.send(InternalCommand::SendToServer(ClientMsg::ListPeers));
+                } else if cmd_str.starts_with("/list_wallets") {
+                    // Handle the /list_wallets command
+                    let _ = cmd_tx.send(InternalCommand::ListWallets);
+                    app.log.push("Listing available wallets...".to_string());
                 } else if cmd_str.starts_with("/propose") {
                     // Handle the propose command as per documentation
                     // Format: /propose <session_id> <total> <threshold> <peer1,peer2,...>
@@ -424,6 +428,82 @@ pub fn handle_key_event<C>(
                     } else {
                         app.log.push("Invalid /sign format. Use: /sign <transaction_hex>".to_string());
                     }
+                } else if cmd_str.starts_with("/init_keystore") {
+                    // Handle the /init_keystore command - use convention over configuration
+                    
+                    // Standard path: ~/.frost_keystore
+                    let home_dir = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
+                    
+                    // Device name based on peer ID
+                    let device_name = format!("device-{}", app.peer_id);
+                    
+                    let _ = cmd_tx.send(InternalCommand::InitKeystore {
+                        path: path.clone(),
+                        device_name: device_name.clone(),
+                    });
+                    app.log.push(format!("Initializing keystore at {}", path));
+                } else if cmd_str.starts_with("/create_wallet") {
+                    // Handle the /create_wallet command - use convention over configuration
+                    
+                    // First check if DKG is complete
+                    if !matches!(app.dkg_state, crate::utils::state::DkgState::Complete) {
+                        app.log.push("⚠️ DKG process is not complete. Cannot create wallet yet.".to_string());
+                        app.log.push("Complete the DKG process first by joining a session and completing key generation.".to_string());
+                    } 
+                    // Check if keystore is initialized
+                    else if app.keystore.is_none() {
+                        app.log.push("⚠️ Keystore failed to initialize automatically. Restart the application or check file permissions.".to_string());
+                    }
+                    else {
+                    
+                    // Generate a wallet name based on the DKG session or date
+                    let name = if let Some(session) = &app.session {
+                        format!("wallet-{}", session.session_id)
+                    } else {
+                        // Use current date/time if no session
+                        let now = chrono::Local::now();
+                        format!("wallet-{}", now.format("%Y-%m-%d-%H%M"))
+                    };
+                    
+                    // Use peer ID as a simple default password
+                    // In a real app, we might want to generate a secure random password or prompt the user
+                    let password = app.peer_id.clone();
+                    
+                    // Create simple description
+                    let description = if let Some(session) = &app.session {
+                        Some(format!("Threshold {}/{} wallet created on {}", 
+                            session.threshold, 
+                            session.total,
+                            chrono::Local::now().format("%Y-%m-%d %H:%M")
+                        ))
+                    } else {
+                        None
+                    };
+                    
+                    // Default tags based on the cryptographic curve
+                    let curve_name = if app.solana_public_key.is_some() {
+                        "ed25519"
+                    } else if app.etherum_public_key.is_some() {
+                        "secp256k1" 
+                    } else {
+                        "unknown"
+                    };
+                    
+                    let tags = vec![curve_name.to_string()];
+                    
+                    let _ = cmd_tx.send(InternalCommand::CreateWallet {
+                        name: name.clone(),
+                        description: description.clone(),
+                        password: password.clone(),
+                        tags: tags.clone(),
+                    });
+                    
+                    app.log.push(format!("Creating wallet '{}' with DKG key share from the completed session", name));
+                    app.log.push("⚙️ Storing FROST threshold signature key share in your keystore...".to_string());
+                    app.log.push("🔑 Password set to your peer ID. Remember to back up your keystore!".to_string());
+                    } // close the else block
                 } else if cmd_str.starts_with("/acceptSign") {
                     // Handle the /acceptSign command
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();

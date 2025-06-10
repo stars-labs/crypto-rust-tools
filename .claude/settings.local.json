@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(git rm:*)",
+      "Bash(find:*)",
+      "Bash(git checkout:*)",
+      "Bash(rm:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": []
   }

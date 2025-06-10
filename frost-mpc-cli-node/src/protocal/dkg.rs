@@ -2,6 +2,8 @@ use crate::protocal::signal::WebRTCMessage;
 use crate::utils::eth_helper;
 use crate::utils::peer::send_webrtc_message;
 use crate::utils::state::AppState;
+use serde_json;
+use chrono;
 use crate::utils::state::DkgState; // Import DkgState directly from solnana_mpc_frost
 use frost_core::keys::dkg::{part1, part2, part3, round1, round2};
 use frost_core::{Ciphersuite, keys::PublicKeyPackage};
@@ -650,6 +652,96 @@ where
             guard
                 .log
                 .push("DKG process completed successfully.".to_string());
+                
+            // Automatically create wallet if keystore is initialized
+            if let Some(keystore_arc) = guard.keystore.clone() {
+                guard.log.push("🔑 Keystore detected - automatically saving key share...".to_string());
+                
+                // Prepare data for wallet creation
+                let session_id = guard.session.as_ref().map_or_else(
+                    || "unknown-session".to_string(),
+                    |s| s.session_id.clone()
+                );
+                
+                let name = format!("wallet-{}", session_id);
+                let description = Some(format!(
+                    "Threshold wallet created on {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M")
+                ));
+                
+                // Determine curve type
+                let curve_type = if guard.solana_public_key.is_some() {
+                    "ed25519"
+                } else if guard.etherum_public_key.is_some() {
+                    "secp256k1"
+                } else {
+                    "unknown"
+                };
+                
+                // Clone necessary data before dropping the guard
+                let key_package_json = serde_json::to_string(&guard.key_package).unwrap_or_default();
+                let group_public_key_json = serde_json::to_string(&guard.group_public_key).unwrap_or_default();
+                let peer_id = guard.peer_id.clone();
+                let threshold = guard.session.as_ref().map_or(0, |s| s.threshold);
+                let total_participants = guard.session.as_ref().map_or(0, |s| s.total);
+                let public_address = guard.solana_public_key.clone().or_else(|| guard.etherum_public_key.clone())
+                    .unwrap_or_else(|| "N/A".to_string());
+                
+                // Prepare key share data
+                let key_share_data = serde_json::json!({
+                    "key_package": key_package_json,
+                    "group_public_key": group_public_key_json,
+                    "session_id": session_id,
+                    "peer_id": peer_id
+                }).to_string();
+                
+                // Drop the guard before attempting to modify the keystore
+                drop(guard);
+                
+                // Use atomic operation on the Arc to avoid borrowing issues
+                // Convert to raw pointer (unsafe but necessary)
+                let keystore_ptr = Arc::into_raw(keystore_arc) as *mut crate::keystore::Keystore;
+                let result = unsafe {
+                    let keystore_mut = &mut *keystore_ptr;
+                    
+                    // Simple password - in production you'd want a better scheme
+                    let password = peer_id.clone();
+                    let tags = vec![curve_type.to_string()];
+                    
+                    keystore_mut.create_wallet(
+                        &name,
+                        curve_type,
+                        if curve_type == "ed25519" { "solana" } else { "ethereum" },
+                        &public_address,
+                        threshold,
+                        total_participants,
+                        &group_public_key_json,
+                        key_share_data.as_bytes(),
+                        &password,
+                        tags,
+                        description,
+                    )
+                };
+                
+                // Recreate the Arc to ensure proper memory management
+                let _keystore = unsafe { Arc::from_raw(keystore_ptr) };
+                
+                // Regain the lock to log the result
+                let mut final_guard = state.lock().await;
+                
+                match result {
+                    Ok(wallet_id) => {
+                        final_guard.log.push(format!("✅ Successfully created wallet '{}' with key share!", name));
+                        final_guard.log.push(format!("🔐 Wallet ID: {}", wallet_id));
+                        final_guard.log.push("🔑 Password is set to your peer ID".to_string());
+                        final_guard.current_wallet_id = Some(wallet_id);
+                    },
+                    Err(e) => {
+                        final_guard.log.push(format!("❌ Failed to create wallet: {}", e));
+                        final_guard.log.push("📝 You can still manually run /create_wallet to try again".to_string());
+                    }
+                }
+            }
         }
         Err(e) => {
             // Log the inputs again on error for easier comparison
