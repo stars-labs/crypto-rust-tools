@@ -4,14 +4,12 @@
 //! to improve maintainability and readability of the codebase.
 
 pub mod dkg_commands;
-pub mod keystore_commands;
 pub mod mesh_commands;
 pub mod send_commands;
 pub mod session_commands;
 pub mod signing_commands;
 
 pub use dkg_commands::*;
-pub use keystore_commands::*;
 pub use mesh_commands::*;
 pub use send_commands::*;
 pub use session_commands::*;

@@ -294,29 +294,6 @@ C: Ciphersuite + Send + Sync + 'static,
         } => {
             handle_process_dkg_round2(from_peer_id, package, state, internal_cmd_tx).await;
         }
-        // --- Keystore Commands ---
-        InternalCommand::InitKeystore { path, device_name } => {
-            handle_init_keystore(path, device_name, state).await;
-        }
-        InternalCommand::ListWallets => {
-            handle_list_wallets(state).await;
-        }
-        InternalCommand::CreateWallet { name, password, description, tags } => {
-            handle_create_wallet(name, password, description, tags, state).await;
-        }
-        InternalCommand::LoadWallet { wallet_id, password } => {
-            handle_load_wallet(wallet_id, password, state).await;
-        }
-        InternalCommand::ExportShare { wallet_id, file_path, password } => {
-            handle_export_share(wallet_id, file_path, password, state).await;
-        }
-        InternalCommand::ImportShare { wallet_id, file_path, password } => {
-            handle_import_share(wallet_id, file_path, password, state).await;
-        }
-        InternalCommand::DeleteWallet(wallet_id) => {
-            handle_delete_wallet(wallet_id, state).await;
-        }
-        
         // --- DKG Commands ---
         InternalCommand::FinalizeDkg => {
             handle_finalize_dkg(state).await;

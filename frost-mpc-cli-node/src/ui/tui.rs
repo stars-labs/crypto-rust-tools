@@ -102,8 +102,8 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
         let input_display_text = if input_mode {
             format!("> {}", input)
         } else {
-            // Updated help text to include keystore commands
-            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Quit: q | Keystore: /init_keystore, /list_wallets".to_string()
+            // Help text for commands
+            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Quit: q | Sign: /sign <hex>".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -423,127 +423,6 @@ pub fn handle_key_event<C>(
                         }
                     } else {
                         app.log.push("Invalid /sign format. Use: /sign <transaction_hex>".to_string());
-                    }
-                } else if cmd_str.starts_with("/init_keystore") {
-                    // Handle the /init_keystore command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 3 {
-                        let path = parts[1].to_string();
-                        let device_name = parts[2].to_string();
-                        
-                        let _ = cmd_tx.send(InternalCommand::InitKeystore {
-                            path: path.clone(),
-                            device_name: device_name.clone(),
-                        });
-                        app.log.push(format!("Initializing keystore at {} for device {}", path, device_name));
-                    } else {
-                        app.log.push("Invalid /init_keystore format. Use: /init_keystore <path> <device_name>".to_string());
-                    }
-                } else if cmd_str.starts_with("/list_wallets") {
-                    // Handle the /list_wallets command
-                    let _ = cmd_tx.send(InternalCommand::ListWallets);
-                    app.log.push("Listing available wallets...".to_string());
-                } else if cmd_str.starts_with("/create_wallet") {
-                    // Handle the /create_wallet command
-                    let cmd_parts = cmd_str.splitn(2, ' ').collect::<Vec<_>>();
-                    if cmd_parts.len() > 1 {
-                        let args_str = cmd_parts[1];
-                        let mut args = args_str.split_whitespace().collect::<Vec<_>>();
-                        
-                        if args.len() >= 2 {
-                            let name = args[0].to_string();
-                            let password = args[1].to_string();
-                            
-                            // Optional description and tags
-                            let description = if args.len() >= 3 {
-                                Some(args[2].to_string())
-                            } else {
-                                None
-                            };
-                            
-                            let tags = if args.len() >= 4 {
-                                Some(args[3].split(',').map(|s| s.to_string()).collect())
-                            } else {
-                                None
-                            };
-                            
-                            let _ = cmd_tx.send(InternalCommand::CreateWallet {
-                                name: name.clone(),
-                                password,
-                                description: description.clone(),
-                                tags: tags.clone(),
-                            });
-                            
-                            app.log.push(format!("Creating wallet '{}'", name));
-                        } else {
-                            app.log.push("Invalid /create_wallet format. Use: /create_wallet <name> <password> [description] [tags]".to_string());
-                        }
-                    } else {
-                        app.log.push("Invalid /create_wallet format. Use: /create_wallet <name> <password> [description] [tags]".to_string());
-                    }
-                } else if cmd_str.starts_with("/load_wallet") {
-                    // Handle the /load_wallet command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 3 {
-                        let wallet_id = parts[1].to_string();
-                        let password = parts[2].to_string();
-                        
-                        let _ = cmd_tx.send(InternalCommand::LoadWallet {
-                            wallet_id: wallet_id.clone(),
-                            password,
-                        });
-                        
-                        app.log.push(format!("Loading wallet '{}'", wallet_id));
-                    } else {
-                        app.log.push("Invalid /load_wallet format. Use: /load_wallet <wallet_id> <password>".to_string());
-                    }
-                } else if cmd_str.starts_with("/export_share") {
-                    // Handle the /export_share command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 4 {
-                        let wallet_id = parts[1].to_string();
-                        let file_path = parts[2].to_string();
-                        let password = parts[3].to_string();
-                        
-                        let _ = cmd_tx.send(InternalCommand::ExportShare {
-                            wallet_id: wallet_id.clone(),
-                            file_path: file_path.clone(),
-                            password,
-                        });
-                        
-                        app.log.push(format!("Exporting share for wallet '{}' to {}", wallet_id, file_path));
-                    } else {
-                        app.log.push("Invalid /export_share format. Use: /export_share <wallet_id> <file_path> <password>".to_string());
-                    }
-                } else if cmd_str.starts_with("/import_share") {
-                    // Handle the /import_share command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 4 {
-                        let wallet_id = parts[1].to_string();
-                        let file_path = parts[2].to_string();
-                        let password = parts[3].to_string();
-                        
-                        let _ = cmd_tx.send(InternalCommand::ImportShare {
-                            wallet_id: wallet_id.clone(),
-                            file_path: file_path.clone(),
-                            password,
-                        });
-                        
-                        app.log.push(format!("Importing share for wallet '{}' from {}", wallet_id, file_path));
-                    } else {
-                        app.log.push("Invalid /import_share format. Use: /import_share <wallet_id> <file_path> <password>".to_string());
-                    }
-                } else if cmd_str.starts_with("/delete_wallet") {
-                    // Handle the /delete_wallet command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 2 {
-                        let wallet_id = parts[1].to_string();
-                        
-                        let _ = cmd_tx.send(InternalCommand::DeleteWallet(wallet_id.clone()));
-                        
-                        app.log.push(format!("Deleting wallet '{}'", wallet_id));
-                    } else {
-                        app.log.push("Invalid /delete_wallet format. Use: /delete_wallet <wallet_id>".to_string());
                     }
                 } else if cmd_str.starts_with("/acceptSign") {
                     // Handle the /acceptSign command
