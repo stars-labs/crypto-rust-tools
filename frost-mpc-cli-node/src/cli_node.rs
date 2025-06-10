@@ -131,9 +131,7 @@ where
         mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
         pending_mesh_ready_signals: Vec::new(), // Initialize the buffer
         own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
-        signing_state: SigningState::Idle, // Initialize signing state to idle
-        keystore: None, // Initialize keystore to None
-        current_wallet_id: None, // Initialize current wallet ID to None
+        signing_state: SigningState::Idle // Initialize signing state to idle
     }));
     let state_main_net = state.clone();
     let self_peer_id_main_net = peer_id.clone(); //mmunication + Internal Commands) ---
