@@ -5,15 +5,15 @@ This directory contains the documentation for the frost-mpc-cli-node crate, whic
 ## Documentation Structure
 
 ### User Guides
-- [CLI Usage Guide](user_guides/cli_usage.md) - How to use the CLI application
-- [Keystore Overview](user_guides/keystore.md) - Introduction to the keystore functionality
-- [Keystore User Manual](user_guides/keystore_user_manual.md) - Detailed guide for using the keystore features
+- [1. Getting Started](user_guides/01_getting_started.md) - How to use the CLI application
+- [2. Keystore Overview](user_guides/02_keystore_overview.md) - Introduction to the keystore functionality
+- [3. Keystore Usage](user_guides/03_keystore_usage.md) - Detailed guide for using the keystore features
 
 ### Architecture Documentation
-- [Keystore Architecture](architecture/keystore_architecture.md) - Technical design of the keystore system
+- [1. Keystore Design](architecture/01_keystore_design.md) - Technical design of the keystore system
 
 ### Protocol Documentation
-- [Signal Protocol](protocol/signal_protocol.md) - WebRTC signaling protocol details
+- [1. WebRTC Signaling](protocol/01_webrtc_signaling.md) - WebRTC signaling protocol details
 
 ## Key Features
 
@@ -40,4 +40,4 @@ cargo build --release -p frost-mpc-cli-node
 cargo run --release -p frost-mpc-cli-node -- --peer-id <your-id> --curve <secp256k1|ed25519>
 ```
 
-For detailed usage instructions, please refer to the [CLI Usage Guide](user_guides/cli_usage.md).
+For detailed usage instructions, please refer to the [Getting Started Guide](user_guides/01_getting_started.md).

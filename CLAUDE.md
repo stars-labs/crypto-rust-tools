@@ -92,4 +92,4 @@ Handles WebRTC signaling for peer discovery and connection establishment:
 4. The Terminal UI is built with ratatui and crossterm
 5. The frost-mpc-cli-node was recently renamed from solnana-mpc-frost
 
-When making changes to the WebRTC implementation or signaling protocol, make sure to refer to the detailed protocol documentation in the `frost-mpc-cli-node/docs/protocol/signal_protocol.md` file.
+When making changes to the WebRTC implementation or signaling protocol, make sure to refer to the detailed protocol documentation in the `frost-mpc-cli-node/docs/protocol/01_webrtc_signaling.md` file.
