@@ -1,0 +1,97 @@
+{
+  "projects": [
+    {
+      "id": "e2ac7a93-92c9-47f3-a12c-3a933d043285",
+      "name": "MPC Wallet WebRTC Reliability Enhancement",
+      "description": "Agentic development project to achieve production-ready WebRTC P2P communication for the MPC wallet ecosystem. Focus on connection reliability, performance optimization, and cross-platform consistency for both Chrome extension and CLI components. Target: 99%+ connection reliability, <2s DKG completion, comprehensive error recovery.",
+      "createdAt": "2025-06-13T10:47:37.727Z",
+      "updatedAt": "2025-06-13T10:47:37.727Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "f2cfed62-d6f3-4bfb-8b20-815603edded0",
+      "name": "WebRTC Connection Reliability Enhancement",
+      "details": "Implement robust WebRTC connection reliability improvements to achieve 99%+ connection success rate:\n\n## Current Issues (from memory bank):\n- Intermittent WebRTC connection drops during extended DKG sessions\n- Cross-platform WebRTC behavior differences\n- Resource cleanup during rapid connection cycling\n\n## Technical Implementation:\n1. **Enhanced Reconnection Logic**: Implement exponential backoff with jitter\n2. **Connection Health Monitoring**: Real-time connection state tracking and health checks\n3. **Improved ICE Handling**: Better NAT traversal and candidate management\n4. **Resource Management**: Proper cleanup during connection lifecycle\n\n## Files to Modify:\n- Chrome Extension: `mpc-wallet/src/entrypoints/offscreen/webrtc.ts`\n- CLI Tool: `crypto-rust-tools/frost-mpc-cli-node/src/network/webrtc.rs`\n- Connection utilities: `crypto-rust-tools/frost-mpc-cli-node/src/utils/device.rs`\n\n## Success Criteria:\n- 99%+ connection establishment success rate\n- Automatic recovery from connection drops within 5 seconds\n- Consistent behavior across Linux/macOS/Windows platforms\n- Memory leak elimination during connection cycling",
+      "projectId": "e2ac7a93-92c9-47f3-a12c-3a933d043285",
+      "completed": false,
+      "createdAt": "2025-06-13T10:47:49.371Z",
+      "updatedAt": "2025-06-13T10:47:49.371Z",
+      "dependsOn": [],
+      "priority": 10,
+      "complexity": 8,
+      "status": "pending",
+      "tags": [
+        "webrtc",
+        "reliability",
+        "p2p",
+        "connection-management",
+        "critical"
+      ],
+      "estimatedHours": 24
+    },
+    {
+      "id": "63d3270b-564c-4414-88ed-992e15329d17",
+      "name": "DKG Performance Optimization",
+      "details": "Optimize DKG performance to achieve production targets based on current benchmarks:\n\n## Current Performance (from memory bank):\n- DKG Completion (3-of-5): 3-5 seconds → Target: <2 seconds\n- P2P Connection Time: 1-2 seconds → Target: <1 second  \n- Memory Usage: 20-30MB per instance → Target: <15MB\n- CPU Usage (idle): <5% → Target: <2%\n\n## Optimization Areas:\n1. **FROST Protocol Optimization**: Streamline DKG round processing\n2. **Message Batching**: Efficient WebRTC message transmission\n3. **Memory Management**: Reduce allocations during crypto operations\n4. **Connection Pooling**: Persistent connection reuse\n\n## Technical Implementation:\n- Profile current bottlenecks using performance monitoring\n- Optimize crypto operations in both Rust (CLI) and WASM (extension)\n- Implement message batching and connection pooling\n- Memory leak detection and elimination\n\n## Files to Analyze/Modify:\n- `frost-mpc-cli-node/src/protocal/dkg.rs`\n- `mpc-wallet/src/entrypoints/offscreen/webrtc.ts` (DKG state management)\n- FROST DKG WASM bindings and crypto operations\n- Connection pooling in both components\n\n## Success Criteria:\n- DKG completion time <2 seconds consistently\n- Memory usage <15MB per CLI instance\n- CPU usage <2% during idle periods\n- Support 20+ concurrent DKG operations",
+      "projectId": "e2ac7a93-92c9-47f3-a12c-3a933d043285",
+      "completed": false,
+      "createdAt": "2025-06-13T10:48:02.077Z",
+      "updatedAt": "2025-06-13T10:48:02.077Z",
+      "dependsOn": [],
+      "priority": 8,
+      "complexity": 7,
+      "status": "pending",
+      "tags": [
+        "performance",
+        "dkg",
+        "optimization",
+        "memory-management",
+        "benchmarking"
+      ],
+      "estimatedHours": 18
+    },
+    {
+      "id": "a4e48356-197c-4262-81d1-b726454c3348",
+      "name": "Comprehensive Error Recovery Implementation",
+      "details": "Implement comprehensive error recovery mechanisms to handle various failure scenarios gracefully:\n\n## Current Error Handling Status:\n- Basic error handling exists but needs enhancement for production\n- Recovery success rate: 70-80% → Target: 95%+\n- Manual intervention often required for complex failures\n\n## Error Recovery Areas:\n1. **Network Failures**: Connection drops, timeouts, NAT traversal issues\n2. **Protocol Failures**: DKG round failures, missing packages, state corruption\n3. **Resource Failures**: Memory exhaustion, connection limits\n4. **Cross-Platform Issues**: Platform-specific WebRTC behaviors\n\n## Implementation Strategy:\n1. **Hierarchical Error Types**: Structured error categorization (already partially implemented)\n2. **Recovery State Machine**: Automated recovery workflows for different error types\n3. **Graceful Degradation**: Fallback mechanisms when full recovery isn't possible\n4. **User Feedback**: Clear error reporting and recovery suggestions\n\n## Files to Enhance:\n- Error types: Both projects have good error type foundations\n- Recovery logic: `webrtc.ts` and `webrtc.rs` connection management\n- State machines: DKG state management in both components\n- User interface: Error reporting in TUI and extension UI\n\n## Success Criteria:\n- 95%+ recovery success rate for common failures\n- <10 second recovery time for connection issues\n- Zero manual intervention needed for standard error scenarios\n- Clear user feedback for unrecoverable errors",
+      "projectId": "e2ac7a93-92c9-47f3-a12c-3a933d043285",
+      "completed": false,
+      "createdAt": "2025-06-13T10:48:14.397Z",
+      "updatedAt": "2025-06-13T10:48:14.397Z",
+      "dependsOn": [],
+      "priority": 7,
+      "complexity": 6,
+      "status": "pending",
+      "tags": [
+        "error-handling",
+        "recovery",
+        "robustness",
+        "user-experience"
+      ],
+      "estimatedHours": 16
+    },
+    {
+      "id": "9ec1f0fd-2ddb-4879-80c8-1b2442998cb2",
+      "name": "Formal Integration Test Suite Development",
+      "details": "Establish comprehensive integration test suite to move beyond example-driven testing:\n\n## Current Testing Status (from memory bank):\n- Integration Tests: 40% coverage via example-driven testing approach\n- Cross-Platform Testing: 20% (Linux focus, macOS/Windows planned)\n- Need formal integration test suite beyond examples\n\n## Test Suite Requirements:\n1. **Multi-Device DKG Testing**: Automated 3-of-5, 5-of-7 threshold scenarios\n2. **Cross-Platform Validation**: Linux, macOS, Windows behavior consistency\n3. **Failure Scenario Testing**: Network drops, timeouts, malformed messages\n4. **Performance Benchmarking**: Automated performance regression detection\n5. **WebRTC Compatibility**: Various network conditions and NAT scenarios\n\n## Implementation Strategy:\n1. **Test Infrastructure**: Automated test environment setup\n2. **Device Simulation**: Virtual device networks for multi-party testing\n3. **Network Simulation**: Various network conditions and failure modes\n4. **CI/CD Integration**: Automated test execution on code changes\n5. **Regression Detection**: Performance and functionality baseline tracking\n\n## Files to Create/Modify:\n- New test suites in both projects\n- CI/CD configuration (GitHub Actions)\n- Test utilities for device simulation\n- Performance benchmarking tools\n- Cross-platform test runners\n\n## Success Criteria:\n- 90%+ integration test coverage\n- Automated cross-platform testing\n- <15 minute test suite execution time\n- Automated performance regression detection\n- 100% test pass rate before production releases",
+      "projectId": "e2ac7a93-92c9-47f3-a12c-3a933d043285",
+      "completed": false,
+      "createdAt": "2025-06-13T10:48:29.352Z",
+      "updatedAt": "2025-06-13T10:48:29.352Z",
+      "dependsOn": [],
+      "priority": 6,
+      "complexity": 5,
+      "status": "pending",
+      "tags": [
+        "testing",
+        "integration-tests",
+        "ci-cd",
+        "quality-assurance",
+        "automation"
+      ],
+      "estimatedHours": 20
+    }
+  ],
+  "subtasks": []
+}
