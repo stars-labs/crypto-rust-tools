@@ -105,8 +105,8 @@ pub struct DeviceInfo {
     /// User-friendly name for the device
     pub name: String,
     
-    /// Peer ID used in the FROST protocol
-    pub peer_id: String,
+    /// Device ID used in the FROST protocol
+    pub device_id: String,
     
     /// Serialized FROST identifier
     pub identifier: String,
@@ -120,13 +120,13 @@ impl DeviceInfo {
     pub fn new(
         device_id: String,
         name: String,
-        peer_id: String,
+        device_id: String,
         identifier: String,
     ) -> Self {
         Self {
             device_id,
             name,
-            peer_id,
+            device_id,
             identifier,
             last_seen: current_timestamp(),
         }

@@ -21,7 +21,7 @@
 ### ✅ Phase 3: Networking Layer (Q3-Q4 2024)
 - [x] WebRTC P2P communication implementation
 - [x] WebSocket signaling server integration
-- [x] Peer discovery and connection management
+- [x] Device discovery and connection management
 - [x] Message routing and protocol handling
 - [x] Basic connection recovery mechanisms
 
@@ -70,13 +70,13 @@
 #### Completed This Sprint:
 - [x] Connection state monitoring and health checks
 - [x] Improved ICE candidate handling and NAT traversal
-- [x] Enhanced peer discovery robustness
+- [x] Enhanced device discovery robustness
 - [x] Basic reconnection logic implementation
 
 #### In Progress:
 - ⏳ Advanced reconnection with exponential backoff
 - ⏳ Connection pooling and resource management
-- ⏳ Multi-peer coordination optimization
+- ⏳ Multi-device coordination optimization
 - ⏳ Performance profiling and bottleneck identification
 
 #### Blocked/Issues:
@@ -253,16 +253,16 @@
 ## Final Issue Resolution
 
 ### Phase 4: Display Counting Fix ✅
-**FINAL ISSUE**: Even after the core mesh ready signal timing was fixed, the UI still showed "Partially Ready (2/3)" instead of the correct count because the current node wasn't properly included in the ready_peers count when the mesh status was reset to `Incomplete`.
+**FINAL ISSUE**: Even after the core mesh ready signal timing was fixed, the UI still showed "Partially Ready (2/3)" instead of the correct count because the current node wasn't properly included in the ready_devices count when the mesh status was reset to `Incomplete`.
 
 **ROOT CAUSE**: In `handle_process_mesh_ready()`, when mesh status is `Incomplete`, it creates an empty HashSet that excludes the current node, even when the current node has already sent its mesh ready signal.
 
-**SOLUTION**: Modified the `Incomplete` case in `handle_process_mesh_ready()` to check if the current node should be included in the ready count by examining if it has data channels to all session peers.
+**SOLUTION**: Modified the `Incomplete` case in `handle_process_mesh_ready()` to check if the current node should be included in the ready count by examining if it has data channels to all session devices.
 
 ### Complete Fix Summary
 
 1. **✅ Core Timing Fix**: Prevented premature mesh ready signals by requiring ALL session responses
-2. **✅ Session Response Validation**: Added check for `session.accepted_peers.len() == session.participants.len()`  
+2. **✅ Session Response Validation**: Added check for `session.accepted_devices.len() == session.participants.len()`  
 3. **✅ Compilation Fix**: Removed invalid signal_server binary definition from Cargo.toml
 4. **✅ Display Counting Fix**: Fixed mesh status counting to properly include current node in ready count
 

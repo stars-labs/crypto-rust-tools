@@ -11,9 +11,9 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::device_connection::RTCDeviceConnection;
+use webrtc::device_connection::configuration::RTCConfiguration;
+use webrtc::device_connection::device_connection_state::RTCDeviceConnectionState;
 
 use frost_core::Ciphersuite;
 
@@ -24,13 +24,13 @@ use crate::protocal::signal::{CandidateInfo, WebSocketMessage}; // Updated path
 pub const DATA_CHANNEL_LABEL: &str = "frost-dkg"; 
 
 pub async fn send_webrtc_message<C>(
-    target_peer_id: &str,
+    target_device_id: &str,
     message: &WebRTCMessage<C>,
     state_log: Arc<Mutex<AppState<C>>>,
 ) -> Result<(), String> where C: Ciphersuite {
     let data_channel = {
         let guard = state_log.lock().await;
-        guard.data_channels.get(target_peer_id).cloned()
+        guard.data_channels.get(target_device_id).cloned()
     };
 
     if let Some(dc) = data_channel {
@@ -43,56 +43,56 @@ pub async fn send_webrtc_message<C>(
             if let Err(e) = dc.send_text(msg_json).await {
                 state_log.lock().await.log.push(format!(
                     "Error sending message to {}: {}",
-                    target_peer_id, e
+                    target_device_id, e
                 ));
                 return Err(format!("Failed to send message: {}", e));
             }
             //         // udpate conncetion status
             // let mut state_guard = state_log.lock().await;
-            // state_guard.peer_statuses.insert(
-            //             target_peer_id.to_string(),
-            //             webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected,
+            // state_guard.device_statuses.insert(
+            //             target_device_id.to_string(),
+            //             webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected,
             // );
 
             state_log.lock().await.log.push(format!(
                 "Successfully sent WebRTC message to {}",
-                target_peer_id
+                target_device_id
             ));
             Ok(())
         } else {
             let err_msg = format!(
                 "Data channel for {} is not open (state: {:?})",
-                target_peer_id,
+                target_device_id,
                 dc.ready_state()
             );
             state_log.lock().await.log.push(err_msg.clone());
             Err(err_msg)
         }
     } else {
-        let err_msg = format!("Data channel not found for peer {}", target_peer_id);
+        let err_msg = format!("Data channel not found for device {}", target_device_id);
         state_log.lock().await.log.push(err_msg.clone());
         Err(err_msg)
     }
 }
 
-pub async fn create_and_setup_peer_connection<C>(
-    peer_id: String,
-    self_peer_id: String, // Pass self_peer_id
-    peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+pub async fn create_and_setup_device_connection<C>(
+    device_id: String,
+    self_device_id: String, // Pass self_device_id
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
     cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Use InternalCommand
     state_log: Arc<Mutex<AppState<C>>>,
     api: &'static webrtc::api::API,
     config: &'static RTCConfiguration,
-) -> Result<Arc<RTCPeerConnection>, String> where C: Ciphersuite + Send + Sync + 'static, 
+) -> Result<Arc<RTCDeviceConnection>, String> where C: Ciphersuite + Send + Sync + 'static, 
 <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
 <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
 {
     {
-        let peer_conns = peer_connections_arc.lock().await;
-        if let Some(existing_pc) = peer_conns.get(&peer_id) {
+        let device_conns = device_connections_arc.lock().await;
+        if let Some(existing_pc) = device_conns.get(&device_id) {
             state_log.lock().await.log.push(format!(
                 "WebRTC connection object for {} already exists. Skipping creation.",
-                peer_id
+                device_id
             ));
             return Ok(existing_pc.clone());
         }
@@ -102,23 +102,23 @@ pub async fn create_and_setup_peer_connection<C>(
         .lock()
         .await
         .log
-        .push(format!("Creating WebRTC connection object for {}", peer_id));
+        .push(format!("Creating WebRTC connection object for {}", device_id));
 
     // Use passed-in api and config
-    match api.new_peer_connection(config.clone()).await {
+    match api.new_device_connection(config.clone()).await {
         Ok(pc) => {
             let pc_arc = Arc::new(pc);
 
-            if self_peer_id < peer_id {
+            if self_device_id < device_id {
                 match pc_arc.create_data_channel(DATA_CHANNEL_LABEL, None).await {
                     Ok(dc) => {
                         state_log.lock().await.log.push(format!(
                             "Initiator: Created data channel '{}' for {}",
-                            DATA_CHANNEL_LABEL, peer_id
+                            DATA_CHANNEL_LABEL, device_id
                         ));
                         setup_data_channel_callbacks(
                             dc,
-                            peer_id.clone(),
+                            device_id.clone(),
                             state_log.clone(),
                             cmd_tx.clone(),
                         ).await;
@@ -126,17 +126,17 @@ pub async fn create_and_setup_peer_connection<C>(
                     Err(e) => {
                         state_log.lock().await.log.push(format!(
                             "Initiator: Failed to create data channel for {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));
                     }
                 }
             }
 
-            let peer_id_on_ice = peer_id.clone();
+            let device_id_on_ice = device_id.clone();
             let cmd_tx_on_ice = cmd_tx.clone(); // Clones the sender for internal ClientMsg
             let state_log_on_ice = state_log.clone();
             pc_arc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
-                let peer_id = peer_id_on_ice.clone();
+                let device_id = device_id_on_ice.clone();
                 let cmd_tx = cmd_tx_on_ice.clone();
                 let state_log = state_log_on_ice.clone();
                 Box::pin(async move {
@@ -155,7 +155,7 @@ pub async fn create_and_setup_peer_connection<C>(
                                         // Wrap the Relay message inside SendToServer command
                                         let relay_cmd =
                                             InternalCommand::SendToServer(SharedClientMsg::Relay {
-                                                to: peer_id.clone(),
+                                                to: device_id.clone(),
                                                 data: json_val,
                                             });
                                         let _ = cmd_tx.send(relay_cmd); // Send the internal command
@@ -163,13 +163,13 @@ pub async fn create_and_setup_peer_connection<C>(
                                             .lock()
                                             .await
                                             .log
-                                            .push(format!("Sent ICE candidate to {}", peer_id));
+                                            .push(format!("Sent ICE candidate to {}", device_id));
                                     }
                                     // FIX: Use error variable 'e'
                                     Err(e) => {
                                         state_log.lock().await.log.push(format!(
                                             "Error serializing ICE candidate for {}: {}",
-                                            peer_id, e
+                                            device_id, e
                                         ));
                                     }
                                 }
@@ -178,7 +178,7 @@ pub async fn create_and_setup_peer_connection<C>(
                             Err(e) => {
                                 state_log.lock().await.log.push(format!(
                                     "Error converting ICE candidate to JSON for {}: {}",
-                                    peer_id, e
+                                    device_id, e
                                 ));
                             }
                         }
@@ -188,45 +188,45 @@ pub async fn create_and_setup_peer_connection<C>(
 
             // Setup state change handler with DKG trigger logic
             let state_log_on_state = state_log.clone();
-            let peer_id_on_state = peer_id.clone();
-            // Fix the setup_peer_connection_callbacks function
+            let device_id_on_state = device_id.clone();
+            // Fix the setup_device_connection_callbacks function
             // Clone before moving into closure
             let pc_arc_for_state = pc_arc.clone();
-            pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
+            pc_arc.on_device_connection_state_change(Box::new(move |s: RTCDeviceConnectionState| {
                 // Fix: Use pc_arc directly instead of undefined pc_arc_for_state
                 let pc_arc = pc_arc_for_state.clone();
                 
                 // Log both connectionState and iceConnectionState together
                 let ice_state = pc_arc.ice_connection_state();
                 println!(
-                    "Peer {}: connectionState={:?}, iceConnectionState={:?}",
-                    peer_id, s, ice_state
+                    "Device {}: connectionState={:?}, iceConnectionState={:?}",
+                    device_id, s, ice_state
                 );
                 if let Ok(mut app_state_guard) = state_log.try_lock() {
-                    app_state_guard.peer_statuses.insert(peer_id.clone(), s);
+                    app_state_guard.device_statuses.insert(device_id.clone(), s);
                     app_state_guard.log.push(format!(
                         "WebRTC state with {}: {:?}, ICE: {:?}",
-                        peer_id, s, ice_state
+                        device_id, s, ice_state
                     ));
                 }
 
                 // Handle state changes with improved logic
                 match s {
-                    RTCPeerConnectionState::Connected => {
+                    RTCDeviceConnectionState::Connected => {
                         if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("!!! WebRTC CONNECTED with {} !!!", peer_id));
-                            guard.reconnection_tracker.record_success(&peer_id);
+                            guard.log.push(format!("!!! WebRTC CONNECTED with {} !!!", device_id));
+                            guard.reconnection_tracker.record_success(&device_id);
                         }
                     }
-                    RTCPeerConnectionState::Disconnected => {
+                    RTCDeviceConnectionState::Disconnected => {
                         // Handle disconnection with more aggressive reconnection
                         if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("!!! WebRTC DISCONNECTED with {} !!!", peer_id));
+                            guard.log.push(format!("!!! WebRTC DISCONNECTED with {} !!!", device_id));
                                                         
-                            // Reset DKG state if a peer disconnects during DKG
+                            // Reset DKG state if a device disconnects during DKG
                             if guard.dkg_state != DkgState::Idle && guard.dkg_state != DkgState::Complete {
-                                guard.log.push(format!("Resetting DKG state due to disconnection with {}", peer_id));
-                                guard.dkg_state = DkgState::Failed(format!("Peer {} disconnected", peer_id));
+                                guard.log.push(format!("Resetting DKG state due to disconnection with {}", device_id));
+                                guard.dkg_state = DkgState::Failed(format!("Device {} disconnected", device_id));
                                 // Clear intermediate DKG data if needed
                                 guard.dkg_part1_public_package = None;
                                 guard.dkg_part1_secret_package = None;
@@ -238,7 +238,7 @@ pub async fn create_and_setup_peer_connection<C>(
                                 let session_id_to_rejoin = current_session.session_id;
                                 guard.log.push(format!(
                                     "Attempting immediate reconnection to session '{}' due to DISCONNECTED state with {} (no JoinSession message sent, logic removed)",
-                                    session_id_to_rejoin, peer_id
+                                    session_id_to_rejoin, device_id
                                 ));
                                 // Drop the guard before sending the command
                                 drop(guard);
@@ -246,26 +246,26 @@ pub async fn create_and_setup_peer_connection<C>(
                             }
                         }
                     }
-                    RTCPeerConnectionState::Failed => {
+                    RTCDeviceConnectionState::Failed => {
                         if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("!!! WebRTC FAILED with {} !!!", peer_id));
+                            guard.log.push(format!("!!! WebRTC FAILED with {} !!!", device_id));
                             
-                            // Reset DKG state if a peer disconnects during DKG
+                            // Reset DKG state if a device disconnects during DKG
                             if guard.dkg_state != DkgState::Idle && guard.dkg_state != DkgState::Complete {
-                                guard.log.push(format!("Resetting DKG state due to connection failure with {}", peer_id));
-                                guard.dkg_state = DkgState::Failed(format!("Peer {} connection failed", peer_id));
+                                guard.log.push(format!("Resetting DKG state due to connection failure with {}", device_id));
+                                guard.dkg_state = DkgState::Failed(format!("Device {} connection failed", device_id));
                                 guard.dkg_part1_public_package = None;
                                 guard.dkg_part1_secret_package = None;
                                 guard.received_dkg_packages.clear();
                             }
                             
                             // Attempt to rejoin with backoff strategy
-                            if guard.reconnection_tracker.should_attempt(&peer_id) {
+                            if guard.reconnection_tracker.should_attempt(&device_id) {
                                 if let Some(current_session) = guard.session.clone() {
                                     let session_id_to_rejoin = current_session.session_id;
                                     guard.log.push(format!(
                                         "Attempting reconnection to session '{}' due to FAILED state with {} (no JoinSession message sent, logic removed)",
-                                        session_id_to_rejoin, peer_id
+                                        session_id_to_rejoin, device_id
                                     ));
                                     // Drop the guard before sending the command
                                     drop(guard);
@@ -274,19 +274,19 @@ pub async fn create_and_setup_peer_connection<C>(
                             }
                         }
                     }
-                    RTCPeerConnectionState::Connecting | RTCPeerConnectionState::New => {
+                    RTCDeviceConnectionState::Connecting | RTCDeviceConnectionState::New => {
                         // We don't need special handling for these states,
-                        // they're already logged above when updating peer_statuses
+                        // they're already logged above when updating device_statuses
                     }
-                    RTCPeerConnectionState::Closed => {
+                    RTCDeviceConnectionState::Closed => {
                         if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("WebRTC connection CLOSED with {}", peer_id));
+                            guard.log.push(format!("WebRTC connection CLOSED with {}", device_id));
                         }
                     }
                     // Handle the Unspecified state to fix the compilation error
-                    RTCPeerConnectionState::Unspecified => {
+                    RTCDeviceConnectionState::Unspecified => {
                         if let Ok(mut guard) = state_log.try_lock() {
-                            guard.log.push(format!("WebRTC in UNSPECIFIED state with {}", peer_id));
+                            guard.log.push(format!("WebRTC in UNSPECIFIED state with {}", device_id));
                             // No specific action needed for unspecified state
                         }
                     }
@@ -296,23 +296,23 @@ pub async fn create_and_setup_peer_connection<C>(
 
             // --- Setup ICE connection monitoring callback ---
             let state_log_ice = state_log_on_state.clone();
-            let peer_id_ice = peer_id_on_state.clone();
+            let device_id_ice = device_id_on_state.clone();
             let pc_arc_for_ice = pc_arc.clone();
             pc_arc.on_ice_connection_state_change(Box::new(move |ice_state| {
                 let state_log = state_log_ice.clone();
-                let peer_id = peer_id_ice.clone();
+                let device_id = device_id_ice.clone();
                 let pc_arc = pc_arc_for_ice.clone();
 
                 // Log both connectionState and iceConnectionState together
                 let conn_state = pc_arc.connection_state();
                 println!(
-                    "Peer {}: connectionState={:?}, iceConnectionState={:?}",
-                    peer_id, conn_state, ice_state
+                    "Device {}: connectionState={:?}, iceConnectionState={:?}",
+                    device_id, conn_state, ice_state
                 );
                 if let Ok(mut guard) = state_log.try_lock() {
                     guard.log.push(format!(
-                        "ICE connection state with {}: {:?}, PeerConnection: {:?}",
-                        peer_id, ice_state, conn_state
+                        "ICE connection state with {}: {:?}, DeviceConnection: {:?}",
+                        device_id, ice_state, conn_state
                     ));
                 }
                 // No async work, just return a ready future
@@ -321,11 +321,11 @@ pub async fn create_and_setup_peer_connection<C>(
 
             // --- Only set up callbacks for the main data channel (responder side) ---
             let state_log_on_data = state_log_on_state.clone();
-            let peer_id_on_data = peer_id_on_state.clone();
+            let device_id_on_data = device_id_on_state.clone();
             let cmd_tx_on_data = cmd_tx.clone();
             pc_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
                 let state_log = state_log_on_data.clone();
-                let peer_id = peer_id_on_data.clone();
+                let device_id = device_id_on_data.clone();
                 let cmd_tx_clone = cmd_tx_on_data.clone();
 
                 Box::pin(async move {
@@ -333,22 +333,22 @@ pub async fn create_and_setup_peer_connection<C>(
                         state_log.lock().await.log.push(format!(
                             "Responder: Data channel '{}' opened by {}",
                             dc.label(),
-                            peer_id
+                            device_id
                         ));
-                        setup_data_channel_callbacks(dc, peer_id, state_log, cmd_tx_clone).await;
+                        setup_data_channel_callbacks(dc, device_id, state_log, cmd_tx_clone).await;
                     }
                 })
             }));
 
             // --- Store the connection object ---
             {
-                let mut peer_conns = peer_connections_arc.lock().await;
-                peer_conns.insert(peer_id_on_state.clone(), pc_arc.clone());
+                let mut device_conns = device_connections_arc.lock().await;
+                device_conns.insert(device_id_on_state.clone(), pc_arc.clone());
                 state_log_on_state
                     .lock()
                     .await
                     .log
-                    .push(format!("Stored WebRTC connection object for {}", peer_id_on_state));
+                    .push(format!("Stored WebRTC connection object for {}", device_id_on_state));
             } // Drop lock
 
             Ok(pc_arc)
@@ -356,8 +356,8 @@ pub async fn create_and_setup_peer_connection<C>(
         Err(e) => {
             // FIX: Add actual log message
             let err_msg = format!(
-                "Error creating peer connection object for {}: {}",
-                peer_id, e
+                "Error creating device connection object for {}: {}",
+                device_id, e
             );
             state_log.lock().await.log.push(err_msg.clone());
             Err(err_msg)
@@ -367,7 +367,7 @@ pub async fn create_and_setup_peer_connection<C>(
 
 pub async fn setup_data_channel_callbacks<C>(
     dc: Arc<RTCDataChannel>,
-    peer_id: String,
+    device_id: String,
     state: Arc<Mutex<AppState<C>>>,
     // Update the sender type here
     cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Use InternalCommand
@@ -380,41 +380,41 @@ pub async fn setup_data_channel_callbacks<C>(
     // Only store and set up callbacks for the main data channel
     if dc_arc.label() == DATA_CHANNEL_LABEL {
         let mut guard = state.lock().await;
-        guard.data_channels.insert(peer_id.clone(), dc_arc.clone());
+        guard.data_channels.insert(device_id.clone(), dc_arc.clone());
         guard
             .log
-            .push(format!("Data channel for {} stored in app state", peer_id));
+            .push(format!("Data channel for {} stored in app state", device_id));
     }
 
     let state_log_open = state.clone();
-    let peer_id_open = peer_id.clone();
+    let device_id_open = device_id.clone();
     let dc_clone = dc_arc.clone();
     let cmd_tx_open = cmd_tx.clone();
     dc_arc.on_open(Box::new(move || {
         let state_log_open = state_log_open.clone();
-        let peer_id_open = peer_id_open.clone();
+        let device_id_open = device_id_open.clone();
         let dc_clone = dc_clone.clone();
         let cmd_tx_open = cmd_tx_open.clone();
         Box::pin(async move {
             state_log_open.lock().await.log.push(format!(
                 "Data channel '{}' open confirmed with {}",
                 dc_clone.label(),
-                peer_id_open
+                device_id_open
             ));
             
             // Send ReportChannelOpen command to trigger mesh ready signaling
             let _ = cmd_tx_open.send(InternalCommand::ReportChannelOpen {
-                peer_id: peer_id_open.clone(),
+                device_id: device_id_open.clone(),
             });
         })
     }));
 
     let state_log_msg = state.clone();
-    let peer_id_msg = peer_id.clone();
+    let device_id_msg = device_id.clone();
     let cmd_tx_msg = cmd_tx.clone(); // Clone internal cmd_tx for on_message
     let dc_arc_msg = dc_arc.clone(); // Clone for use inside async block
     dc_arc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let peer_id = peer_id_msg.clone();
+        let device_id = device_id_msg.clone();
         let state_log = state_log_msg.clone();
         let cmd_tx = cmd_tx_msg.clone();
         let dc_arc = dc_arc_msg.clone(); // Use a clone inside the async block
@@ -429,7 +429,7 @@ pub async fn setup_data_channel_callbacks<C>(
                 // DEBUG: Log the raw message content to see exactly what we're receiving
                 state_log.lock().await.log.push(format!(
                     "Raw message from {}: {}",
-                    peer_id, text
+                    device_id, text
                 ));
                 
                 // Parse envelope
@@ -438,7 +438,7 @@ pub async fn setup_data_channel_callbacks<C>(
                         match envelope {
                             WebRTCMessage::DkgRound1Package { package } => {
                                     let _ = cmd_tx.send(InternalCommand::ProcessDkgRound1 {
-                                        from_peer_id: peer_id.clone(),
+                                        from_device_id: device_id.clone(),
                                         package,
                                     });
                             }
@@ -446,44 +446,44 @@ pub async fn setup_data_channel_callbacks<C>(
                                 // FIX: Add type annotation for from_value
                                     state_log.lock().await.log.push(format!(
                                         "Received DKG Round 2 package from {}",
-                                        peer_id
+                                        device_id
                                     ));
                                     let _ = cmd_tx.send(InternalCommand::ProcessDkgRound2 {
-                                        from_peer_id: peer_id.clone(),
+                                        from_device_id: device_id.clone(),
                                         package,
                                     });
                             }
                             WebRTCMessage::SimpleMessage { text } => {
                                     state_log.lock().await.log.push(format!(
                                         "Receiver: Message from {}: {}",
-                                        peer_id, text
+                                        device_id, text
                                     ));
                             },
-                            WebRTCMessage::ChannelOpen { peer_id: _ } => {
+                            WebRTCMessage::ChannelOpen { device_id: _ } => {
                                 // Just log the channel open notification, don't trigger ReportChannelOpen
                                 // to avoid infinite feedback loops
                                 state_log.lock().await.log.push(format!(
                                     "Received channel open notification from {}",
-                                    peer_id
+                                    device_id
                                 ));
                             },
-                            WebRTCMessage::MeshReady { session_id, peer_id } => {
+                            WebRTCMessage::MeshReady { session_id, device_id } => {
                                 state_log.lock().await.log.push(format!(
-                                    "Mesh ready notification from {}: session_id: {}, peer_id: {}",
-                                    peer_id, session_id, peer_id
+                                    "Mesh ready notification from {}: session_id: {}, device_id: {}",
+                                    device_id, session_id, device_id
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessMeshReady {
-                                    peer_id: peer_id.clone(),
+                                    device_id: device_id.clone(),
                                 });
                             },
                             // Signing message handlers
                             WebRTCMessage::SigningRequest { signing_id, transaction_data, required_signers } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received signing request from {}: id={}, required_signers={}",
-                                    peer_id, signing_id, required_signers
+                                    device_id, signing_id, required_signers
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSigningRequest {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     transaction_data,
                                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -492,10 +492,10 @@ pub async fn setup_data_channel_callbacks<C>(
                             WebRTCMessage::SigningAcceptance { signing_id, accepted } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received signing acceptance from {}: id={}, accepted={}",
-                                    peer_id, signing_id, accepted
+                                    device_id, signing_id, accepted
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSigningAcceptance {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     timestamp: chrono::Utc::now().to_rfc3339(),
                                 });
@@ -503,10 +503,10 @@ pub async fn setup_data_channel_callbacks<C>(
                             WebRTCMessage::SignerSelection { signing_id, selected_signers } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received signer selection from {}: id={}, signers={:?}",
-                                    peer_id, signing_id, selected_signers
+                                    device_id, signing_id, selected_signers
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSignerSelection {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     selected_signers,
                                 });
@@ -514,10 +514,10 @@ pub async fn setup_data_channel_callbacks<C>(
                             WebRTCMessage::SigningCommitment { signing_id, sender_identifier, commitment } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received signing commitment from {}: id={}, sender_id={:?}",
-                                    peer_id, signing_id, sender_identifier
+                                    device_id, signing_id, sender_identifier
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSigningCommitment {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     commitment,
                                 });
@@ -525,10 +525,10 @@ pub async fn setup_data_channel_callbacks<C>(
                             WebRTCMessage::SignatureShare { signing_id, sender_identifier, share } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received signature share from {}: id={}, sender_id={:?}",
-                                    peer_id, signing_id, sender_identifier
+                                    device_id, signing_id, sender_identifier
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSignatureShare {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     share,
                                 });
@@ -536,10 +536,10 @@ pub async fn setup_data_channel_callbacks<C>(
                             WebRTCMessage::AggregatedSignature { signing_id, signature } => {
                                 state_log.lock().await.log.push(format!(
                                     "Received aggregated signature from {}: id={}",
-                                    peer_id, signing_id
+                                    device_id, signing_id
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessAggregatedSignature {
-                                    from_peer_id: peer_id.clone(),
+                                    from_device_id: device_id.clone(),
                                     signing_id,
                                     signature,
                                 });
@@ -551,7 +551,7 @@ pub async fn setup_data_channel_callbacks<C>(
                             .lock()
                             .await
                             .log
-                            .push(format!("Failed to parse envelope from {}: {}", peer_id, e));
+                            .push(format!("Failed to parse envelope from {}: {}", device_id, e));
                     }
                 }
             } else {
@@ -559,54 +559,54 @@ pub async fn setup_data_channel_callbacks<C>(
                     .lock()
                     .await
                     .log
-                    .push(format!("Received non-UTF8 data from {}", peer_id));
+                    .push(format!("Received non-UTF8 data from {}", device_id));
             }
         })
     }));
 
     let state_log_close = state.clone();
-    let peer_id_close = peer_id.clone();
+    let device_id_close = device_id.clone();
     dc.on_close(Box::new(move || {
         let state_log_close = state_log_close.clone();
-        let peer_id_close = peer_id_close.clone();
+        let device_id_close = device_id_close.clone();
         Box::pin(async move {
             state_log_close.lock().await.log.push(format!(
                 "Data channel '{}' closed with {}",
-                DATA_CHANNEL_LABEL, peer_id_close
+                DATA_CHANNEL_LABEL, device_id_close
             ));
         })
     }));
 
     let state_log_error = state.clone();
-    let peer_id_error = peer_id.clone();
+    let device_id_error = device_id.clone();
     dc.on_error(Box::new(move |e| {
         let state_log_error = state_log_error.clone();
-        let peer_id_error = peer_id_error.clone();
+        let device_id_error = device_id_error.clone();
         Box::pin(async move {
             state_log_error.lock().await.log.push(format!(
                 "Data channel '{}' error with {}: {}",
-                DATA_CHANNEL_LABEL, peer_id_error, e
+                DATA_CHANNEL_LABEL, device_id_error, e
             ));
         })
     }));
 }
 
-// Apply any pending ICE candidates for a peer
+// Apply any pending ICE candidates for a device
 pub async fn apply_pending_candidates<C>(
-    peer_id: &str,
-    pc: Arc<RTCPeerConnection>,
+    device_id: &str,
+    pc: Arc<RTCDeviceConnection>,
     state_log: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
-    // Take the pending candidates for this peer
+    // Take the pending candidates for this device
     let candidates = {
         let mut state_guard = state_log.lock().await;
-        let pending = state_guard.pending_ice_candidates.remove(peer_id);
+        let pending = state_guard.pending_ice_candidates.remove(device_id);
         if let Some(candidates) = &pending {
             if !candidates.is_empty() {
                 state_guard.log.push(format!(
                     "Applying {} stored ICE candidate(s) for {}",
                     candidates.len(),
-                    peer_id
+                    device_id
                 ));
             }
         }
@@ -622,15 +622,15 @@ pub async fn apply_pending_candidates<C>(
                     let mut state_guard = state_log.lock().await;
                     state_guard
                         .log
-                        .push(format!("Applied stored ICE candidate for {}", peer_id));
-                    // apply candidate to the peer connection
+                        .push(format!("Applied stored ICE candidate for {}", device_id));
+                    // apply candidate to the device connection
                     
                 }
                 Err(e) => {
                     let mut state_guard = state_log.lock().await;
                     state_guard.log.push(format!(
                             "Error applying stored ICE candidate for {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));                
                 }
             }

@@ -11,8 +11,8 @@ pub struct SessionInfo {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Peers {
-        peers: Vec<String>,
+    Devices {
+        devices: Vec<String>,
     },
     Relay {
         from: String,
@@ -26,7 +26,7 @@ pub enum ServerMsg {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Register { peer_id: String },
-    ListPeers,
+    Register { device_id: String },
+    ListDevices,
     Relay { to: String, data: serde_json::Value },
 }

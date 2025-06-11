@@ -1,22 +1,22 @@
 # Signal and WebRTC Message Types
 
-This document defines the JSON message types and protocol flow for negotiating and creating an MPC wallet using a signaling server. Nodes communicate via a CLI application that supports both Ed25519 (Solana) and Secp256k1 (Ethereum) cryptographic curves. The signaling server coordinates peer discovery and WebRTC connection setup; all MPC protocol messages are exchanged over WebRTC.
+This document defines the JSON message types and protocol flow for negotiating and creating an MPC wallet using a signaling server. Nodes communicate via a CLI application that supports both Ed25519 (Solana) and Secp256k1 (Ethereum) cryptographic curves. The signaling server coordinates device discovery and WebRTC connection setup; all MPC protocol messages are exchanged over WebRTC.
 
 ---
 
 ## Protocol Overview
 
 1. **Node Registration:**  
-   Each node connects to the signaling server via WebSocket and registers with a unique `peer_id`.
+   Each node connects to the signaling server via WebSocket and registers with a unique `device_id`.
 
 2. **Discovery:**  
-   Nodes query the signaling server for available peers.
+   Nodes query the signaling server for available devices.
 
 3. **Session Negotiation & Mesh Formation:**  
    Nodes coordinate session parameters (e.g., total participants, threshold, session ID) and build the mesh themselves. The signaling server does **not** store or manage session state.
 
 4. **Signaling Exchange:**  
-   Nodes exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server to establish direct peer-to-peer connections.
+   Nodes exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server to establish direct device-to-device connections.
 
 5. **MPC Wallet Creation:**  
    Once WebRTC connections are established, nodes exchange MPC protocol messages (commitments, shares, etc.) directly.
@@ -32,25 +32,25 @@ This document defines the JSON message types and protocol flow for negotiating a
 
 **Client → Server**
 ```json
-{ "type": "register", "peer_id": "<peer_id>" }
+{ "type": "register", "device_id": "<device_id>" }
 ```
-Registers the client with the signaling server using a unique `peer_id`.
+Registers the client with the signaling server using a unique `device_id`.
 
 ---
 
-### 2. Peer Discovery
+### 2. Device Discovery
 
 **Client → Server**
 ```json
-{ "type": "list_peers" }
+{ "type": "list_devices" }
 ```
-Requests a list of currently registered peers.
+Requests a list of currently registered devices.
 
 **Server → Client**
 ```json
-{ "type": "peers", "peers": ["peer1", "peer2", ...] }
+{ "type": "devices", "devices": ["device1", "device2", ...] }
 ```
-Returns the list of available peers.
+Returns the list of available devices.
 
 ---
 
@@ -58,15 +58,15 @@ Returns the list of available peers.
 
 **Client → Server**
 ```json
-{ "type": "relay", "to": "<peer_id>", "data": { ... } }
+{ "type": "relay", "to": "<device_id>", "data": { ... } }
 ```
-Sends signaling data (SDP offer/answer, ICE candidate, etc.) to another peer via the server.
+Sends signaling data (SDP offer/answer, ICE candidate, etc.) to another device via the server.
 
 **Server → Client**
 ```json
-{ "type": "relay", "from": "<peer_id>", "data": { ... } }
+{ "type": "relay", "from": "<device_id>", "data": { ... } }
 ```
-Relays signaling data from another peer.
+Relays signaling data from another device.
 
 ---
 
@@ -76,11 +76,11 @@ Relays signaling data from another peer.
 ```json
 { "type": "error", "error": "<description>" }
 ```
-Sent if an error occurs (e.g., unknown peer).
+Sent if an error occurs (e.g., unknown device).
 
 ---
 
-## WebRTC (Peer-to-Peer) Message Types
+## WebRTC (Device-to-Device) Message Types
 
 Once a direct WebRTC connection is established, nodes exchange application-level messages for the MPC protocol.
 
@@ -93,7 +93,7 @@ Once a direct WebRTC connection is established, nodes exchange application-level
     "session_id": "<id>",
     "total": 3,
     "threshold": 2,
-    "participants": ["peer1", "peer2", "peer3"]
+    "participants": ["device1", "device2", "device3"]
   }
 }
 ```
@@ -118,22 +118,22 @@ Responds to a session proposal.
 {
   "type": "channel_open",
   "payload": {
-    "peer_id": "<peer_id>"
+    "device_id": "<device_id>"
   }
 }
 ```
-Notifies other peers when a data channel is opened.
+Notifies other devices when a data channel is opened.
 
 ```json
 {
   "type": "mesh_ready",
   "payload": {
     "session_id": "<id>",
-    "peer_id": "<peer_id>"
+    "device_id": "<device_id>"
   }
 }
 ```
-Indicates a peer has established connections to all other participants.
+Indicates a device has established connections to all other participants.
 
 ---
 
@@ -147,7 +147,7 @@ Indicates a peer has established connections to all other participants.
   }
 }
 ```
-Sends DKG round 1 package (commitments) to other peers.
+Sends DKG round 1 package (commitments) to other devices.
 
 ```json
 {
@@ -157,7 +157,7 @@ Sends DKG round 1 package (commitments) to other peers.
   }
 }
 ```
-Sends DKG round 2 package (encrypted shares) to other peers.
+Sends DKG round 2 package (encrypted shares) to other devices.
 
 ```json
 {
@@ -167,7 +167,7 @@ Sends DKG round 2 package (encrypted shares) to other peers.
   }
 }
 ```
-Notifies peers that DKG is complete with the final group public key.
+Notifies devices that DKG is complete with the final group public key.
 
 ---
 
@@ -248,8 +248,8 @@ Broadcasts the final aggregated signature.
 
 ### 1. Registration & Discovery
 
-- Each node connects to the signaling server and registers with a unique `peer_id`.
-- Nodes may request a list of available peers.
+- Each node connects to the signaling server and registers with a unique `device_id`.
+- Nodes may request a list of available devices.
 
 ### 2. Session Negotiation & Mesh Formation
 
@@ -289,7 +289,7 @@ Broadcasts the final aggregated signature.
 
 ### Session Creation
 
-1. Peer `mpc-1` sends proposal to `mpc-2` and `mpc-3`:
+1. Device `mpc-1` sends proposal to `mpc-2` and `mpc-3`:
    ```json
    {
      "type": "session_proposal",
@@ -302,7 +302,7 @@ Broadcasts the final aggregated signature.
    }
    ```
 
-2. Peers `mpc-2` and `mpc-3` send acceptance:
+2. Devices `mpc-2` and `mpc-3` send acceptance:
    ```json
    {
      "type": "session_response",
@@ -320,7 +320,7 @@ Broadcasts the final aggregated signature.
    {
      "type": "channel_open",
      "payload": {
-       "peer_id": "mpc-2"
+       "device_id": "mpc-2"
      }
    }
    ```
@@ -331,14 +331,14 @@ Broadcasts the final aggregated signature.
      "type": "mesh_ready",
      "payload": {
        "session_id": "wallet_2of3",
-       "peer_id": "mpc-1"
+       "device_id": "mpc-1"
      }
    }
    ```
 
 ### DKG Process
 
-1. `mpc-1` sends Round 1 package to all peers:
+1. `mpc-1` sends Round 1 package to all devices:
    ```json
    {
      "type": "dkg_round1",
@@ -407,12 +407,12 @@ Establishing a complete WebRTC mesh involves:
    - Connections use SDP offers/answers and ICE candidates exchanged via the signaling server
 
 2. **Data Channel Tracking:**
-   - Nodes track when a data channel is successfully opened with each peer
+   - Nodes track when a data channel is successfully opened with each device
    - A `channel_open` message is sent when each data channel opens
 
 3. **Readiness Notification:**
    - When a node has established data channels to all other participants, it broadcasts a `mesh_ready` message
-   - Each node tracks which peers have reported mesh readiness
+   - Each node tracks which devices have reported mesh readiness
    - The mesh is considered fully ready when all nodes have reported readiness
 
 4. **Automatic Recovery:**
@@ -423,7 +423,7 @@ Establishing a complete WebRTC mesh involves:
 
 ## Troubleshooting
 
-- **Peer Discovery Issues:** Use the `/list` command to refresh the peer list from the signaling server.
+- **Device Discovery Issues:** Use the `/list` command to refresh the device list from the signaling server.
 - **WebRTC Connection Failures:**
   - Ensure you're not behind a restrictive firewall blocking WebRTC.
   - Check the logs for ICE connectivity errors.
@@ -443,5 +443,5 @@ Establishing a complete WebRTC mesh involves:
 
 - The protocol uses FROST (Flexible Round-Optimized Schnorr Threshold signatures) for threshold signing.
 - The implementation supports both Ed25519 (for Solana) and Secp256k1 (for Ethereum) curves.
-- WebRTC is used for secure peer-to-peer communication without requiring a central server after initial connection setup.
+- WebRTC is used for secure device-to-device communication without requiring a central server after initial connection setup.
 - The signaling server is stateless and only facilitates connection establishment, not the cryptographic protocol.

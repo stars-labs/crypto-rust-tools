@@ -18,7 +18,7 @@ pub async fn handle_check_and_trigger_dkg<C>(
     
     tokio::spawn(async move {
         let mut guard = state_clone.lock().await;
-        let peer_id_for_log = guard.peer_id.clone();
+        let device_id_for_log = guard.device_id.clone();
 
         let mesh_ready = guard.mesh_status == MeshStatus::Ready;
         let map_exists = guard.identifier_map.is_some();
@@ -28,20 +28,20 @@ pub async fn handle_check_and_trigger_dkg<C>(
         if mesh_ready && map_exists && session_active && dkg_idle {
             guard.log.push(format!(
                 "[CheckAndTriggerDkg-{}] All conditions met. Triggering DKG Round 1.",
-                peer_id_for_log
+                device_id_for_log
             ));
             if internal_cmd_tx_clone.send(InternalCommand::TriggerDkgRound1).is_ok() {
                 guard.dkg_state = DkgState::Round1InProgress; 
             } else {
                 guard.log.push(format!(
                     "[CheckAndTriggerDkg-{}] Failed to send TriggerDkgRound1 command.",
-                     peer_id_for_log
+                     device_id_for_log
                 ));
             }
         } else {
             guard.log.push(format!(
                 "[CheckAndTriggerDkg-{}] Conditions not met. MeshReady: {}, IdentifiersMapped: {}, SessionActive: {}, DkgIdle: {}",
-                peer_id_for_log,
+                device_id_for_log,
                 mesh_ready,
                 map_exists,
                 session_active,
@@ -54,20 +54,20 @@ pub async fn handle_check_and_trigger_dkg<C>(
 /// Handles triggering DKG Round 1
 pub async fn handle_trigger_dkg_round1<C>(
     state: Arc<Mutex<AppState<C>>>,
-    self_peer_id: String,
+    self_device_id: String,
 ) where
     C: Ciphersuite + Send + Sync + 'static,
     <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync,
     <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,
 {
     let state_clone = state.clone();
-    let self_peer_id_clone = self_peer_id.clone();
+    let self_device_id_clone = self_device_id.clone();
     
     tokio::spawn(async move {
         state_clone.lock().await.log.push(
-            "DKG Round 1: Generating and sending commitments to all peers...".to_string(),
+            "DKG Round 1: Generating and sending commitments to all devices...".to_string(),
         );
-        dkg::handle_trigger_dkg_round1(state_clone, self_peer_id_clone).await;
+        dkg::handle_trigger_dkg_round1(state_clone, self_device_id_clone).await;
     });
 }
 
@@ -95,9 +95,9 @@ pub async fn handle_trigger_dkg_round2<C>(
     });
 }
 
-/// Handles processing a DKG Round 1 package from a peer
+/// Handles processing a DKG Round 1 package from a device
 pub async fn handle_process_dkg_round1<C>(
-    from_peer_id: String,
+    from_device_id: String,
     package: frost_core::keys::dkg::round1::Package<C>,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
@@ -113,14 +113,14 @@ pub async fn handle_process_dkg_round1<C>(
         let mut guard = state_clone.lock().await;
         guard.log.push(format!(
             "Processing DKG Round 1 package from {}",
-            from_peer_id
+            from_device_id
         ));
 
         let current_dkg_state = guard.dkg_state.clone();
         if current_dkg_state != DkgState::Round1InProgress {
             guard.log.push(format!(
                 "Error: Received DKG Round 1 package from {} but DKG state is {:?}, not Round1InProgress.",
-                from_peer_id, current_dkg_state
+                from_device_id, current_dkg_state
             ));
             return;
         }
@@ -129,7 +129,7 @@ pub async fn handle_process_dkg_round1<C>(
 
         dkg::process_dkg_round1(
             state_clone.clone(), 
-            from_peer_id.clone(),
+            from_device_id.clone(),
             package,
         )
         .await;
@@ -157,15 +157,15 @@ pub async fn handle_process_dkg_round1<C>(
         } else {
             guard.log.push(format!(
                 "DKG Round 1: After processing package from {}, still waiting for more packages.",
-                from_peer_id
+                from_device_id
             ));
         }
     });
 }
 
-/// Handles processing a DKG Round 2 package from a peer
+/// Handles processing a DKG Round 2 package from a device
 pub async fn handle_process_dkg_round2<C>(
-    from_peer_id: String,
+    from_device_id: String,
     package: frost_core::keys::dkg::round2::Package<C>,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
@@ -181,25 +181,25 @@ pub async fn handle_process_dkg_round2<C>(
         let mut guard = state_clone.lock().await;
         guard.log.push(format!(
             "Processing DKG Round 2 package from {}",
-            from_peer_id
+            from_device_id
         ));
         drop(guard);
 
         match dkg::process_dkg_round2(
             state_clone.clone(), 
-            from_peer_id.clone(),
+            from_device_id.clone(),
             package,
         ).await {
             Ok(_) => {
                 state_clone.lock().await.log.push(format!(
                     "DKG Round 2: Successfully processed package from {}",
-                    from_peer_id
+                    from_device_id
                 ));
             },
             Err(e) => {
                 state_clone.lock().await.log.push(format!(
                     "DKG Round 2: Error processing package from {}: {}",
-                    from_peer_id, e
+                    from_device_id, e
                 ));
                 return;
             }
@@ -210,7 +210,7 @@ pub async fn handle_process_dkg_round2<C>(
         let package_count = guard.received_dkg_round2_packages.len();
         let package_keys = guard.received_dkg_round2_packages.keys().collect::<Vec<_>>();
         let self_identifier = guard.identifier_map.as_ref()
-            .and_then(|map| map.get(&guard.peer_id)).cloned();
+            .and_then(|map| map.get(&guard.device_id)).cloned();
         
         let log_message = format!(
             "DKG Round 2: Current received_dkg_round2_packages count: {}, keys: {:?}, self identifier: {:?}",
@@ -267,7 +267,7 @@ pub async fn handle_process_dkg_round2<C>(
         } else {
             guard.log.push(format!(
                 "DKG Round 2: After processing package from {}, still waiting for more packages.",
-                from_peer_id
+                from_device_id
             ));
         }
     });

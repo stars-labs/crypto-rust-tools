@@ -40,7 +40,7 @@
 ## Architecture Decisions
 
 ### P2P Communication Strategy
-**Decision**: WebRTC for direct peer-to-peer communication
+**Decision**: WebRTC for direct device-to-device communication
 - **Date**: Q3 2024
 - **Reasoning**:
   - Eliminates central server dependency for DKG operations
@@ -54,11 +54,11 @@
 **Decision**: Lightweight WebSocket signaling with optional central coordination
 - **Date**: Q3 2024
 - **Reasoning**:
-  - Minimal server dependency (only for initial peer discovery)
+  - Minimal server dependency (only for initial device discovery)
   - WebRTC requires initial signaling exchange
   - Cloudflare Worker deployment for global availability
   - Stateless design for scalability
-- **Alternative Considered**: DHT-based discovery, manual peer configuration
+- **Alternative Considered**: DHT-based discovery, manual device configuration
 - **Impact**: Practical decentralization with minimal infrastructure requirements
 
 ### Terminal UI Framework

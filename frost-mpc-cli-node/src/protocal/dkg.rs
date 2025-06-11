@@ -1,6 +1,6 @@
 use crate::protocal::signal::WebRTCMessage;
 use crate::utils::eth_helper;
-use crate::utils::peer::send_webrtc_message;
+use crate::utils::device::send_webrtc_message;
 use crate::utils::state::AppState;
 use serde_json;
 use chrono;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Handle DKG Round 1 Initialization
-pub async fn handle_trigger_dkg_round1<C>(state: Arc<Mutex<AppState<C>>>, self_peer_id: String)
+pub async fn handle_trigger_dkg_round1<C>(state: Arc<Mutex<AppState<C>>>, self_device_id: String)
 where
     C: Ciphersuite + Send + Sync + 'static,
     <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync,
@@ -59,12 +59,12 @@ where
             }
         };
 
-        let my_identifier = match identifier_map.get(&self_peer_id) {
+        let my_identifier = match identifier_map.get(&self_device_id) {
             Some(id) => *id,
             None => {
                 guard.log.push(format!(
-                    "Error: Own identifier not found in map for peer_id {}",
-                    self_peer_id
+                    "Error: Own identifier not found in map for device_id {}",
+                    self_device_id
                 ));
                 guard.dkg_state = DkgState::Failed("Identifier not found".to_string());
                 return; // Exit task
@@ -116,11 +116,11 @@ where
         let mut sent_count = 0;
         let mut failed_count = 0;
         // Iterate by reference to avoid moving String
-        for target_peer_id_ref in &participants {
+        for target_device_id_ref in &participants {
             // Renamed to avoid conflict in spawn
-            if target_peer_id_ref != &self_peer_id {
+            if target_device_id_ref != &self_device_id {
                 // Compare with reference
-                match send_webrtc_message(target_peer_id_ref, &dkg_msg, state.clone()).await {
+                match send_webrtc_message(target_device_id_ref, &dkg_msg, state.clone()).await {
                     Ok(_) => {
                         sent_count += 1;
                     }
@@ -128,11 +128,11 @@ where
                         failed_count += 1;
                         // Log individual failure immediately if desired, or wait for summary
                         let state_clone_err = state.clone();
-                        let target_peer_id_clone = target_peer_id_ref.clone(); // Clone here
+                        let target_device_id_clone = target_device_id_ref.clone(); // Clone here
                         tokio::spawn(async move {
                             state_clone_err.lock().await.log.push(format!(
                                 "Failed to send DKG Round 1 package to {}: {:?}",
-                                target_peer_id_clone,
+                                target_device_id_clone,
                                 e // Use cloned value
                             ));
                         });
@@ -155,7 +155,7 @@ where
 // Handle processing of DKG Round 1 packages
 pub async fn process_dkg_round1<C>(
     state: Arc<Mutex<AppState<C>>>,
-    from_peer_id: String,
+    from_device_id: String,
     package: round1::Package<C>,
 ) where
     C: Ciphersuite,
@@ -168,7 +168,7 @@ pub async fn process_dkg_round1<C>(
             // Match any other case, including one or both being None
             guard.log.push(format!(
                 "DKG Round 1: Error processing package from {}. Session or identifier map not ready.",
-                from_peer_id
+                from_device_id
             ));
             guard.dkg_state =
                 DkgState::Failed("Session/map not ready for DKG R1 processing".to_string());
@@ -181,14 +181,14 @@ pub async fn process_dkg_round1<C>(
         if guard.dkg_state == DkgState::Idle {
             guard.log.push(format!(
                 "DKG Round 1: Received package from {} while DKG was Idle. Transitioning to Round1InProgress.",
-                from_peer_id
+                from_device_id
             ));
             guard.dkg_state = DkgState::Round1InProgress;
         } else {
             let current_dkg_state = guard.dkg_state.clone(); // Clone state before logging
             guard.log.push(format!(
                 "DKG Round 1: Received package from {}, but DKG state is {:?}. Ignoring.",
-                from_peer_id,
+                from_device_id,
                 current_dkg_state // Use cloned state
             ));
             return;
@@ -197,15 +197,15 @@ pub async fn process_dkg_round1<C>(
 
     guard.log.push(format!(
         "Processing DKG Round 1 package from {}",
-        from_peer_id
+        from_device_id
     ));
 
-    let from_identifier = match identifier_map.get(&from_peer_id) {
+    let from_identifier = match identifier_map.get(&from_device_id) {
         Some(id) => *id,
         None => {
             guard.log.push(format!(
-                "Error: Identifier not found in map for peer_id {} during DKG Round 1 processing",
-                from_peer_id
+                "Error: Identifier not found in map for device_id {} during DKG Round 1 processing",
+                from_device_id
             ));
             // Optionally set DKG to failed state or just log and return
             return;
@@ -216,7 +216,7 @@ pub async fn process_dkg_round1<C>(
     if guard.received_dkg_packages.contains_key(&from_identifier) {
         guard.log.push(format!(
             "DKG Round 1: Duplicate package received from {}. Ignoring.",
-            from_peer_id
+            from_device_id
         ));
         return;
     }
@@ -228,7 +228,7 @@ pub async fn process_dkg_round1<C>(
     let bytes = package.serialize().unwrap();
     guard.log.push(format!(
         "DEBUG: Received Part1 Package Hash from {}: {}",
-        from_peer_id,
+        from_device_id,
         hex::encode(&bytes),
     ));
 
@@ -253,7 +253,7 @@ pub async fn process_dkg_round1<C>(
 // Handle processing of DKG Round 2 packages
 pub async fn process_dkg_round2<C>(
     state: Arc<Mutex<AppState<C>>>,
-    from_peer_id: String,
+    from_device_id: String,
     package: round2::Package<C>,
 ) -> Result<bool, String>
 where
@@ -262,19 +262,19 @@ where
     let mut guard = state.lock().await;
     guard.log.push(format!(
         "Processing Round 2 package from {}...",
-        from_peer_id
+        from_device_id
     ));
 
-    // Need to look up the identifier for from_peer_id
+    // Need to look up the identifier for from_device_id
     let identifier_map = match &guard.identifier_map {
         Some(m) => m.clone(),
         None => return Err("Identifier map not found".to_string()),
     };
 
-    // Get the identifier for the peer
-    let from_identifier = match identifier_map.get(&from_peer_id) {
+    // Get the identifier for the device
+    let from_identifier = match identifier_map.get(&from_device_id) {
         Some(id) => *id,
-        None => return Err(format!("Identifier not found for peer {}", from_peer_id)),
+        None => return Err(format!("Identifier not found for device {}", from_device_id)),
     };
 
     // Store the received package with the correct identifier type
@@ -282,7 +282,7 @@ where
         .received_dkg_round2_packages
         .insert(from_identifier, package);
 
-    // Check if we have received packages from all peers
+    // Check if we have received packages from all devices
     if let Some(session) = &guard.session {
         let expected_packages = session.participants.len() - 1; // Exclude self
         let received_packages = guard.received_dkg_round2_packages.len();
@@ -396,12 +396,12 @@ where
 
         // Determine self_identifier before the iterator chain
         let self_identifier = match state_guard.identifier_map.as_ref() {
-            Some(map) => match map.get(&state_guard.peer_id) {
+            Some(map) => match map.get(&state_guard.device_id) {
                 Some(id) => *id,
                 None => {
                     let err_msg = format!(
-                        "DKG Round 2 Error: Self identifier not found in map for peer_id {}.",
-                        state_guard.peer_id
+                        "DKG Round 2 Error: Self identifier not found in map for device_id {}.",
+                        state_guard.device_id
                     );
                     state_guard.log.push(err_msg.clone());
                     state_guard.dkg_state = DkgState::Failed(err_msg.clone());
@@ -443,7 +443,7 @@ where
                     }
                 };
 
-                let self_peer_id = state_guard.peer_id.clone(); // Not strictly needed for sending logic if using peer_id_map
+                let self_device_id = state_guard.device_id.clone(); // Not strictly needed for sending logic if using device_id_map
 
                 // Update DKG state
                 state_guard.dkg_state = DkgState::Round2InProgress;
@@ -451,7 +451,7 @@ where
                     .log
                     .push("DKG state transitioned to Round2InProgress.".to_string());
 
-                Ok((round2_packages_to_send, identifier_map, self_peer_id))
+                Ok((round2_packages_to_send, identifier_map, self_device_id))
             }
             Err(e) => {
                 let err_msg = format!("DKG Round 2 (part2) failed: {:?}", e);
@@ -464,58 +464,58 @@ where
 
     // --- Perform async broadcast operations if successful ---
     match round2_broadcast_data {
-        Ok((round2_packages_to_send, identifier_map, _self_peer_id)) => {
+        Ok((round2_packages_to_send, identifier_map, _self_device_id)) => {
             // Destructure self_identifier
             let mut sent_count = 0;
             let mut failed_count = 0;
 
-            // Create a reverse map from Identifier to PeerId for easier lookup
+            // Create a reverse map from Identifier to DeviceId for easier lookup
             // This avoids iterating the identifier_map for each package to send.
-            let peer_id_map: std::collections::HashMap<_, _> = identifier_map
+            let device_id_map: std::collections::HashMap<_, _> = identifier_map
                 .iter()
-                .map(|(peer_id, identifier)| (*identifier, peer_id.clone()))
+                .map(|(device_id, identifier)| (*identifier, device_id.clone()))
                 .collect();
 
             for (target_identifier, package) in round2_packages_to_send {
-                // Find the peer_id for the target_identifier
-                if let Some(target_peer_id) = peer_id_map.get(&target_identifier) {
+                // Find the device_id for the target_identifier
+                if let Some(target_device_id) = device_id_map.get(&target_identifier) {
                     let dkg_msg = WebRTCMessage::DkgRound2Package {
                         package: package.clone(),
                     }; // Clone package for sending
 
                     // Log package details before sending
                     let state_clone_log_pre = state.clone();
-                    let target_peer_id_clone_pre = target_peer_id.clone();
+                    let target_device_id_clone_pre = target_device_id.clone();
                     let bytes = package.serialize().unwrap();
                     let package_hash = hex::encode(&bytes);
 
                     tokio::spawn(async move {
                         state_clone_log_pre.lock().await.log.push(format!(
                             "DKG Round 2: Preparing to send package (Hash: {}) to {} (identifier {:?})",
-                            package_hash, target_peer_id_clone_pre, target_identifier
+                            package_hash, target_device_id_clone_pre, target_identifier
                         ));
                     });
 
-                    match send_webrtc_message(target_peer_id, &dkg_msg, state.clone()).await {
+                    match send_webrtc_message(target_device_id, &dkg_msg, state.clone()).await {
                         Ok(_) => {
                             sent_count += 1;
                             let state_clone_log = state.clone();
-                            let target_peer_id_clone = target_peer_id.clone();
+                            let target_device_id_clone = target_device_id.clone();
                             tokio::spawn(async move {
                                 state_clone_log.lock().await.log.push(format!(
                                     "DKG Round 2: Successfully sent package to {} (identifier {:?})",
-                                    target_peer_id_clone, target_identifier
+                                    target_device_id_clone, target_identifier
                                 ));
                             });
                         }
                         Err(e) => {
                             failed_count += 1;
                             let state_clone_err = state.clone();
-                            let target_peer_id_clone = target_peer_id.clone();
+                            let target_device_id_clone = target_device_id.clone();
                             tokio::spawn(async move {
                                 state_clone_err.lock().await.log.push(format!(
                                     "DKG Round 2: Failed to send package to {} (identifier {:?}): {:?}",
-                                    target_peer_id_clone, target_identifier, e
+                                    target_device_id_clone, target_identifier, e
                                 ));
                             });
                         }
@@ -525,7 +525,7 @@ where
                     let state_clone_err = state.clone();
                     tokio::spawn(async move {
                         state_clone_err.lock().await.log.push(format!(
-                            "DKG Round 2: Error - Peer ID not found for identifier {:?}. Cannot send package.",
+                            "DKG Round 2: Error - Device ID not found for identifier {:?}. Cannot send package.",
                             target_identifier
                         ));
                     });
@@ -587,12 +587,12 @@ where
     let round1_packages = guard.received_dkg_packages.clone(); // Clone to satisfy borrow checker for part3
     // Determine self_identifier before the iterator chain
     let self_identifier = match guard.identifier_map.as_ref() {
-        Some(map) => match map.get(&guard.peer_id) {
+        Some(map) => match map.get(&guard.device_id) {
             Some(id) => *id,
             None => {
                 let err_msg = format!(
-                    "DKG Round 2 Error: Self identifier not found in map for peer_id {}.",
-                    guard.peer_id
+                    "DKG Round 2 Error: Self identifier not found in map for device_id {}.",
+                    guard.device_id
                 );
                 guard.log.push(err_msg.clone());
                 guard.dkg_state = DkgState::Failed(err_msg.clone());
@@ -681,7 +681,7 @@ where
                 // Clone necessary data before dropping the guard
                 let key_package_json = serde_json::to_string(&guard.key_package).unwrap_or_default();
                 let group_public_key_json = serde_json::to_string(&guard.group_public_key).unwrap_or_default();
-                let peer_id = guard.peer_id.clone();
+                let device_id = guard.device_id.clone();
                 let threshold = guard.session.as_ref().map_or(0, |s| s.threshold);
                 let total_participants = guard.session.as_ref().map_or(0, |s| s.total);
                 let public_address = guard.solana_public_key.clone().or_else(|| guard.etherum_public_key.clone())
@@ -692,7 +692,7 @@ where
                     "key_package": key_package_json,
                     "group_public_key": group_public_key_json,
                     "session_id": session_id,
-                    "peer_id": peer_id
+                    "device_id": device_id
                 }).to_string();
                 
                 // Drop the guard before attempting to modify the keystore
@@ -705,7 +705,7 @@ where
                     let keystore_mut = &mut *keystore_ptr;
                     
                     // Simple password - in production you'd want a better scheme
-                    let password = peer_id.clone();
+                    let password = device_id.clone();
                     let tags = vec![curve_type.to_string()];
                     
                     keystore_mut.create_wallet(
@@ -733,7 +733,7 @@ where
                     Ok(wallet_id) => {
                         final_guard.log.push(format!("✅ Successfully created wallet '{}' with key share!", name));
                         final_guard.log.push(format!("🔐 Wallet ID: {}", wallet_id));
-                        final_guard.log.push("🔑 Password is set to your peer ID".to_string());
+                        final_guard.log.push("🔑 Password is set to your device ID".to_string());
                         final_guard.current_wallet_id = Some(wallet_id);
                     },
                     Err(e) => {

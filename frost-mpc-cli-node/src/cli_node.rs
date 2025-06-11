@@ -12,7 +12,7 @@ use frost_secp256k1::Secp256K1Sha256;
 use futures_util::{SinkExt, StreamExt};
 
 use ratatui::{Terminal, backend::CrosstermBackend};
-// Remove unused import: utils::peer
+// Remove unused import: utils::device
 
 use std::collections::BTreeMap; // Add HashSet import
 
@@ -50,9 +50,9 @@ enum Curve {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Peer ID for this node
+    /// Device ID for this node
     #[arg(short, long)]
-    peer_id: String,
+    device_id: String,
 
     /// Curve to use for cryptographic operations
     #[arg(short, long, value_enum, default_value_t = Curve::Secp256k1)]
@@ -72,20 +72,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Register (Send directly, no channel needed for initial message)
     let register_msg = ClientMsg::Register {
-        peer_id: args.peer_id.clone(),
+        device_id: args.device_id.clone(),
     };
     ws_sink
         .send(Message::Text(serde_json::to_string(&register_msg)?.into()))
         .await?;
 
     match args.curve {
-        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.peer_id, ws_sink, ws_stream).await?,
-        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.peer_id, ws_sink, ws_stream).await?,
+        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.device_id, ws_sink, ws_stream).await?,
+        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.device_id, ws_sink, ws_stream).await?,
     };
     Ok(())
 }
 
-async fn run_dkg<C>(peer_id: String, mut ws_sink: futures_util::stream::SplitSink<
+async fn run_dkg<C>(device_id: String, mut ws_sink: futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream< 
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
@@ -108,7 +108,7 @@ where
     // Initialize keystore automatically at startup
     let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let keystore_path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
-    let device_name = format!("device-{}", peer_id.clone());
+    let device_name = format!("device-{}", device_id.clone());
     
     // Try to initialize the keystore
     let keystore = match Keystore::new(&keystore_path, &device_name) {
@@ -134,14 +134,14 @@ where
     }
 
     let state = Arc::new(Mutex::new(AppState {
-        peer_id: peer_id.clone(),
-        peers: Vec::new(),
+        device_id: device_id.clone(),
+        devices: Vec::new(),
         log: initial_logs,
         log_scroll: 0,
         session: None,
         invites: Vec::new(),
-        peer_connections: Arc::new(Mutex::new(HashMap::new())), // Use TokioMutex here
-        peer_statuses: HashMap::new(),                          // Initialize peer statuses
+        device_connections: Arc::new(Mutex::new(HashMap::new())), // Use TokioMutex here
+        device_statuses: HashMap::new(),                          // Initialize device statuses
         reconnection_tracker: ReconnectionTracker::new(),
         making_offer: HashMap::new(),//tex::new(HashMap::new())), // Use TokioMutex here
         pending_ice_candidates: HashMap::new(),//er::new(),
@@ -157,7 +157,7 @@ where
         etherum_public_key: None,
         round2_secret_package: None,//),
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
-        mesh_status: MeshStatus::Incomplete,//(), // peer_id -> Vec<RTCPeerConnectionState>
+        mesh_status: MeshStatus::Incomplete,//(), // device_id -> Vec<RTCDeviceConnectionState>
         pending_mesh_ready_signals: Vec::new(), // Initialize the buffer
         own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
         keystore: keystore, // Initialize keystore automatically
@@ -165,18 +165,18 @@ where
         signing_state: SigningState::Idle // Initialize signing state to idle
     }));
     let state_main_net = state.clone();
-    let self_peer_id_main_net = peer_id.clone(); //mmunication + Internal Commands) ---
+    let self_device_id_main_net = device_id.clone(); //mmunication + Internal Commands) ---
     let internal_cmd_tx_main_net = internal_cmd_tx.clone();
-    let peer_connections_arc_main_net = state.lock().await.peer_connections.clone(); // This is Arc<TokioMutex<...>>
+    let device_connections_arc_main_net = state.lock().await.device_connections.clone(); // This is Arc<TokioMutex<...>>
 
     tokio::spawn(async move {
         loop {
-            tokio::select! { //to_string(&list_peers_msg).unwrap().into(),
+            tokio::select! { //to_string(&list_devices_msg).unwrap().into(),
                 Some(cmd) = internal_cmd_rx.recv() => {
                     handle_internal_command(
                         cmd,
                         state_main_net.clone(),
-                        self_peer_id_main_net.clone(),
+                        self_device_id_main_net.clone(),
                         internal_cmd_tx_main_net.clone(),
                         &mut ws_sink,
                     ).await;
@@ -187,9 +187,9 @@ where
                             handle_websocket_message(
                                 msg,
                                 state_main_net.clone(),
-                                self_peer_id_main_net.clone(),
+                                self_device_id_main_net.clone(),
                                 internal_cmd_tx_main_net.clone(),
-                                peer_connections_arc_main_net.clone(),
+                                device_connections_arc_main_net.clone(),
                                 &mut ws_sink,
                             ).await;
                         },
@@ -260,7 +260,7 @@ use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, han
 async fn handle_internal_command<C>(
     cmd: InternalCommand<C>, //kend_mut(), LeaveAlternateScreen)?;
     state: Arc<Mutex<AppState<C>>>,
-    self_peer_id: String,
+    self_device_id: String,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Fix: add parameter here
     ws_sink: &mut futures_util::stream::SplitSink< // Add ws_sink parameter
         tokio_tungstenite::WebSocketStream<
@@ -286,43 +286,43 @@ C: Ciphersuite + Send + Sync + 'static,
             threshold,
             participants,
         } => {
-            handle_propose_session(session_id, total, threshold, participants, state, internal_cmd_tx, self_peer_id).await;
+            handle_propose_session(session_id, total, threshold, participants, state, internal_cmd_tx, self_device_id).await;
         }
         InternalCommand::AcceptSessionProposal(session_id) => {
             handle_accept_session_proposal(session_id, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSessionResponse { from_peer_id, response } => {
-            handle_process_session_response(from_peer_id, response, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSessionResponse { from_device_id, response } => {
+            handle_process_session_response(from_device_id, response, state, internal_cmd_tx).await;
         }
-        InternalCommand::ReportChannelOpen { peer_id } => {
-            handle_report_channel_open(peer_id, state, internal_cmd_tx, self_peer_id).await;
+        InternalCommand::ReportChannelOpen { device_id } => {
+            handle_report_channel_open(device_id, state, internal_cmd_tx, self_device_id).await;
         }
         InternalCommand::SendOwnMeshReadySignal => { 
             handle_send_own_mesh_ready_signal(state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessMeshReady { peer_id } => {
-            handle_process_mesh_ready(peer_id, state, internal_cmd_tx).await;
+        InternalCommand::ProcessMeshReady { device_id } => {
+            handle_process_mesh_ready(device_id, state, internal_cmd_tx).await;
         }
         InternalCommand::CheckAndTriggerDkg => {
             handle_check_and_trigger_dkg(state, internal_cmd_tx).await;
         }
         InternalCommand::TriggerDkgRound1 => {
-            handle_trigger_dkg_round1(state, self_peer_id).await;
+            handle_trigger_dkg_round1(state, self_device_id).await;
         }
         InternalCommand::TriggerDkgRound2 => {
             handle_trigger_dkg_round2(state).await;
         }
         InternalCommand::ProcessDkgRound1 {
-            from_peer_id,
+            from_device_id,
             package,
         } => {
-            handle_process_dkg_round1(from_peer_id, package, state, internal_cmd_tx).await;
+            handle_process_dkg_round1(from_device_id, package, state, internal_cmd_tx).await;
         }
         InternalCommand::ProcessDkgRound2 {
-            from_peer_id, 
+            from_device_id, 
             package, 
         } => {
-            handle_process_dkg_round2(from_peer_id, package, state, internal_cmd_tx).await;
+            handle_process_dkg_round2(from_device_id, package, state, internal_cmd_tx).await;
         }
         // --- Keystore Commands ---
         InternalCommand::InitKeystore { path, device_name } => {
@@ -347,23 +347,23 @@ C: Ciphersuite + Send + Sync + 'static,
         InternalCommand::AcceptSigning { signing_id } => {
             handle_accept_signing(signing_id, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSigningRequest { from_peer_id, signing_id, transaction_data, timestamp } => {
-            handle_process_signing_request(from_peer_id, signing_id, transaction_data, timestamp, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSigningRequest { from_device_id, signing_id, transaction_data, timestamp } => {
+            handle_process_signing_request(from_device_id, signing_id, transaction_data, timestamp, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSigningAcceptance { from_peer_id, signing_id, timestamp } => {
-            handle_process_signing_acceptance(from_peer_id, signing_id, timestamp, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSigningAcceptance { from_device_id, signing_id, timestamp } => {
+            handle_process_signing_acceptance(from_device_id, signing_id, timestamp, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSigningCommitment { from_peer_id, signing_id, commitment } => {
-            handle_process_signing_commitment(from_peer_id, signing_id, commitment, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSigningCommitment { from_device_id, signing_id, commitment } => {
+            handle_process_signing_commitment(from_device_id, signing_id, commitment, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSignatureShare { from_peer_id, signing_id, share } => {
-            handle_process_signature_share(from_peer_id, signing_id, share, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSignatureShare { from_device_id, signing_id, share } => {
+            handle_process_signature_share(from_device_id, signing_id, share, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessAggregatedSignature { from_peer_id, signing_id, signature } => {
-            handle_process_aggregated_signature(from_peer_id, signing_id, signature, state, internal_cmd_tx).await;
+        InternalCommand::ProcessAggregatedSignature { from_device_id, signing_id, signature } => {
+            handle_process_aggregated_signature(from_device_id, signing_id, signature, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSignerSelection { from_peer_id, signing_id, selected_signers } => {
-            handle_process_signer_selection(from_peer_id, signing_id, selected_signers, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSignerSelection { from_device_id, signing_id, selected_signers } => {
+            handle_process_signer_selection(from_device_id, signing_id, selected_signers, state, internal_cmd_tx).await;
         }
         InternalCommand::InitiateFrostRound1 { signing_id, transaction_data, selected_signers } => {
             handle_initiate_frost_round1(signing_id, transaction_data, selected_signers, state, internal_cmd_tx).await;
@@ -384,20 +384,20 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
     let mut session_exists_debug = false;
     let mut participants_to_check_debug: Vec<String> = Vec::new();
     let mut data_channels_keys_debug: Vec<String> = Vec::new();
-    let self_peer_id_debug: String;
+    let self_device_id_debug: String;
     let current_mesh_status_debug: MeshStatus;
 
     {
         let mut state_guard = state.lock().await;
-        self_peer_id_debug = state_guard.peer_id.clone();
+        self_device_id_debug = state_guard.device_id.clone();
         current_mesh_status_debug = state_guard.mesh_status.clone(); // Clone for logging
         if let Some(session) = &state_guard.session {
             session_exists_debug = true;
-            let peer_id_clone = state_guard.peer_id.clone(); // Clone to avoid borrow issues
+            let device_id_clone = state_guard.device_id.clone(); // Clone to avoid borrow issues
             participants_to_check_debug = session
                 .participants
                 .iter()
-                .filter(|p| **p != peer_id_clone)
+                .filter(|p| **p != device_id_clone)
                 .cloned()
                 .collect();
             
@@ -408,7 +408,7 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
                 .all(|p| state_guard.data_channels.contains_key(p));
 
             // Check if all session responses received (all participants accepted)
-            all_responses_received_debug = session.accepted_peers.len() == session.participants.len();
+            all_responses_received_debug = session.accepted_devices.len() == session.participants.len();
             
             // Clone values before the match to avoid borrowing conflicts
             let current_session_size = session.participants.len();
@@ -423,7 +423,7 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
     let mut log_guard = state.lock().await;
     log_guard.log.push(format!(
         "[MeshCheck-{}] Status: {:?}, SessionExists: {}, ParticipantsToCheck: {:?}, OpenDCKeys: {:?}, AllOpenCalc: {}, AllResponsesReceivedCalc: {}, AlreadySentCalc: {}",
-        self_peer_id_debug,
+        self_device_id_debug,
         current_mesh_status_debug, // Log current status
         session_exists_debug,
         participants_to_check_debug,
@@ -441,31 +441,31 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
             .lock()
             .await
             .log
-            .push(format!("[MeshCheck-{}] All local data channels open AND all session responses received! Signaling to process own mesh readiness...", self_peer_id_debug));
+            .push(format!("[MeshCheck-{}] All local data channels open AND all session responses received! Signaling to process own mesh readiness...", self_device_id_debug));
         
         if let Err(e) = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal) {
             // Clone necessary items for the async logging task
             let state_clone_for_err = state.clone(); 
-            let self_peer_id_err_clone = self_peer_id_debug.clone();
+            let self_device_id_err_clone = self_device_id_debug.clone();
             tokio::spawn(async move { 
                 state_clone_for_err
                     .lock()
                     .await
                     .log
-                    .push(format!("[MeshCheck-{}] Failed to send SendOwnMeshReadySignal command: {}", self_peer_id_err_clone, e));
+                    .push(format!("[MeshCheck-{}] Failed to send SendOwnMeshReadySignal command: {}", self_device_id_err_clone, e));
             });   
         }
     } else {
         // Log reason for not sending, re-acquiring lock briefly
         let mut final_log_guard = state.lock().await;
         if !session_exists_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] No active session, cannot send SendOwnMeshReadySignal.", self_peer_id_debug));
+            final_log_guard.log.push(format!("[MeshCheck-{}] No active session, cannot send SendOwnMeshReadySignal.", self_device_id_debug));
         } else if !all_channels_open_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Not all channels open yet (expected {:?}, have {:?}), cannot send SendOwnMeshReadySignal.", self_peer_id_debug, participants_to_check_debug, data_channels_keys_debug));
+            final_log_guard.log.push(format!("[MeshCheck-{}] Not all channels open yet (expected {:?}, have {:?}), cannot send SendOwnMeshReadySignal.", self_device_id_debug, participants_to_check_debug, data_channels_keys_debug));
         } else if !all_responses_received_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Not all session responses received yet, cannot send SendOwnMeshReadySignal.", self_peer_id_debug));
+            final_log_guard.log.push(format!("[MeshCheck-{}] Not all session responses received yet, cannot send SendOwnMeshReadySignal.", self_device_id_debug));
         } else if already_sent_own_ready_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Already sent own ready signal (Status: {:?}), not sending again.", self_peer_id_debug, current_mesh_status_debug));
+            final_log_guard.log.push(format!("[MeshCheck-{}] Already sent own ready signal (Status: {:?}), not sending again.", self_device_id_debug, current_mesh_status_debug));
         }
     }
 }

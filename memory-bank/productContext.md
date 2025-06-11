@@ -40,7 +40,7 @@
 
 **Features**:
 - WebRTC signaling coordination
-- Peer discovery and connection establishment
+- Device discovery and connection establishment
 - Real-time communication support for MPC operations
 - Cloudflare Worker deployment option
 
@@ -86,7 +86,7 @@
 ### Security Benefits
 - **Distributed Trust**: No single point of failure in key generation or signing
 - **Hardware Security**: YubiKey integration for enhanced key protection
-- **Cryptographic Rigor**: Implementation of peer-reviewed FROST protocol
+- **Cryptographic Rigor**: Implementation of device-reviewed FROST protocol
 - **Zero-Knowledge Properties**: Privacy-preserving multi-party operations
 
 ### Developer Benefits
@@ -96,7 +96,7 @@
 - **Well-Documented**: Comprehensive examples and usage guides
 
 ### Operational Benefits
-- **Real-Time Communication**: WebRTC enables direct peer-to-peer operations
+- **Real-Time Communication**: WebRTC enables direct device-to-device operations
 - **Scalable Architecture**: Supports 3-of-5, 5-of-7, and custom threshold configurations
 - **Hardware Integration**: Seamless YubiKey workflow for enhanced security
 - **Cross-Chain Compatibility**: Single toolkit for multiple blockchain networks
@@ -122,7 +122,7 @@
 - **MPC Wallet Chrome Extension**: Provides the crypto backend
 - **Solana Ecosystem**: Native transaction signing and address derivation
 - **Ethereum Ecosystem**: EIP-155 compatible transaction handling
-- **WebRTC Infrastructure**: Real-time peer-to-peer communication
+- **WebRTC Infrastructure**: Real-time device-to-device communication
 - **Hardware Security Modules**: YubiKey and compatible devices
 
 ### APIs and Interfaces
@@ -163,7 +163,7 @@
 - **Developer Adoption**: Integration in 10+ projects
 - **Community Growth**: 100+ GitHub stars, active contribution
 - **Enterprise Usage**: Adoption by 3+ enterprise clients
-- **Academic Recognition**: Citation in peer-reviewed research
+- **Academic Recognition**: Citation in device-reviewed research
 
 ---
 

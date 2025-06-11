@@ -93,24 +93,24 @@ where
 ## Communication Patterns
 
 ### 1. P2P WebRTC Pattern
-**Pattern**: Direct peer-to-peer communication without central servers
+**Pattern**: Direct device-to-device communication without central servers
 
 ```rust
-// WebRTC peer connection management
-pub struct PeerManager<C: Ciphersuite> {
-    connections: HashMap<String, Arc<RTCPeerConnection>>,
+// WebRTC device connection management
+pub struct DeviceManager<C: Ciphersuite> {
+    connections: HashMap<String, Arc<RTCDeviceConnection>>,
     data_channels: HashMap<String, Arc<RTCDataChannel>>,
     state: Arc<Mutex<AppState<C>>>,
 }
 
 // Message routing through data channels
-impl<C: Ciphersuite> PeerManager<C> {
-    async fn send_to_peer(&self, peer_id: &str, message: &DkgMessage<C>) {
+impl<C: Ciphersuite> DeviceManager<C> {
+    async fn send_to_device(&self, device_id: &str, message: &DkgMessage<C>) {
         // Direct P2P message sending
     }
     
     async fn broadcast_to_all(&self, message: &DkgMessage<C>) {
-        // Efficient broadcast to all connected peers
+        // Efficient broadcast to all connected devices
     }
 }
 ```
@@ -118,7 +118,7 @@ impl<C: Ciphersuite> PeerManager<C> {
 **Benefits**:
 - No single point of failure
 - Reduced latency compared to server-mediated communication
-- Enhanced privacy (direct peer communication)
+- Enhanced privacy (direct device communication)
 - Scalable architecture
 
 **Implementation Details**:
@@ -281,8 +281,8 @@ pub enum ApplicationError {
 pub enum NetworkError {
     #[error("WebRTC connection failed")]
     WebRTCConnectionFailed,
-    #[error("Peer disconnected: {peer_id}")]
-    PeerDisconnected { peer_id: String },
+    #[error("Device disconnected: {device_id}")]
+    DeviceDisconnected { device_id: String },
     #[error("Signaling server unreachable")]
     SignalingServerUnreachable,
 }
@@ -309,12 +309,12 @@ pub enum ProtocolError {
 ```rust
 // Connection recovery with exponential backoff
 impl ConnectionManager {
-    async fn reconnect_with_backoff(&self, peer_id: &str) -> Result<(), NetworkError> {
+    async fn reconnect_with_backoff(&self, device_id: &str) -> Result<(), NetworkError> {
         let mut delay = Duration::from_millis(100);
         const MAX_RETRIES: u32 = 5;
         
         for attempt in 1..=MAX_RETRIES {
-            match self.establish_connection(peer_id).await {
+            match self.establish_connection(device_id).await {
                 Ok(()) => return Ok(()),
                 Err(e) if attempt == MAX_RETRIES => return Err(e),
                 Err(_) => {
@@ -437,15 +437,15 @@ lazy_static! {
 }
 
 // Lazy connection establishment
-impl PeerManager {
-    async fn get_or_create_connection(&self, peer_id: &str) -> Arc<RTCPeerConnection> {
-        if let Some(connection) = self.connections.get(peer_id) {
+impl DeviceManager {
+    async fn get_or_create_connection(&self, device_id: &str) -> Arc<RTCDeviceConnection> {
+        if let Some(connection) = self.connections.get(device_id) {
             return connection.clone();
         }
         
         // Create connection only when needed
-        let connection = self.create_connection(peer_id).await;
-        self.connections.insert(peer_id.to_string(), connection.clone());
+        let connection = self.create_connection(device_id).await;
+        self.connections.insert(device_id.to_string(), connection.clone());
         connection
     }
 }

@@ -11,16 +11,16 @@ This guide explains how to use the `frost-mpc-cli-node` application for particip
 
 2.  **Run the CLI Node:** Open a new terminal for each participant and run the following command with required parameters:
     ```bash
-    cargo run -p frost-mpc-cli-node -- --peer-id <your-id> --curve <secp256k1|ed25519>
+    cargo run -p frost-mpc-cli-node -- --device-id <your-id> --curve <secp256k1|ed25519>
     ```
     
     Example:
     ```bash
-    cargo run -p frost-mpc-cli-node -- --peer-id mpc-1 --curve secp256k1
+    cargo run -p frost-mpc-cli-node -- --device-id mpc-1 --curve secp256k1
     ```
 
     Parameters:
-    - `--peer-id`: A unique identifier for this node (e.g., `mpc-1`, `mpc-2`)
+    - `--device-id`: A unique identifier for this node (e.g., `mpc-1`, `mpc-2`)
     - `--curve`: Cryptographic curve to use (`secp256k1` for Ethereum or `ed25519` for Solana)
     - `--webrtc`: Optional WebRTC signaling server URL (defaults to `wss://auto-life.tech`)
 
@@ -28,14 +28,14 @@ This guide explains how to use the `frost-mpc-cli-node` application for particip
 
 The CLI node presents a terminal user interface (TUI) with the following sections:
 
-1.  **Peer ID:** Displays the unique ID for this node and the selected curve.
-2.  **Peers:** Lists other peers currently connected to the signaling server and shows their WebRTC connection states.
+1.  **Device ID:** Displays the unique ID for this node and the selected curve.
+2.  **Devices:** Lists other devices currently connected to the signaling server and shows their WebRTC connection states.
 3.  **Log:** Shows recent events, received messages, and errors.
 4.  **Session/Invites/DKG/Signing:**
     - **Session:** Displays information about the current MPC session if joined.
     - **Invites:** Lists pending session invites by `session_id`.
     - **DKG Status:** Shows the current status of the Distributed Key Generation process.
-    - **Mesh Status:** Indicates if all peers have established WebRTC connections.
+    - **Mesh Status:** Indicates if all devices have established WebRTC connections.
     - **Signing Status:** Shows the current status of any active signing process.
     - **Input:** Shows the input prompt `>` when in input mode.
 
@@ -51,24 +51,24 @@ The CLI node presents a terminal user interface (TUI) with the following section
 
 Type commands starting with `/` and press `Enter`.
 
-- `/list`: Manually request an updated list of peers from the server. The list also updates periodically and on peer join/disconnect.
-- `/propose <session_id> <total> <threshold> <peer1,peer2,...>`: Propose a new MPC session.
+- `/list`: Manually request an updated list of devices from the server. The list also updates periodically and on device join/disconnect.
+- `/propose <session_id> <total> <threshold> <device1,device2,...>`: Propose a new MPC session.
   - `<session_id>`: A unique name for the session (e.g., `mywallet`).
   - `<total>`: The total number of participants required (e.g., `3`).
   - `<threshold>`: The signing threshold (e.g., `2`).
-  - `<peer1,peer2,...>`: A comma-separated list of the exact `peer_id`s of all participants (including yourself).
+  - `<device1,device2,...>`: A comma-separated list of the exact `device_id`s of all participants (including yourself).
   - *Example:* `/propose mywallet 3 2 mpc-1,mpc-2,mpc-3`
 - `/join <session_id>`: Join an existing session you were invited to.
   - *Example:* `/join mywallet`
 - `/accept <session_id>`: (Alternative to 'o') Accept a specific pending session proposal by its `session_id`.
   - *Example:* `/accept mywallet`
-- `/relay <target_peer_id> <json_data>`: Send an arbitrary JSON message to another peer via the signaling server.
-  - `<target_peer_id>`: The exact `peer_id` of the recipient.
+- `/relay <target_device_id> <json_data>`: Send an arbitrary JSON message to another device via the signaling server.
+  - `<target_device_id>`: The exact `device_id` of the recipient.
   - `<json_data>`: A valid JSON object or value (e.g., `{"type":"hello","value":123}`).
   - *Example:* `/relay mpc-2 {"type":"ping","payload":{"id":1}}`
-- `/send <target_peer_id> <message>`: Send a direct WebRTC message to another peer.
-  - `<target_peer_id>`: The exact `peer_id` of the recipient.
-  - `<message>`: Any text message you want to send directly to the peer.
+- `/send <target_device_id> <message>`: Send a direct WebRTC message to another device.
+  - `<target_device_id>`: The exact `device_id` of the recipient.
+  - `<message>`: Any text message you want to send directly to the device.
   - *Example:* `/send mpc-2 Hello, this is a direct message!`
 - `/status`: Show detailed information about the current session and mesh state.
 - `/mesh_ready`: Manually indicate this node is ready with all WebRTC connections established.
@@ -85,10 +85,10 @@ Type commands starting with `/` and press `Enter`.
 
 After participants have agreed to join a session, the WebRTC connection establishment process begins:
 
-1. **Signaling Exchange:** Peers exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server.
+1. **Signaling Exchange:** Devices exchange WebRTC signaling data (SDP offers/answers, ICE candidates) via the signaling server.
    - The log will show messages about offers, answers, and ICE candidates being sent and received.
 
-2. **Connection States:** In the **Peers** section, you'll see connection status indicators:
+2. **Connection States:** In the **Devices** section, you'll see connection status indicators:
    - `New`: Initial state
    - `Connecting`: Connection attempt in progress
    - `Connected`: WebRTC connection established
@@ -101,10 +101,10 @@ After participants have agreed to join a session, the WebRTC connection establis
 
 4. **Mesh Readiness:** A complete mesh is formed when all participants have established WebRTC connections with each other.
    - Each node automatically sends a `channel_open` message when a data channel is successfully opened
-   - When all required connections are established, a node automatically signals `mesh_ready` to all peers
+   - When all required connections are established, a node automatically signals `mesh_ready` to all devices
    - Manual intervention with `/mesh_ready` command is only needed if the automatic process fails
-   - The TUI will show "Mesh Status: Ready" when all peers report readiness
-   - When all peers report mesh readiness, the MPC protocol proceeds automatically
+   - The TUI will show "Mesh Status: Ready" when all devices report readiness
+   - When all devices report mesh readiness, the MPC protocol proceeds automatically
 
 ## Distributed Key Generation (DKG)
 
@@ -163,9 +163,9 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
 
 2. **Start Nodes:** In three separate terminals:
    ```bash
-   cargo run -p frost-mpc-cli-node -- --peer-id mpc-1 --curve secp256k1
-   cargo run -p frost-mpc-cli-node -- --peer-id mpc-2 --curve secp256k1
-   cargo run -p frost-mpc-cli-node -- --peer-id mpc-3 --curve secp256k1
+   cargo run -p frost-mpc-cli-node -- --device-id mpc-1 --curve secp256k1
+   cargo run -p frost-mpc-cli-node -- --device-id mpc-2 --curve secp256k1
+   cargo run -p frost-mpc-cli-node -- --device-id mpc-3 --curve secp256k1
    ```
 
 3. **Session Proposal:**
@@ -192,7 +192,7 @@ This example shows how to set up a session for 3 participants (`mpc-1`, `mpc-2`,
 
 ## Troubleshooting
 
-* **Peer not showing in list:** Try using `/list` to refresh the peer list.
+* **Device not showing in list:** Try using `/list` to refresh the device list.
 * **Failed WebRTC connections:** Check your network settings. WebRTC may be blocked by some firewalls.
 * **DKG fails to complete:** Ensure all nodes have proper WebRTC connections before starting DKG.
 * **Mesh formation issues:** If the mesh isn't completing automatically, check the logs for connection errors and try the manual `/mesh_ready` command.

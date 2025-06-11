@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::device_connection::RTCDeviceConnection;
 
 use webrtc_signal_server::ServerMsg;
 // Add display-related imports for better status handling
@@ -19,9 +19,9 @@ use frost_core::Ciphersuite;
 pub async fn handle_websocket_message<C>(
     msg: Message,
     state: Arc<Mutex<AppState<C>>>,
-    self_peer_id: String,
+    self_device_id: String,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
-    peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
     ws_sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -39,9 +39,9 @@ pub async fn handle_websocket_message<C>(
             match serde_json::from_str::<ServerMsg>(&txt) {
                 Ok(server_msg) => {
                     match server_msg {
-                        ServerMsg::Peers { peers } => {
+                        ServerMsg::Devices { devices } => {
                             let mut state_guard = state.lock().await;
-                            state_guard.peers = peers.clone();
+                            state_guard.devices = devices.clone();
                         }
                         ServerMsg::Error { error } => {
                             let mut state_guard = state.lock().await;
@@ -64,9 +64,9 @@ pub async fn handle_websocket_message<C>(
                                         from,
                                         signal,
                                         state.clone(),
-                                        self_peer_id.clone(),
+                                        self_device_id.clone(),
                                         internal_cmd_tx.clone(),
-                                        peer_connections_arc.clone(),
+                                        device_connections_arc.clone(),
                                     )
                                     .await;
                                 }
@@ -86,7 +86,7 @@ pub async fn handle_websocket_message<C>(
                                         total: proposal.total,
                                         threshold: proposal.threshold,
                                         participants: proposal.participants.clone(),
-                                        accepted_peers: Vec::new(),
+                                        accepted_devices: Vec::new(),
                                     };
                                     state_guard.invites.push(invite_info);
                                 }
@@ -105,7 +105,7 @@ pub async fn handle_websocket_message<C>(
                                     };
                                     if let Err(e) = internal_cmd_tx.send(
                                         InternalCommand::ProcessSessionResponse {
-                                            from_peer_id: from.clone(),
+                                            from_device_id: from.clone(),
                                             response: internal_response,
                                         },
                                     ) {

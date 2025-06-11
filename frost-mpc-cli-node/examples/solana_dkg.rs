@@ -137,16 +137,16 @@ fn send_to(addr: &str, msg: &MessageWrapper) -> bool {
     false
 }
 
-// Broadcast to all peers except self
+// Broadcast to all devices except self
 fn broadcast(index: u16, total: u16, msg: &MessageWrapper) {
     println!("Node {} broadcasting message...", index);
     let mut success_count = 0;
-    for peer_idx in 1..=total {
-        if peer_idx == index {
+    for device_idx in 1..=total {
+        if device_idx == index {
             continue;
         }
-        let peer_addr = format!("127.0.0.1:1000{}", peer_idx);
-        if send_to(&peer_addr, msg) {
+        let device_addr = format!("127.0.0.1:1000{}", device_idx);
+        if send_to(&device_addr, msg) {
             success_count += 1;
         }
     }
@@ -682,8 +682,8 @@ fn handle_dkg_process(context: &mut NodeContext) -> Result<(), Box<dyn Error>> {
                 package: package.clone(),
             };
             let wrapped_msg = MessageWrapper::DkgRound2(round2_message);
-            let peer_addr = format!("127.0.0.1:1000{}", receiver_idx);
-            send_to(&peer_addr, &wrapped_msg);
+            let device_addr = format!("127.0.0.1:1000{}", receiver_idx);
+            send_to(&device_addr, &wrapped_msg);
         }
     }
 

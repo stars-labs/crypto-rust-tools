@@ -1,5 +1,5 @@
 use crate::protocal::signal::WebRTCMessage;
-use crate::utils::peer::send_webrtc_message;
+use crate::utils::device::send_webrtc_message;
 use crate::utils::state::AppState;
 use frost_core::Ciphersuite;
 use futures_util::SinkExt;
@@ -48,7 +48,7 @@ pub async fn handle_send_to_server<C>(
     }
 }
 
-/// Handles sending a direct message to a peer
+/// Handles sending a direct message to a device
 pub async fn handle_send_direct<C>(to: String, message: String, state: Arc<Mutex<AppState<C>>>)
 where
     C: Ciphersuite + Send + Sync + 'static,

@@ -119,7 +119,7 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
     let session_id = app_state.session.as_ref().unwrap().session_id.clone();
     let threshold = app_state.session.as_ref().unwrap().threshold;
     let total_participants = app_state.session.as_ref().unwrap().total;
-    let peer_id = app_state.peer_id.clone();
+    let device_id = app_state.device_id.clone();
     
     // Serialize the key package data
     let key_package_json = serde_json::to_string(app_state.key_package.as_ref().unwrap()).unwrap_or_default();
@@ -130,7 +130,7 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
         "key_package": key_package_json,
         "group_public_key": group_public_key_json,
         "session_id": session_id,
-        "peer_id": peer_id
+        "device_id": device_id
     }).to_string();
     
     // Create wallet in keystore

@@ -3,7 +3,7 @@
 ## Problem Summary
 The UI incorrectly showed "Mesh Status: Partially Ready (2/3)" when only some participants had accepted a session, with two main issues:
 1. Mesh ready signals were being sent prematurely before all session responses were received
-2. The mesh status display count was incorrect due to the current node not being properly included in ready_peers count
+2. The mesh status display count was incorrect due to the current node not being properly included in ready_devices count
 
 ## Root Cause Analysis
 
@@ -17,7 +17,7 @@ The UI incorrectly showed "Mesh Status: Partially Ready (2/3)" when only some pa
 
 ### Issue 3: Incorrect Mesh Status Counting
 **Location**: `src/handlers/mesh_commands.rs` - `handle_process_mesh_ready()` function
-**Problem**: When mesh status was reset to `Incomplete`, the function created an empty HashSet that excluded the current node from ready_peers count, even when the current node had already sent its mesh ready signal.
+**Problem**: When mesh status was reset to `Incomplete`, the function created an empty HashSet that excluded the current node from ready_devices count, even when the current node had already sent its mesh ready signal.
 
 ## Solution Implemented
 
@@ -60,7 +60,7 @@ if participants.len() == 1 {
 
 ```rust
 // Check if all session responses received (all participants accepted)
-all_responses_received_debug = session.accepted_peers.len() == session.participants.len();
+all_responses_received_debug = session.accepted_devices.len() == session.participants.len();
 
 // Updated condition to require BOTH WebRTC channels AND session responses
 if session_exists_debug && all_channels_open_debug && all_responses_received_debug && !already_sent_own_ready_debug {
@@ -75,21 +75,21 @@ if session_exists_debug && all_channels_open_debug && all_responses_received_deb
 ```rust
 _ => {
     // When status is Incomplete, check if current node has already sent mesh ready
-    // by looking at data channels - if we have channels to all peers, we should include ourselves
+    // by looking at data channels - if we have channels to all devices, we should include ourselves
     let mut initial_set = HashSet::new();
-    let session_peers_except_self: Vec<String> = session
+    let session_devices_except_self: Vec<String> = session
         .participants
         .iter()
-        .filter(|p| **p != state_guard.peer_id)
+        .filter(|p| **p != state_guard.device_id)
         .cloned()
         .collect();
     
-    let self_has_sent_mesh_ready = session_peers_except_self.iter()
-        .all(|peer_id| state_guard.data_channels.contains_key(peer_id));
+    let self_has_sent_mesh_ready = session_devices_except_self.iter()
+        .all(|device_id| state_guard.data_channels.contains_key(device_id));
     
     if self_has_sent_mesh_ready {
-        initial_set.insert(state_guard.peer_id.clone());
-        log_messages.push(format!("Status is Incomplete but current node has data channels to all peers, including self in ready count."));
+        initial_set.insert(state_guard.device_id.clone());
+        log_messages.push(format!("Status is Incomplete but current node has data channels to all devices, including self in ready count."));
     }
     initial_set
 },

@@ -8,18 +8,18 @@ use frost_core::{
     },
 };
 
-use std::sync::Arc; // Use TokioMutex for peer_connections
+use std::sync::Arc; // Use TokioMutex for device_connections
 use std::time::{Duration, Instant}; // Import Duration and Instant
 use tokio::sync::Mutex; // Use TokioMutex for async WebRTC state
 use webrtc::{
     data_channel::RTCDataChannel, ice_transport::ice_candidate::RTCIceCandidateInit,
-    peer_connection::RTCPeerConnection,
-    peer_connection::peer_connection_state::RTCPeerConnectionState,
+    device_connection::RTCDeviceConnection,
+    device_connection::device_connection_state::RTCDeviceConnectionState,
 }; // Keep SessionInfo import
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet}, // Keep BTreeMap
-                                               // Remove Arc import from here if only used for peer_connections
+                                               // Remove Arc import from here if only used for device_connections
 };
 
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
@@ -49,7 +49,7 @@ pub enum InternalCommand<C: Ciphersuite> {
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
 
-    /// Send a direct WebRTC message to a peer
+    /// Send a direct WebRTC message to a device
     SendDirect {
         to: String,
         message: String,
@@ -66,22 +66,22 @@ pub enum InternalCommand<C: Ciphersuite> {
     /// Accept a session proposal by session ID
     AcceptSessionProposal(String),
 
-    /// Process a session response from a peer
+    /// Process a session response from a device
     ProcessSessionResponse {
-        from_peer_id: String,
+        from_device_id: String,
         response: SessionResponse,
     },
 
-    /// Report that a data channel has been opened with a peer
+    /// Report that a data channel has been opened with a device
     ReportChannelOpen {
-        peer_id: String,
+        device_id: String,
     },
 
     // MeshReady, // This variant is redundant and has been removed. Use SendOwnMeshReadySignal.
     SendOwnMeshReadySignal,
-    /// Process mesh ready notification from a peer
+    /// Process mesh ready notification from a device
     ProcessMeshReady {
-        peer_id: String,
+        device_id: String,
     },
 
     /// Check if conditions are met to trigger DKG and do so if appropriate
@@ -90,18 +90,18 @@ pub enum InternalCommand<C: Ciphersuite> {
     /// Trigger DKG Round 1 (Commitments)
     TriggerDkgRound1,
 
-    /// Process DKG Round 1 data from a peer
+    /// Process DKG Round 1 data from a device
     ProcessDkgRound1 {
-        from_peer_id: String,
+        from_device_id: String,
         package: round1::Package<C>,
     },
 
     /// Trigger DKG Round 2 (Shares)
     TriggerDkgRound2,
 
-    /// Process DKG Round 2 data from a peer
+    /// Process DKG Round 2 data from a device
     ProcessDkgRound2 {
-        from_peer_id: String,
+        from_device_id: String,
         package: round2::Package<C>,
     },
 
@@ -119,45 +119,45 @@ pub enum InternalCommand<C: Ciphersuite> {
         signing_id: String,
     },
 
-    /// Process a signing request from a peer
+    /// Process a signing request from a device
     ProcessSigningRequest {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         transaction_data: String,
         timestamp: String,
     },
 
-    /// Process signing acceptance from a peer
+    /// Process signing acceptance from a device
     ProcessSigningAcceptance {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         timestamp: String,
     },
 
-    /// Process signing commitment from a peer (FROST Round 1)
+    /// Process signing commitment from a device (FROST Round 1)
     ProcessSigningCommitment {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         commitment: frost_core::round1::SigningCommitments<C>,
     },
 
-    /// Process signature share from a peer (FROST Round 2)
+    /// Process signature share from a device (FROST Round 2)
     ProcessSignatureShare {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         share: frost_core::round2::SignatureShare<C>,
     },
 
     /// Process aggregated signature result
     ProcessAggregatedSignature {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         signature: Vec<u8>, // The final signature bytes
     },
 
     /// Process signer selection message
     ProcessSignerSelection {
-        from_peer_id: String,
+        from_device_id: String,
         signing_id: String,
         selected_signers: Vec<Identifier<C>>,
     },
@@ -188,8 +188,8 @@ pub enum DkgState {
 pub enum MeshStatus {
     Incomplete,
     PartiallyReady {
-        ready_peers: HashSet<String>,
-        total_peers: usize,
+        ready_devices: HashSet<String>,
+        total_devices: usize,
     },
     Ready,
 }
@@ -316,23 +316,23 @@ impl DkgStateDisplay for DkgState {
 // --- AppState Struct ---
 #[derive(Clone)]
 pub struct AppState<C: Ciphersuite> {
-    pub peer_id: String,
-    pub peers: Vec<String>,
+    pub device_id: String,
+    pub devices: Vec<String>,
     pub log: Vec<String>,
     pub log_scroll: u16, // Add scroll state for the log
     pub session: Option<SessionInfo>,
     pub invites: Vec<SessionInfo>, // Store full SessionInfo for invites
     // WebRTC related state (needs TokioMutex for async access)
-    pub peer_connections: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    pub device_connections: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
     // TUI related state (can use StdMutex)
-    pub peer_statuses: HashMap<String, RTCPeerConnectionState>,
+    pub device_statuses: HashMap<String, RTCDeviceConnectionState>,
     pub reconnection_tracker: ReconnectionTracker,
     // Perfect Negotiation Flags
     pub making_offer: HashMap<String, bool>,
     pub pending_ice_candidates: HashMap<String, Vec<RTCIceCandidateInit>>,
     // --- DKG State ---
     pub dkg_state: DkgState,
-    pub identifier_map: Option<BTreeMap<String, Identifier<C>>>, // peer_id -> FROST Identifier
+    pub identifier_map: Option<BTreeMap<String, Identifier<C>>>, // device_id -> FROST Identifier
     // pub identifier_to_index_map: Option<BTreeMap<Identifier<C>, u16>>, // Removed field
     // Fix: Use proper round1::SecretPackage and round1::Package types
     pub dkg_part1_public_package: Option<round1::Package<C>>,
@@ -382,12 +382,12 @@ impl ReconnectionTracker {
         }
     }
 
-    pub fn should_attempt(&mut self, peer_id: &str) -> bool {
+    pub fn should_attempt(&mut self, device_id: &str) -> bool {
         let now = Instant::now();
-        let attempts = self.attempts.entry(peer_id.to_string()).or_insert(0);
+        let attempts = self.attempts.entry(device_id.to_string()).or_insert(0);
         let last = self
             .last_attempt
-            .entry(peer_id.to_string())
+            .entry(device_id.to_string())
             .or_insert_with(|| now - self.cooldown * 2); // Ensure first attempt is allowed
 
         // For first few attempts, retry quickly
@@ -418,8 +418,8 @@ impl ReconnectionTracker {
         true
     }
 
-    pub fn record_success(&mut self, peer_id: &str) {
-        self.attempts.remove(peer_id);
-        self.last_attempt.remove(peer_id);
+    pub fn record_success(&mut self, device_id: &str) {
+        self.attempts.remove(device_id);
+        self.last_attempt.remove(device_id);
     }
 }

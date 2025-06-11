@@ -49,7 +49,7 @@ Before creating any wallets, you need to initialize your keystore:
 
 1. Launch the FROST MPC CLI node:
    ```bash
-   cargo run -p frost-mpc-cli-node -- --peer-id my-device-1
+   cargo run -p frost-mpc-cli-node -- --device-id my-device-1
    ```
 
 2. Initialize your keystore with a name for this device:
@@ -69,7 +69,7 @@ On each device, follow these steps:
 
 **Device 1:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id eth-device-1 --curve secp256k1
+cargo run -p frost-mpc-cli-node -- --device-id eth-device-1 --curve secp256k1
 ```
 Then initialize the keystore:
 ```
@@ -78,7 +78,7 @@ Then initialize the keystore:
 
 **Device 2:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id eth-device-2 --curve secp256k1
+cargo run -p frost-mpc-cli-node -- --device-id eth-device-2 --curve secp256k1
 ```
 Then initialize the keystore:
 ```
@@ -87,7 +87,7 @@ Then initialize the keystore:
 
 **Device 3:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id eth-device-3 --curve secp256k1
+cargo run -p frost-mpc-cli-node -- --device-id eth-device-3 --curve secp256k1
 ```
 Then initialize the keystore:
 ```
@@ -101,7 +101,7 @@ All devices should automatically connect to the signaling server. Verify that ea
 /list
 ```
 
-You should see all three peer IDs listed.
+You should see all three device IDs listed.
 
 #### Step 3: Create a Session and Perform DKG
 
@@ -172,7 +172,7 @@ On each device:
 
 **Device 1:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id sol-device-1 --curve ed25519
+cargo run -p frost-mpc-cli-node -- --device-id sol-device-1 --curve ed25519
 ```
 Then initialize the keystore:
 ```
@@ -181,7 +181,7 @@ Then initialize the keystore:
 
 **Device 2:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id sol-device-2 --curve ed25519
+cargo run -p frost-mpc-cli-node -- --device-id sol-device-2 --curve ed25519
 ```
 Then initialize the keystore:
 ```
@@ -190,7 +190,7 @@ Then initialize the keystore:
 
 **Device 3:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id sol-device-3 --curve ed25519
+cargo run -p frost-mpc-cli-node -- --device-id sol-device-3 --curve ed25519
 ```
 Then initialize the keystore:
 ```
@@ -231,7 +231,7 @@ For a 2-of-3 wallet, you only need two devices to sign. Start two of your device
 
 **Device 1:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id eth-device-1 --curve secp256k1
+cargo run -p frost-mpc-cli-node -- --device-id eth-device-1 --curve secp256k1
 ```
 Then load your wallet:
 ```
@@ -240,14 +240,14 @@ Then load your wallet:
 
 **Device 2:**
 ```bash
-cargo run -p frost-mpc-cli-node -- --peer-id eth-device-2 --curve secp256k1
+cargo run -p frost-mpc-cli-node -- --device-id eth-device-2 --curve secp256k1
 ```
 Then load your wallet:
 ```
 /load_wallet <wallet_id> my-password
 ```
 
-#### Step 3: Connect Peers and Initiate Signing
+#### Step 3: Connect Devices and Initiate Signing
 
 Ensure both devices can see each other:
 ```
@@ -426,12 +426,12 @@ For each wallet, maintain secure backups:
 
 ### Connection Issues
 
-**Problem:** Devices cannot see each other in the peer list.
+**Problem:** Devices cannot see each other in the device list.
 
 **Solutions:**
 1. Check internet connectivity on both devices
 2. Verify that both devices are connected to the signaling server
-3. Use `/list` to refresh the peer list
+3. Use `/list` to refresh the device list
 4. Restart the CLI node if connection issues persist
 
 ### DKG Failures
@@ -475,8 +475,8 @@ For each wallet, maintain secure backups:
 | `/export_share <wallet_id> <file_path> <password>` | Export share | `/export_share 550e8400-e29b-41d4-a716-446655440000 /tmp/share.dat secretpass` |
 | `/import_share <wallet_id> <file_path> <password>` | Import share | `/import_share 550e8400-e29b-41d4-a716-446655440000 /tmp/share.dat secretpass` |
 | `/delete_wallet <wallet_id>` | Delete wallet | `/delete_wallet 550e8400-e29b-41d4-a716-446655440000` |
-| `/list` | List available peers | `/list` |
-| `/propose <session_id> <total> <threshold> <peers>` | Propose DKG session | `/propose eth-wallet 3 2 device1,device2,device3` |
+| `/list` | List available devices | `/list` |
+| `/propose <session_id> <total> <threshold> <devices>` | Propose DKG session | `/propose eth-wallet 3 2 device1,device2,device3` |
 | `/accept <session_id>` | Accept session invitation | `/accept eth-wallet` |
 | `/sign <transaction_data>` | Initiate signing | `/sign 0x123456789abcdef` |
 | `/acceptSign <signing_id>` | Accept signing request | `/acceptSign sign_device1_1686123456` |
@@ -491,5 +491,5 @@ For each wallet, maintain secure backups:
 - **Threshold**: Minimum number of participants needed to sign
 - **Wallet**: A collection of key shares that can sign for one blockchain address
 - **Keystore**: Secure storage system for managing shares and wallets
-- **Session**: A temporary collaboration between peers for DKG or signing
-- **WebRTC**: Web Real-Time Communication protocol used for peer-to-peer communication
+- **Session**: A temporary collaboration between devices for DKG or signing
+- **WebRTC**: Web Real-Time Communication protocol used for device-to-device communication

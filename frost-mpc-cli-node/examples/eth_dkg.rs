@@ -179,15 +179,15 @@ async fn broadcast(index: u16, total: u16, msg: &MessageWrapper) {
     // ... (same as before) ...
     println!("Node {} broadcasting message: {:?}", index, msg); // Log message being broadcast
     let mut tasks = Vec::new();
-    for peer_idx in 1..=total {
-        if peer_idx == index {
+    for device_idx in 1..=total {
+        if device_idx == index {
             continue;
         }
-        let peer_addr = format!("127.0.0.1:1000{}", peer_idx);
+        let device_addr = format!("127.0.0.1:1000{}", device_idx);
         // Clone msg for each task
         let msg_clone = msg.clone();
         tasks.push(tokio::spawn(async move {
-            send_to(&peer_addr, &msg_clone).await;
+            send_to(&device_addr, &msg_clone).await;
         }));
     }
     // Wait for all sends to complete (optional, fire-and-forget is also possible)
@@ -561,7 +561,7 @@ async fn handle_initial_state(
     // Add startup delay
     let startup_delay = Duration::from_millis(300 * context.index as u64);
     println!(
-        "Node {} waiting {:?} before starting to ensure all peers are ready...",
+        "Node {} waiting {:?} before starting to ensure all devices are ready...",
         context.index, startup_delay
     );
     tokio::time::sleep(startup_delay).await;
@@ -764,10 +764,10 @@ async fn handle_dkg_process(context: &mut NodeContext) -> Result<(), Box<dyn Err
                 package,
             };
             let wrapped_r2_msg = MessageWrapper::DkgRound2(round2_message);
-            let peer_addr = format!("127.0.0.1:1000{}", receiver_idx);
-            println!("[Debug] Sending R2 to peer_addr: {}", peer_addr);
+            let device_addr = format!("127.0.0.1:1000{}", receiver_idx);
+            println!("[Debug] Sending R2 to device_addr: {}", device_addr);
             send_tasks.push(tokio::spawn(async move {
-                send_to(&peer_addr, &wrapped_r2_msg).await;
+                send_to(&device_addr, &wrapped_r2_msg).await;
             }));
         }
     }

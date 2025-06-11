@@ -4,8 +4,8 @@ use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::policy::{
+use webrtc::device_connection::configuration::RTCConfiguration;
+use webrtc::device_connection::policy::{
     bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
     rtcp_mux_policy::RTCRtcpMuxPolicy,
 };
@@ -18,7 +18,7 @@ use std::{collections::HashMap,};
 use tokio::sync::{Mutex, mpsc};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::device_connection::RTCDeviceConnection;
 
 use webrtc_signal_server::{ClientMsg as SharedClientMsg};
 // Add display-related imports for better status handling
@@ -28,7 +28,7 @@ use frost_core::{
 use crate::protocal::signal::{
      WebRTCSignal, SDPInfo, CandidateInfo,
 };
-use crate::utils::peer::{create_and_setup_peer_connection, apply_pending_candidates};
+use crate::utils::device::{create_and_setup_device_connection, apply_pending_candidates};
 use crate::protocal::signal::WebSocketMessage;
 use crate::utils::negotiation::initiate_offers_for_session;
 // --- WebRTC API Setup ---
@@ -80,38 +80,38 @@ lazy_static! {
 }
 /// Handler for WebRTC signaling messages
 pub async fn handle_webrtc_signal<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signal: WebRTCSignal,
     state: Arc<Mutex<AppState<C>>>,
-    self_peer_id: String,
+    self_device_id: String,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
-    peer_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
 ) where C: Ciphersuite + Send + Sync + 'static, 
 <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
 <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
 {
     // Clone necessary variables for the spawned task
-    let from_clone = from_peer_id.clone();
+    let from_clone = from_device_id.clone();
     let state_log_clone = state.clone();
-    let self_peer_id_clone = self_peer_id.clone();
+    let self_device_id_clone = self_device_id.clone();
     let internal_cmd_tx_clone = internal_cmd_tx.clone();
-    let pc_arc_net_clone = peer_connections_arc.clone(); // Use passed parameter
+    let pc_arc_net_clone = device_connections_arc.clone(); // Use passed parameter
     let signal_clone = signal.clone();
     tokio::spawn(async move {
-        // Get or create peer connection
+        // Get or create device connection
         let pc_to_use_result = {
-            let peer_conns_guard = pc_arc_net_clone.lock().await; // Guard for modification
-            match peer_conns_guard.get(&from_clone).cloned() {
+            let device_conns_guard = pc_arc_net_clone.lock().await; // Guard for modification
+            match device_conns_guard.get(&from_clone).cloned() {
                 Some(pc) => Ok(pc),
                 None => {
-                    drop(peer_conns_guard);
+                    drop(device_conns_guard);
                     state_log_clone.lock().await.log.push(format!(
                         "WebRTC signal from {} received, but connection object missing. Attempting creation...",
                         from_clone 
                     ));
-                    create_and_setup_peer_connection(
+                    create_and_setup_device_connection(
                         from_clone.clone(),
-                        self_peer_id_clone.clone(),
+                        self_device_id_clone.clone(),
                         pc_arc_net_clone.clone(),
                         internal_cmd_tx_clone.clone(),
                         state_log_clone.clone(),
@@ -164,32 +164,32 @@ pub async fn handle_webrtc_signal<C>(
 }
 
 pub async fn handle_webrtc_offer<C>(
-    from_peer_id: &str,
+    from_device_id: &str,
     offer_info: SDPInfo, // Add offer_info parameter
-    pc: Arc<RTCPeerConnection>,
+    pc: Arc<RTCDeviceConnection>,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
 ) where C: Ciphersuite {    
     let pc_to_use = pc.clone(); // Start with the assumption we use the passed pc
 
-    match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
+    match webrtc::device_connection::sdp::session_description::RTCSessionDescription::offer(
         offer_info.sdp, // Use offer_info.sdp here
     ) {
         Ok(offer_sdp) => {
             if let Err(e) = pc_to_use.set_remote_description(offer_sdp).await {
                 state.lock().await.log.push(format!(
                     "Offer from {}: Error setting remote description (offer): {}",
-                    from_peer_id, e
+                    from_device_id, e
                 ));
                 return;
             }
             state.lock().await.log.push(format!(
                 "Offer from {}: Remote description (offer) set successfully.",
-                from_peer_id
+                from_device_id
             ));
 
             // Apply any pending candidates that might have arrived before the offer was set
-            apply_pending_candidates(from_peer_id, pc_to_use.clone(), state.clone()).await;
+            apply_pending_candidates(from_device_id, pc_to_use.clone(), state.clone()).await;
 
             // Create Answer
             match pc_to_use.create_answer(None).await {
@@ -199,13 +199,13 @@ pub async fn handle_webrtc_offer<C>(
                     if let Err(e) = pc_to_use.set_local_description(answer).await {
                         state.lock().await.log.push(format!(
                             "Offer from {}: Error setting local description (answer): {}",
-                            from_peer_id, e
+                            from_device_id, e
                         ));
                         return;
                     }
                     state.lock().await.log.push(format!(
                         "Offer from {}: Local description (answer) created and set.",
-                        from_peer_id
+                        from_device_id
                     ));
 
                     let answer_info_to_send = SDPInfo {
@@ -218,25 +218,25 @@ pub async fn handle_webrtc_offer<C>(
                     match serde_json::to_value(websocket_message) { // Serialize the WebSocketMessage
                         Ok(json_val) => {
                             let relay_msg = SharedClientMsg::Relay {
-                                to: from_peer_id.to_string(),
+                                to: from_device_id.to_string(),
                                 data: json_val,
                             };
                             if let Err(e) = internal_cmd_tx.send(InternalCommand::SendToServer(relay_msg)) {
                                 state.lock().await.log.push(format!(
                                     "Offer from {}: Failed to send answer to server: {}",
-                                    from_peer_id, e
+                                    from_device_id, e
                                 ));
                             } else {
                                 state.lock().await.log.push(format!(
                                     "Offer from {}: Answer sent to {}",
-                                    from_peer_id, from_peer_id
+                                    from_device_id, from_device_id
                                 ));
                             }
                         }
                         Err(e) => {
                             state.lock().await.log.push(format!(
                                 "Offer from {}: Error serializing answer: {}",
-                                from_peer_id, e
+                                from_device_id, e
                             ));
                         }
                     }
@@ -244,7 +244,7 @@ pub async fn handle_webrtc_offer<C>(
                 Err(e) => {
                     state.lock().await.log.push(format!(
                         "Offer from {}: Error creating answer: {}",
-                        from_peer_id, e
+                        from_device_id, e
                     ));
                 }
             }
@@ -252,7 +252,7 @@ pub async fn handle_webrtc_offer<C>(
         Err(e) => {
             state.lock().await.log.push(format!(
                 "Offer from {}: Error parsing offer SDP: {}",
-                from_peer_id, e
+                from_device_id, e
             ));
         }
     }
@@ -260,31 +260,31 @@ pub async fn handle_webrtc_offer<C>(
 
 
 pub async fn handle_webrtc_answer<C>(
-    from_peer_id: &str,
+    from_device_id: &str,
     answer_info: SDPInfo,
-    pc: Arc<RTCPeerConnection>,
+    pc: Arc<RTCDeviceConnection>,
     state: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
     state
         .lock()
         .await
         .log
-        .push(format!("Processing answer from {}...", from_peer_id));
-    match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(
+        .push(format!("Processing answer from {}...", from_device_id));
+    match webrtc::device_connection::sdp::session_description::RTCSessionDescription::answer(
         answer_info.sdp,
     ) {
         Ok(answer) => {
             if let Err(e) = pc.set_remote_description(answer).await {
                 state.lock().await.log.push(format!(
                     "Error setting remote description (answer) from {}: {}",
-                    from_peer_id, e
+                    from_device_id, e
                 ));
             } else {
                 state.lock().await.log.push(format!(
                     "Set remote description (answer) from {}",
-                    from_peer_id
+                    from_device_id
                 ));
-                apply_pending_candidates(from_peer_id, pc.clone(), state.clone()).await; 
+                apply_pending_candidates(from_device_id, pc.clone(), state.clone()).await; 
             }   
         }   
         Err(e) => {
@@ -292,23 +292,23 @@ pub async fn handle_webrtc_answer<C>(
                 .lock()
                 .await
                 .log
-                .push(format!("Error parsing answer from {}: {}", from_peer_id, e));
+                .push(format!("Error parsing answer from {}: {}", from_device_id, e));
         }
     }
 }
 
 /// Handler for WebRTC ICE candidate signals
 pub async fn handle_webrtc_candidate<C>(
-    from_peer_id: &str,
+    from_device_id: &str,
     candidate_info: CandidateInfo,
-    pc: Arc<RTCPeerConnection>,
+    pc: Arc<RTCDeviceConnection>,
     state: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
     state
         .lock()
         .await
         .log //it
-        .push(format!("Processing candidate from {}...", from_peer_id));
+        .push(format!("Processing candidate from {}...", from_device_id));
     let candidate_init = RTCIceCandidateInit {
         candidate: candidate_info.candidate,
         sdp_mid: candidate_info.sdp_mid,
@@ -318,43 +318,43 @@ pub async fn handle_webrtc_candidate<C>(
     // Check if remote description is set before adding ICE candidate
     let current_state = pc.signaling_state();
     let remote_description_set = match current_state {
-        webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
-        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalPranswer
-        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemotePranswer
-        | webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => true, //wer
+        webrtc::device_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
+        | webrtc::device_connection::signaling_state::RTCSignalingState::HaveLocalPranswer
+        | webrtc::device_connection::signaling_state::RTCSignalingState::HaveRemotePranswer
+        | webrtc::device_connection::signaling_state::RTCSignalingState::Stable => true, //wer
         _ => false,
     };
     if remote_description_set {
         state.lock().await.log.push(format!(
             "Remote description is set for {}. Adding ICE candidate now.",
-            from_peer_id
+            from_device_id
         )); 
         if let Err(e) = pc.add_ice_candidate(candidate_init.clone()).await {
             state.lock().await.log.push(format!(
                 "Error adding ICE candidate from {}: {}",
-                from_peer_id, e
+                from_device_id, e
             ));
         } else {
             state
                 .lock()
                 .await
                 .log
-                .push(format!("Added ICE candidate from {}", from_peer_id));
+                .push(format!("Added ICE candidate from {}", from_device_id));
         }   
     } else {
         let mut state_guard = state.lock().await;
         state_guard.log.push(format!(
             "Storing ICE candidate from {} for later (remote description not set yet)",
-            from_peer_id 
+            from_device_id 
         ));
         let candidates = state_guard
             .pending_ice_candidates
-            .entry(from_peer_id.to_string())
+            .entry(from_device_id.to_string())
             .or_insert_with(Vec::new);
         candidates.push(candidate_init);
         let queued_msg = format!(
             "Queued ICE candidate from {}. Total queued: {}",
-            from_peer_id,
+            from_device_id,
             candidates.len()
         );
         state_guard.log.push(queued_msg);
@@ -363,7 +363,7 @@ pub async fn handle_webrtc_candidate<C>(
 
 pub async fn initiate_webrtc_connections<C>( //bRTC connections with all session participants
     participants: Vec<String>,
-    self_peer_id: String,
+    self_device_id: String,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
 ) where
@@ -371,22 +371,22 @@ pub async fn initiate_webrtc_connections<C>( //bRTC connections with all session
     <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync,
     <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,
 {
-    let peer_connections_arc = state.lock().await.peer_connections.clone();
+    let device_connections_arc = state.lock().await.device_connections.clone();
 
-    // Step 1: Ensure RTCPeerConnection objects exist for all other participants.
+    // Step 1: Ensure RTCDeviceConnection objects exist for all other participants.
     // This is necessary for both sending and receiving offers.
-    for peer_id_str in participants.iter().filter(|p| **p != self_peer_id) {
+    for device_id_str in participants.iter().filter(|p| **p != self_device_id) {
         let needs_creation;
         { // Scope for the lock guard
-            let peer_conns_guard = peer_connections_arc.lock().await;
-            needs_creation = !peer_conns_guard.contains_key(peer_id_str);
+            let device_conns_guard = device_connections_arc.lock().await;
+            needs_creation = !device_conns_guard.contains_key(device_id_str);
         }
 
         if needs_creation {
-            match create_and_setup_peer_connection(
-                peer_id_str.clone(),
-                self_peer_id.clone(),
-                peer_connections_arc.clone(),
+            match create_and_setup_device_connection(
+                device_id_str.clone(),
+                self_device_id.clone(),
+                device_connections_arc.clone(),
                 internal_cmd_tx.clone(),
                 state.clone(),
                 &WEBRTC_API,
@@ -399,12 +399,12 @@ pub async fn initiate_webrtc_connections<C>( //bRTC connections with all session
                         .lock()
                         .await
                         .log
-                        .push(format!("Created peer connection for {}", peer_id_str));
+                        .push(format!("Created device connection for {}", device_id_str));
                 }
                 Err(e) => {
                     state.lock().await.log.push(format!(
-                        "Error creating peer connection for {}: {}",
-                        peer_id_str, e
+                        "Error creating device connection for {}: {}",
+                        device_id_str, e
                     ));
                 }
             }
@@ -412,28 +412,28 @@ pub async fn initiate_webrtc_connections<C>( //bRTC connections with all session
     }
 
     // Step 2: Filter participants to whom self should make an offer (politeness rule).
-    let peers_to_offer_to: Vec<String> = participants
+    let devices_to_offer_to: Vec<String> = participants
         .iter()
-        .filter(|p_id| **p_id != self_peer_id && *self_peer_id < ***p_id) // Offer if self_peer_id is smaller
+        .filter(|p_id| **p_id != self_device_id && *self_device_id < ***p_id) // Offer if self_device_id is smaller
         .cloned()
         .collect();
 
-    if !peers_to_offer_to.is_empty() {
+    if !devices_to_offer_to.is_empty() {
         state.lock().await.log.push(format!(
-            "Initiating offers to peers based on ID ordering: {:?}",
-            peers_to_offer_to
+            "Initiating offers to devices based on ID ordering: {:?}",
+            devices_to_offer_to
         ));
         initiate_offers_for_session(
-            peers_to_offer_to, // Pass only the filtered list of peers to offer to
-            self_peer_id.clone(),
-            peer_connections_arc.clone(),
+            devices_to_offer_to, // Pass only the filtered list of devices to offer to
+            self_device_id.clone(),
+            device_connections_arc.clone(),
             internal_cmd_tx.clone(),
             state.clone(),
         )
         .await;
     } else {
         state.lock().await.log.push(
-            "No peers to initiate offers to based on ID ordering. Waiting for incoming offers.".to_string()
+            "No devices to initiate offers to based on ID ordering. Waiting for incoming offers.".to_string()
         );
     }
 }

@@ -6,8 +6,8 @@ compatibility_date = "2025-05-08"
 command = "worker-build --release"
 
 [durable_objects]
-bindings = [{ name = "Peers", class_name = "Peers" }]
+bindings = [{ name = "Devices", class_name = "Devices" }]
 
 [[migrations]]
 tag = "v1"                     # Should be unique for each entry
-new_sqlite_classes = ["Peers"]
+new_sqlite_classes = ["Devices"]

@@ -146,7 +146,7 @@ The keystore uses a structured format for key material:
   "wallet_id": "550e8400-e29b-41d4-a716-446655440000",
   "device_id": "d9e1f2a3-b4c5-6d7e-8f9a-0b1c2d3e4f5a",
   "key_package": "...", // Serialized FROST key package
-  "identifier_map": {}, // Map of peer IDs to identifiers
+  "identifier_map": {}, // Map of device IDs to identifiers
   "created_at": 1686123456,
   "last_modified": 1686123456,
   "metadata": {} // Custom metadata
@@ -175,7 +175,7 @@ The index file contains metadata about all wallets:
         {
           "device_id": "d9e1f2a3-b4c5-6d7e-8f9a-0b1c2d3e4f5a",
           "name": "Alice's Laptop",
-          "peer_id": "mpc-1",
+          "device_id": "mpc-1",
           "identifier": "...",
           "last_seen": 1686123456
         },

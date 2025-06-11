@@ -2,7 +2,7 @@ use frost_core::Ciphersuite;
 use serde::{Deserialize, Serialize};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::device_connection::sdp::session_description::RTCSessionDescription;
 // Import the DKG Package type
 // Import round1 and round2 packages
 
@@ -14,7 +14,7 @@ pub struct SessionInfo {
     pub total: u16,
     pub threshold: u16,
     pub participants: Vec<String>,
-    pub accepted_peers: Vec<String>, // List of peer_ids that have accepted
+    pub accepted_devices: Vec<String>, // List of device_ids that have accepted
 }
 
 // --- WebRTC Signaling Data (sent via Relay) ---
@@ -86,12 +86,12 @@ pub enum WebRTCMessage<C: Ciphersuite> {
     },
     /// Data channel opened notification
     ChannelOpen {
-        peer_id: String,
+        device_id: String,
     },
     /// Mesh readiness notification
     MeshReady {
         session_id: String,
-        peer_id: String,
+        device_id: String,
     },
     
     // --- Signing Messages ---

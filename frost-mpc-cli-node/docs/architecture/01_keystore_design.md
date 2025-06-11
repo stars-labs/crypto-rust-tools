@@ -108,7 +108,7 @@ struct KeystoreFile<C: Ciphersuite> {
     wallet_id: String,            // Which wallet this belongs to
     device_id: String,            // Which device this belongs to
     key_package: KeyPackage<C>,   // Device's key share
-    identifier_map: BTreeMap<String, Identifier<C>>, // Maps peer IDs to identifiers
+    identifier_map: BTreeMap<String, Identifier<C>>, // Maps device IDs to identifiers
     created_at: u64,              // When this keystore was created
     last_modified: u64,           // When this keystore was last modified
     metadata: HashMap<String, String>, // Custom metadata
@@ -142,7 +142,7 @@ pub struct WalletInfo {
 pub struct DeviceInfo {
     device_id: String,        // Unique device ID
     name: String,             // User-friendly device name
-    peer_id: String,          // Peer ID used in FROST protocol
+    device_id: String,          // Device ID used in FROST protocol
     identifier: String,       // Serialized FROST identifier 
     last_seen: u64,           // Last connection timestamp
 }

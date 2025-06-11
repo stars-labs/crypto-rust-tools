@@ -1,6 +1,6 @@
 use crate::utils::state::{AppState, InternalCommand, SigningState};
 use crate::protocal::signal::WebRTCMessage;
-use crate::utils::peer::send_webrtc_message;
+use crate::utils::device::send_webrtc_message;
 use frost_core::{Ciphersuite, Identifier};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -44,18 +44,18 @@ pub async fn handle_initiate_signing<C>(
         };
         
         // Generate unique signing ID
-        let signing_id = format!("sign_{}_{}", guard.peer_id, chrono::Utc::now().timestamp());
+        let signing_id = format!("sign_{}_{}", guard.device_id, chrono::Utc::now().timestamp());
         let required_signers = session.threshold as usize;
         
         // Initialize accepted signers with ourselves (initiator auto-accepts)
         let mut accepted_signers = std::collections::HashSet::new();
-        accepted_signers.insert(guard.peer_id.clone());
+        accepted_signers.insert(guard.device_id.clone());
         
         // Set signing state to awaiting acceptance
         guard.signing_state = SigningState::AwaitingAcceptance {
             signing_id: signing_id.clone(),
             transaction_data: transaction_data.clone(),
-            initiator: guard.peer_id.clone(),
+            initiator: guard.device_id.clone(),
             required_signers,
             accepted_signers,
         };
@@ -67,7 +67,7 @@ pub async fn handle_initiate_signing<C>(
         
         // Send signing request to all session participants
         let session_participants = session.participants.clone();
-        let self_peer_id = guard.peer_id.clone();
+        let self_device_id = guard.device_id.clone();
         drop(guard);
         
         let signing_request = WebRTCMessage::SigningRequest {
@@ -76,12 +76,12 @@ pub async fn handle_initiate_signing<C>(
             required_signers,
         };
         
-        for peer_id in session_participants {
-            if peer_id != self_peer_id {
-                if let Err(e) = send_webrtc_message(&peer_id, &signing_request, state_clone.clone()).await {
+        for device_id in session_participants {
+            if device_id != self_device_id {
+                if let Err(e) = send_webrtc_message(&device_id, &signing_request, state_clone.clone()).await {
                     state_clone.lock().await.log.push(format!(
                         "Failed to send signing request to {}: {}",
-                        peer_id, e
+                        device_id, e
                     ));
                 }
             }
@@ -140,17 +140,17 @@ pub async fn handle_initiate_signing<C>(
             let selected_signers: Result<Vec<Identifier<C>>, String> = accepted_signers
                 .iter()
                 .take(required_signers)
-                .map(|peer_id| {
-                    identifier_map.get(peer_id)
+                .map(|device_id| {
+                    identifier_map.get(device_id)
                         .cloned()
-                        .ok_or_else(|| format!("No FROST identifier found for peer {}", peer_id))
+                        .ok_or_else(|| format!("No FROST identifier found for device {}", device_id))
                 })
                 .collect();
             
             let selected_signers = match selected_signers {
                 Ok(signers) => signers,
                 Err(error) => {
-                    guard.log.push(format!("Error mapping peer IDs to FROST identifiers: {}", error));
+                    guard.log.push(format!("Error mapping device IDs to FROST identifiers: {}", error));
                     guard.signing_state = SigningState::Failed {
                         signing_id: signing_id.clone(),
                         reason: error,
@@ -178,16 +178,16 @@ pub async fn handle_initiate_signing<C>(
             
             // Prepare data for internal command dispatch
             let cmd_data = (signing_id.clone(), transaction_data.clone(), selected_signers);
-            let self_peer_id_copy = guard.peer_id.clone();
+            let self_device_id_copy = guard.device_id.clone();
             drop(guard);
             
             // Send selection message to all session participants
-            for peer_id in session.participants {
-                if peer_id != self_peer_id_copy {
-                    if let Err(e) = send_webrtc_message(&peer_id, &selection_message, state_clone.clone()).await {
+            for device_id in session.participants {
+                if device_id != self_device_id_copy {
+                    if let Err(e) = send_webrtc_message(&device_id, &selection_message, state_clone.clone()).await {
                         state_clone.lock().await.log.push(format!(
                             "Failed to send signer selection to {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));
                     }
                 }
@@ -265,9 +265,9 @@ pub async fn handle_accept_signing<C>(
     });
 }
 
-/// Handles processing a signing request from a peer
+/// Handles processing a signing request from a device
 pub async fn handle_process_signing_request<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     transaction_data: String,
     _timestamp: String,
@@ -286,13 +286,13 @@ pub async fn handle_process_signing_request<C>(
         // Check if DKG is complete
         let dkg_complete = guard.key_package.is_some() && guard.group_public_key.is_some();
         if !dkg_complete {
-            guard.log.push(format!("Cannot process signing request from {}: DKG not completed", from_peer_id));
+            guard.log.push(format!("Cannot process signing request from {}: DKG not completed", from_device_id));
             return;
         }
         
         // Check if already signing
         if guard.signing_state.is_active() {
-            guard.log.push(format!("Cannot process signing request from {}: Already in signing process", from_peer_id));
+            guard.log.push(format!("Cannot process signing request from {}: Already in signing process", from_device_id));
             return;
         }
         
@@ -300,28 +300,28 @@ pub async fn handle_process_signing_request<C>(
         let session = match &guard.session {
             Some(s) => s.clone(),
             None => {
-                guard.log.push(format!("Cannot process signing request from {}: No active session", from_peer_id));
+                guard.log.push(format!("Cannot process signing request from {}: No active session", from_device_id));
                 return;
             }
         };
         
-        // Verify the requesting peer is in our session
-        if !session.participants.contains(&from_peer_id) {
-            guard.log.push(format!("Rejecting signing request from {}: Not in session", from_peer_id));
+        // Verify the requesting device is in our session
+        if !session.participants.contains(&from_device_id) {
+            guard.log.push(format!("Rejecting signing request from {}: Not in session", from_device_id));
             return;
         }
         
-        guard.log.push(format!("Received signing request from {}: id={}", from_peer_id, signing_id));
+        guard.log.push(format!("Received signing request from {}: id={}", from_device_id, signing_id));
         
         // Update signing state to awaiting acceptance
         let required_signers = session.threshold as usize;
         let mut accepted_signers = std::collections::HashSet::new();
-        accepted_signers.insert(from_peer_id.clone()); // Initiator is automatically accepted
+        accepted_signers.insert(from_device_id.clone()); // Initiator is automatically accepted
         
         guard.signing_state = SigningState::AwaitingAcceptance {
             signing_id: signing_id.clone(),
             transaction_data: transaction_data.clone(),
-            initiator: from_peer_id.clone(),
+            initiator: from_device_id.clone(),
             required_signers,
             accepted_signers,
         };
@@ -330,9 +330,9 @@ pub async fn handle_process_signing_request<C>(
     });
 }
 
-/// Handles processing a signing acceptance from a peer
+/// Handles processing a signing acceptance from a device
 pub async fn handle_process_signing_acceptance<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     _timestamp: String,
     state: Arc<Mutex<AppState<C>>>,
@@ -365,16 +365,16 @@ pub async fn handle_process_signing_acceptance<C>(
                 }
             },
             _ => {
-                let msg = format!("Received signing acceptance from {} but not awaiting acceptance", from_peer_id);
+                let msg = format!("Received signing acceptance from {} but not awaiting acceptance", from_device_id);
                 Some((None, msg))
             }
         };
         
         let (signing_info_result, error_msg) = signing_info.unwrap();
         if let Some((current_signing_id, mut accepted_signers, required_signers, transaction_data)) = signing_info_result {
-            // Add the accepting peer
-            accepted_signers.insert(from_peer_id.clone());
-            guard.log.push(format!("Signing acceptance from {}: {}/{} signers", from_peer_id, accepted_signers.len(), required_signers));
+            // Add the accepting device
+            accepted_signers.insert(from_device_id.clone());
+            guard.log.push(format!("Signing acceptance from {}: {}/{} signers", from_device_id, accepted_signers.len(), required_signers));
             
             // Update the state with the new acceptances
             if let SigningState::AwaitingAcceptance { accepted_signers: current_accepted, .. } = &mut guard.signing_state {
@@ -385,7 +385,7 @@ pub async fn handle_process_signing_acceptance<C>(
             if accepted_signers.len() >= required_signers {
                 guard.log.push(format!("Sufficient signers gathered ({}/{}), starting commitment phase", accepted_signers.len(), required_signers));
                 
-                // Get the identifier map to convert peer IDs to FROST Identifiers
+                // Get the identifier map to convert device IDs to FROST Identifiers
                 let identifier_map = match guard.identifier_map.clone() {
                     Some(map) => map,
                     None => {
@@ -402,17 +402,17 @@ pub async fn handle_process_signing_acceptance<C>(
                 let selected_signers: Result<Vec<Identifier<C>>, String> = accepted_signers
                     .into_iter()
                     .take(required_signers)
-                    .map(|peer_id| {
-                        identifier_map.get(&peer_id)
+                    .map(|device_id| {
+                        identifier_map.get(&device_id)
                             .cloned()
-                            .ok_or_else(|| format!("No FROST identifier found for peer {}", peer_id))
+                            .ok_or_else(|| format!("No FROST identifier found for device {}", device_id))
                     })
                     .collect();
                 
                 let selected_signers = match selected_signers {
                     Ok(signers) => signers,
                     Err(error) => {
-                        guard.log.push(format!("Error mapping peer IDs to FROST identifiers: {}", error));
+                        guard.log.push(format!("Error mapping device IDs to FROST identifiers: {}", error));
                         guard.signing_state = SigningState::Failed {
                             signing_id: current_signing_id,
                             reason: error,
@@ -439,16 +439,16 @@ pub async fn handle_process_signing_acceptance<C>(
                 };
                 
                 // Drop guard before async operations
-                let self_peer_id = guard.peer_id.clone();
+                let self_device_id = guard.device_id.clone();
                 drop(guard);
                 
                 // Send selection message to all session participants
-                for peer_id in session.participants {
-                    if peer_id != self_peer_id {
-                        if let Err(e) = send_webrtc_message(&peer_id, &selection_message, state_clone.clone()).await {
+                for device_id in session.participants {
+                    if device_id != self_device_id {
+                        if let Err(e) = send_webrtc_message(&device_id, &selection_message, state_clone.clone()).await {
                             state_clone.lock().await.log.push(format!(
                                 "Failed to send signer selection to {}: {}",
-                                peer_id, e
+                                device_id, e
                             ));
                         }
                     }
@@ -468,9 +468,9 @@ pub async fn handle_process_signing_acceptance<C>(
     });
 }
 
-/// Handles processing a signing commitment from a peer
+/// Handles processing a signing commitment from a device
 pub async fn handle_process_signing_commitment<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     commitment: frost_core::round1::SigningCommitments<C>,
     state: Arc<Mutex<AppState<C>>>,
@@ -487,7 +487,7 @@ pub async fn handle_process_signing_commitment<C>(
         
         guard.log.push(format!(
             "Processing signing commitment from {} for signing {}",
-            from_peer_id, signing_id
+            from_device_id, signing_id
         ));
         
         // Extract identifier map to avoid borrow conflicts
@@ -499,10 +499,10 @@ pub async fn handle_process_signing_commitment<C>(
             }
         };
         
-        let sender_identifier = match identifier_map.get(&from_peer_id) {
+        let sender_identifier = match identifier_map.get(&from_device_id) {
             Some(id) => *id,
             None => {
-                guard.log.push(format!("Error: No FROST identifier found for peer {}", from_peer_id));
+                guard.log.push(format!("Error: No FROST identifier found for device {}", from_device_id));
                 return;
             }
         };
@@ -520,7 +520,7 @@ pub async fn handle_process_signing_commitment<C>(
             _ => {
                 guard.log.push(format!(
                     "Ignoring commitment from {} - not in commitment phase for signing {}",
-                    from_peer_id, signing_id
+                    from_device_id, signing_id
                 ));
                 return;
             }
@@ -530,7 +530,7 @@ pub async fn handle_process_signing_commitment<C>(
         if !selected_signers.contains(&sender_identifier) {
             guard.log.push(format!(
                 "Ignoring commitment from {} - not a selected signer for {}",
-                from_peer_id, signing_id
+                from_device_id, signing_id
             ));
             return;
         }
@@ -544,7 +544,7 @@ pub async fn handle_process_signing_commitment<C>(
             if commitments.contains_key(&sender_identifier) {
                 guard.log.push(format!(
                     "Duplicate commitment from {} for signing {} - ignoring",
-                    from_peer_id, signing_id
+                    from_device_id, signing_id
                 ));
                 return;
             }
@@ -558,7 +558,7 @@ pub async fn handle_process_signing_commitment<C>(
             let _ = commitments;
             guard.log.push(format!(
                 "Stored commitment from {} ({}/{})",
-                from_peer_id, commitment_count, selected_count
+                from_device_id, commitment_count, selected_count
             ));
             
             // Check if we have all commitments
@@ -630,11 +630,11 @@ pub async fn handle_process_signing_commitment<C>(
             };
             
             // Get our identifier
-            let self_identifier = match identifier_map.get(&guard.peer_id) {
+            let self_identifier = match identifier_map.get(&guard.device_id) {
                 Some(id) => *id,
                 None => {
-                    let peer_id = guard.peer_id.clone();
-                    guard.log.push(format!("Error: No FROST identifier found for self ({})", peer_id));
+                    let device_id = guard.device_id.clone();
+                    guard.log.push(format!("Error: No FROST identifier found for self ({})", device_id));
                     guard.signing_state = SigningState::Failed {
                         signing_id: current_signing_id,
                         reason: "No self identifier available".to_string(),
@@ -664,10 +664,10 @@ pub async fn handle_process_signing_commitment<C>(
                 share: signature_share,
             };
             
-            // Get reverse identifier map to convert FROST identifiers back to peer IDs
-            let peer_id_map: BTreeMap<Identifier<C>, String> = identifier_map
+            // Get reverse identifier map to convert FROST identifiers back to device IDs
+            let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
                 .iter()
-                .map(|(peer_id, frost_id)| (*frost_id, peer_id.clone()))
+                .map(|(device_id, frost_id)| (*frost_id, device_id.clone()))
                 .collect();
             
             drop(guard);
@@ -675,11 +675,11 @@ pub async fn handle_process_signing_commitment<C>(
             // Send signature share to all other selected signers
             for signer_id in selected_signers {
                 if signer_id != self_identifier {
-                    if let Some(peer_id) = peer_id_map.get(&signer_id) {
-                        if let Err(e) = send_webrtc_message(peer_id, &share_message, state_clone.clone()).await {
+                    if let Some(device_id) = device_id_map.get(&signer_id) {
+                        if let Err(e) = send_webrtc_message(device_id, &share_message, state_clone.clone()).await {
                             state_clone.lock().await.log.push(format!(
                                 "Failed to send signature share to {}: {}",
-                                peer_id, e
+                                device_id, e
                             ));
                         }
                     }
@@ -694,9 +694,9 @@ pub async fn handle_process_signing_commitment<C>(
     });
 }
 
-/// Handles processing a signature share from a peer
+/// Handles processing a signature share from a device
 pub async fn handle_process_signature_share<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     share: frost_core::round2::SignatureShare<C>,
     state: Arc<Mutex<AppState<C>>>,
@@ -713,10 +713,10 @@ pub async fn handle_process_signature_share<C>(
         
         guard.log.push(format!(
             "Processing signature share from {} for signing {}",
-            from_peer_id, signing_id
+            from_device_id, signing_id
         ));
         
-        // Get identifier map to convert peer ID to FROST identifier
+        // Get identifier map to convert device ID to FROST identifier
         let identifier_map = match guard.identifier_map.clone() {
             Some(map) => map,
             None => {
@@ -725,10 +725,10 @@ pub async fn handle_process_signature_share<C>(
             }
         };
         
-        let sender_identifier = match identifier_map.get(&from_peer_id) {
+        let sender_identifier = match identifier_map.get(&from_device_id) {
             Some(id) => *id,
             None => {
-                guard.log.push(format!("Error: No FROST identifier found for peer {}", from_peer_id));
+                guard.log.push(format!("Error: No FROST identifier found for device {}", from_device_id));
                 return;
             }
         };
@@ -746,7 +746,7 @@ pub async fn handle_process_signature_share<C>(
             _ => {
                 guard.log.push(format!(
                     "Ignoring signature share from {} - not in share phase for signing {}",
-                    from_peer_id, signing_id
+                    from_device_id, signing_id
                 ));
                 return;
             }
@@ -756,7 +756,7 @@ pub async fn handle_process_signature_share<C>(
         if !selected_signers.contains(&sender_identifier) {
             guard.log.push(format!(
                 "Ignoring signature share from {} - not a selected signer for {}",
-                from_peer_id, signing_id
+                from_device_id, signing_id
             ));
             return;
         }
@@ -770,7 +770,7 @@ pub async fn handle_process_signature_share<C>(
             if shares.contains_key(&sender_identifier) {
                 guard.log.push(format!(
                     "Duplicate signature share from {} for signing {} - ignoring",
-                    from_peer_id, signing_id
+                    from_device_id, signing_id
                 ));
                 return;
             }
@@ -784,7 +784,7 @@ pub async fn handle_process_signature_share<C>(
             let _ = shares;
             guard.log.push(format!(
                 "Stored signature share from {} ({}/{})",
-                from_peer_id, shares_count, selected_count
+                from_device_id, shares_count, selected_count
             ));
             
             // Check if we have all signature shares
@@ -880,16 +880,16 @@ pub async fn handle_process_signature_share<C>(
             };
             
             let session = guard.session.as_ref().unwrap().clone();
-            let self_peer_id = guard.peer_id.clone();
+            let self_device_id = guard.device_id.clone();
             drop(guard);
             
             // Send aggregated signature to all session participants
-            for peer_id in session.participants {
-                if peer_id != self_peer_id {
-                    if let Err(e) = send_webrtc_message(&peer_id, &aggregated_sig_message, state_clone.clone()).await {
+            for device_id in session.participants {
+                if device_id != self_device_id {
+                    if let Err(e) = send_webrtc_message(&device_id, &aggregated_sig_message, state_clone.clone()).await {
                         state_clone.lock().await.log.push(format!(
                             "Failed to send aggregated signature to {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));
                     }
                 }
@@ -903,9 +903,9 @@ pub async fn handle_process_signature_share<C>(
     });
 }
 
-/// Handles processing an aggregated signature from a peer
+/// Handles processing an aggregated signature from a device
 pub async fn handle_process_aggregated_signature<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     signature: Vec<u8>,
     state: Arc<Mutex<AppState<C>>>,
@@ -922,7 +922,7 @@ pub async fn handle_process_aggregated_signature<C>(
         
         guard.log.push(format!(
             "Processing aggregated signature from {} for signing {} ({} bytes)",
-            from_peer_id, signing_id, signature.len()
+            from_device_id, signing_id, signature.len()
         ));
         
         // Update signing state to complete
@@ -939,9 +939,9 @@ pub async fn handle_process_aggregated_signature<C>(
     });
 }
 
-/// Handles processing signer selection from a peer
+/// Handles processing signer selection from a device
 pub async fn handle_process_signer_selection<C>(
-    from_peer_id: String,
+    from_device_id: String,
     signing_id: String,
     selected_signers: Vec<Identifier<C>>,
     state: Arc<Mutex<AppState<C>>>,
@@ -958,7 +958,7 @@ pub async fn handle_process_signer_selection<C>(
         
         guard.log.push(format!(
             "Processing signer selection from {} for signing {} ({} signers selected)",
-            from_peer_id, signing_id, selected_signers.len()
+            from_device_id, signing_id, selected_signers.len()
         ));
         
         // Get identifier map to check if we are selected
@@ -970,11 +970,11 @@ pub async fn handle_process_signer_selection<C>(
             }
         };
         
-        let self_identifier = match identifier_map.get(&guard.peer_id) {
+        let self_identifier = match identifier_map.get(&guard.device_id) {
             Some(id) => *id,
             None => {
-                let peer_id = guard.peer_id.clone();
-                guard.log.push(format!("Error: No FROST identifier found for self ({})", peer_id));
+                let device_id = guard.device_id.clone();
+                guard.log.push(format!("Error: No FROST identifier found for self ({})", device_id));
                 return;
             }
         };
@@ -1007,7 +1007,7 @@ pub async fn handle_process_signer_selection<C>(
             _ => {
                 guard.log.push(format!(
                     "Ignoring signer selection from {} - not in awaiting acceptance state for signing {}",
-                    from_peer_id, signing_id
+                    from_device_id, signing_id
                 ));
                 return;
             }
@@ -1065,10 +1065,10 @@ pub async fn handle_process_signer_selection<C>(
             commitment: commitments,
         };
         
-        // Get reverse identifier map to convert FROST identifiers back to peer IDs
-        let peer_id_map: BTreeMap<Identifier<C>, String> = identifier_map
+        // Get reverse identifier map to convert FROST identifiers back to device IDs
+        let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
             .iter()
-            .map(|(peer_id, frost_id)| (*frost_id, peer_id.clone()))
+            .map(|(device_id, frost_id)| (*frost_id, device_id.clone()))
             .collect();
         
         drop(guard);
@@ -1076,11 +1076,11 @@ pub async fn handle_process_signer_selection<C>(
         // Send commitments to all other selected signers
         for signer_id in selected_signers {
             if signer_id != self_identifier {
-                if let Some(peer_id) = peer_id_map.get(&signer_id) {
-                    if let Err(e) = send_webrtc_message(peer_id, &commitment_message, state_clone.clone()).await {
+                if let Some(device_id) = device_id_map.get(&signer_id) {
+                    if let Err(e) = send_webrtc_message(device_id, &commitment_message, state_clone.clone()).await {
                         state_clone.lock().await.log.push(format!(
                             "Failed to send commitment to {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));
                     }
                 }
@@ -1125,11 +1125,11 @@ pub async fn handle_initiate_frost_round1<C>(
             }
         };
         
-        let self_identifier = match identifier_map.get(&guard.peer_id) {
+        let self_identifier = match identifier_map.get(&guard.device_id) {
             Some(id) => *id,
             None => {
-                let peer_id = guard.peer_id.clone();
-                guard.log.push(format!("Error: No FROST identifier found for peer {}", peer_id));
+                let device_id = guard.device_id.clone();
+                guard.log.push(format!("Error: No FROST identifier found for device {}", device_id));
                 return;
             }
         };
@@ -1179,10 +1179,10 @@ pub async fn handle_initiate_frost_round1<C>(
             commitment: commitments,
         };
         
-        // Get identifier map to convert FROST identifiers back to peer IDs
-        let peer_id_map: BTreeMap<Identifier<C>, String> = identifier_map
+        // Get identifier map to convert FROST identifiers back to device IDs
+        let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
             .into_iter()
-            .map(|(peer_id, frost_id)| (frost_id, peer_id))
+            .map(|(device_id, frost_id)| (frost_id, device_id))
             .collect();
         
         drop(guard);
@@ -1190,11 +1190,11 @@ pub async fn handle_initiate_frost_round1<C>(
         // Send commitments to all other selected signers
         for signer_id in selected_signers {
             if signer_id != self_identifier {
-                if let Some(peer_id) = peer_id_map.get(&signer_id) {
-                    if let Err(e) = send_webrtc_message(peer_id, &commitment_message, state_clone.clone()).await {
+                if let Some(device_id) = device_id_map.get(&signer_id) {
+                    if let Err(e) = send_webrtc_message(device_id, &commitment_message, state_clone.clone()).await {
                         state_clone.lock().await.log.push(format!(
                             "Failed to send commitment to {}: {}",
-                            peer_id, e
+                            device_id, e
                         ));
                     }
                 }

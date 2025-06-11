@@ -24,13 +24,13 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
     input_mode: bool,
 ) -> io::Result<()> {
     terminal.draw(|f| {
-        // Main layout: Title, Peers, Log, Status, Input
+        // Main layout: Title, Devices, Log, Status, Input
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
             .constraints([
                 Constraint::Length(3), // Title area
-                Constraint::Length(5), // Peers area
+                Constraint::Length(5), // Devices area
                 Constraint::Min(5),    // Log area (flexible height)
                 Constraint::Length(8), // Status area (increased height for wrapping)
                 Constraint::Length(3), // Input area
@@ -38,7 +38,7 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             .split(f.area());
 
         let title_block = Block::default()
-            .title(format!(" Peer ID: {} ", app.peer_id)) // Add spacing
+            .title(format!(" Device ID: {} ", app.device_id)) // Add spacing
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded); // Use rounded borders
         f.render_widget(title_block, main_chunks[0]);
@@ -49,16 +49,16 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             .map(|s| s.participants.iter().cloned().collect())
             .unwrap_or_default();
 
-        let peer_list_items = app
-            .peers
+        let device_list_items = app
+            .devices
             .iter()
-            .filter(|p| !p.trim().eq_ignore_ascii_case(app.peer_id.trim()))
+            .filter(|p| !p.trim().eq_ignore_ascii_case(app.device_id.trim()))
             .map(|p| {
                 let status_str = if session_participants.contains(p) {
                     // First check if there's an explicit status
-                    if let Some(s) = app.peer_statuses.get(p) {
+                    if let Some(s) = app.device_statuses.get(p) {
                         // For clarity, add connection role in the status display
-                        let role_prefix = if app.peer_id < *p { "→" } else { "←" }; // Simplified comparison
+                        let role_prefix = if app.device_id < *p { "→" } else { "←" }; // Simplified comparison
                         format!("{}{:?}", role_prefix, s)
                     } else {
                         // Default for session members not yet reported
@@ -69,12 +69,12 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
                     "N/A".to_string()
                 };
                 // Add color based on status
-                let style = match app.peer_statuses.get(p) {
-                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected) => Style::default().fg(Color::Green),
-                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connecting) => Style::default().fg(Color::Yellow),
-                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed) |
-                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected) |
-                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed) => Style::default().fg(Color::Red),
+                let style = match app.device_statuses.get(p) {
+                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected) => Style::default().fg(Color::Green),
+                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connecting) => Style::default().fg(Color::Yellow),
+                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Failed) |
+                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Disconnected) |
+                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Closed) => Style::default().fg(Color::Red),
                     _ => Style::default(),
                 };
 
@@ -82,10 +82,10 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             })
             .collect::<Vec<_>>();
 
-        let peers_widget =
-            List::new(peer_list_items) // Use the formatted list
-                .block(Block::default().title(" Peers (Signaling) ").borders(Borders::ALL));
-        f.render_widget(peers_widget, main_chunks[1]);
+        let devices_widget =
+            List::new(device_list_items) // Use the formatted list
+                .block(Block::default().title(" Devices (Signaling) ").borders(Borders::ALL));
+        f.render_widget(devices_widget, main_chunks[1]);
 
         let log_text: Vec<Line> = app.log.iter().map(|l| Line::from(l.clone())).collect();
         let log_widget = Paragraph::new(log_text)
@@ -161,7 +161,7 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         // Add mesh status information as documented in cli_usage.md
         let mesh_status_str = match &app.mesh_status {
             MeshStatus::Incomplete => "Incomplete".to_string(),
-            MeshStatus::PartiallyReady { ready_peers, total_peers } => format!("Partially Ready ({}/{})", ready_peers.len(), total_peers),
+            MeshStatus::PartiallyReady { ready_devices, total_devices } => format!("Partially Ready ({}/{})", ready_devices.len(), total_devices),
             MeshStatus::Ready => "Ready".to_string(),
         };
         
@@ -267,17 +267,17 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
 
     // Display additional connection info if in a session
     if let Some(session) = &app.session {
-        let connected_peers = app.peer_statuses
+        let connected_devices = app.device_statuses
             .iter()
             .filter(|&(_, &status)| 
-                matches!(status, webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected)
+                matches!(status, webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected)
             )
             .count();
             
-        let total_peers = session.participants.len() - 1; // Exclude self
+        let total_devices = session.participants.len() - 1; // Exclude self
         
-        let connection_status = format!("{}/{} peers connected", connected_peers, total_peers);
-        let connection_style = if connected_peers == total_peers {
+        let connection_status = format!("{}/{} devices connected", connected_devices, total_devices);
+        let connection_style = if connected_devices == total_devices {
             Style::default().fg(Color::Green)
         } else {
             Style::default().fg(Color::Yellow)
@@ -318,14 +318,14 @@ pub fn handle_key_event<C>(
                 // Parse and handle command
                 // Wrap shared messages when sending
                 if cmd_str == "/list" {
-                    let _ = cmd_tx.send(InternalCommand::SendToServer(ClientMsg::ListPeers));
+                    let _ = cmd_tx.send(InternalCommand::SendToServer(ClientMsg::ListDevices));
                 } else if cmd_str.starts_with("/list_wallets") {
                     // Handle the /list_wallets command
                     let _ = cmd_tx.send(InternalCommand::ListWallets);
                     app.log.push("Listing available wallets...".to_string());
                 } else if cmd_str.starts_with("/propose") {
                     // Handle the propose command as per documentation
-                    // Format: /propose <session_id> <total> <threshold> <peer1,peer2,...>
+                    // Format: /propose <session_id> <total> <threshold> <device1,device2,...>
                     let parts: Vec<_> = cmd_str.splitn(5, ' ').collect();
                     if parts.len() == 5 {
                         let session_id = parts[1].to_string();
@@ -375,7 +375,7 @@ pub fn handle_key_event<C>(
                         }
                     } else {
                         app.log.push(
-                            "Invalid /propose format. Use: /propose <session_id> <total> <threshold> <peer1,peer2,...>"
+                            "Invalid /propose format. Use: /propose <session_id> <total> <threshold> <device1,device2,...>"
                                 .to_string(),
                         );
                     }
@@ -436,8 +436,8 @@ pub fn handle_key_event<C>(
                         .unwrap_or_else(|| std::path::PathBuf::from("."));
                     let path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
                     
-                    // Device name based on peer ID
-                    let device_name = format!("device-{}", app.peer_id);
+                    // Device name based on device ID
+                    let device_name = format!("device-{}", app.device_id);
                     
                     let _ = cmd_tx.send(InternalCommand::InitKeystore {
                         path: path.clone(),
@@ -467,9 +467,9 @@ pub fn handle_key_event<C>(
                         format!("wallet-{}", now.format("%Y-%m-%d-%H%M"))
                     };
                     
-                    // Use peer ID as a simple default password
+                    // Use device ID as a simple default password
                     // In a real app, we might want to generate a secure random password or prompt the user
-                    let password = app.peer_id.clone();
+                    let password = app.device_id.clone();
                     
                     // Create simple description
                     let description = if let Some(session) = &app.session {
@@ -502,7 +502,7 @@ pub fn handle_key_event<C>(
                     
                     app.log.push(format!("Creating wallet '{}' with DKG key share from the completed session", name));
                     app.log.push("⚙️ Storing FROST threshold signature key share in your keystore...".to_string());
-                    app.log.push("🔑 Password set to your peer ID. Remember to back up your keystore!".to_string());
+                    app.log.push("🔑 Password set to your device ID. Remember to back up your keystore!".to_string());
                     } // close the else block
                 } else if cmd_str.starts_with("/acceptSign") {
                     // Handle the /acceptSign command
@@ -520,18 +520,18 @@ pub fn handle_key_event<C>(
                 } else if cmd_str.starts_with("/relay") {
                     let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();
                     if parts.len() == 3 {
-                        let target_peer_id = parts[1].to_string();
+                        let target_device_id = parts[1].to_string();
                         let json_str = parts[2];
                         match serde_json::from_str::<serde_json::Value>(json_str) {
                             Ok(data) => {
                                 let _ = cmd_tx.send(InternalCommand::SendToServer(
                                     ClientMsg::Relay {
-                                        to: target_peer_id.clone(),
+                                        to: target_device_id.clone(),
                                         data,
                                     },
                                 ));
                                 app.log
-                                    .push(format!("Relaying message to {}", target_peer_id));
+                                    .push(format!("Relaying message to {}", target_device_id));
                             }
                             Err(e) => {
                                 app.log.push(format!("Invalid JSON for /relay: {}", e));
@@ -539,36 +539,36 @@ pub fn handle_key_event<C>(
                         }
                     } else {
                         app.log.push(
-                            "Invalid /relay format. Use: /relay <peer_id> <json_data>".to_string(),
+                            "Invalid /relay format. Use: /relay <device_id> <json_data>".to_string(),
                         );
                     }
                 } else if cmd_str.starts_with("/send") {
                     // This command now sends a simple text message via WebRTCMessage::SimpleMessage
                     let parts: Vec<_> = cmd_str.splitn(3, ' ').collect();
                     if parts.len() >= 3 {
-                        let target_peer_id = parts[1].to_string();
+                        let target_device_id = parts[1].to_string();
                         let message_text = parts[2].to_string();
 
                         // Always log the send attempt, regardless of connection state
                         app.log.push(format!(
                             "Attempting to send direct message to {}: {}",
-                            target_peer_id, message_text
+                            target_device_id, message_text
                         ));
 
                         // Send internal command
                         let _ = cmd_tx.send(InternalCommand::SendDirect {
-                            to: target_peer_id.clone(),
+                            to: target_device_id.clone(),
                             message: message_text.clone(),
                         });
 
                         // Log the command for visibility
                         app.log.push(format!(
                             "Command: /send {} {}",
-                            target_peer_id, message_text
+                            target_device_id, message_text
                         ));
                     } else {
                         app.log.push(
-                            "Invalid /send format. Use: /send <peer_id> <message>".to_string(),
+                            "Invalid /send format. Use: /send <device_id> <message>".to_string(),
                         );
                     }
                 } else if !cmd_str.is_empty() {
@@ -610,8 +610,8 @@ pub fn handle_key_event<C>(
                 return Ok(false); // Signal to quit
             }
             KeyCode::Char('s') => {
-                // Save log to <peer_id>.log
-                let filename = format!("{}.log", app.peer_id.trim());
+                // Save log to <device_id>.log
+                let filename = format!("{}.log", app.device_id.trim());
                 match std::fs::write(&filename, app.log.join("\n")) {
                     Ok(_) => app.log.push(format!("Log saved to {}", filename)),
                     Err(e) => app.log.push(format!("Failed to save log: {}", e)),

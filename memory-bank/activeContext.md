@@ -11,17 +11,17 @@
 
 **Key Activities**:
 - Terminal User Interface (TUI) for interactive DKG operations
-- WebRTC-based peer-to-peer communication for decentralized key generation
+- WebRTC-based device-to-device communication for decentralized key generation
 - Multi-curve support implementation (Ed25519 + Secp256k1)
 - Real-time signaling server integration
 
 ### Recent Development Sprint (May-June 2025)
 
 #### Completed Work:
-- ✅ **WebRTC P2P Integration**: Implemented direct peer communication without central servers
+- ✅ **WebRTC P2P Integration**: Implemented direct device communication without central servers
 - ✅ **Terminal UI Enhancement**: Ratatui-based interactive interface for DKG operations
 - ✅ **Multi-Curve Examples**: Both Ethereum (Secp256k1) and Solana (Ed25519) DKG examples
-- ✅ **Signaling Server**: WebSocket-based coordination for peer discovery
+- ✅ **Signaling Server**: WebSocket-based coordination for device discovery
 - ✅ **State Management**: Comprehensive application state tracking across DKG phases
 
 #### Current Work in Progress:
@@ -36,7 +36,7 @@
 **Challenge**: Maintaining stable P2P connections across NAT/firewall boundaries
 - **Current Issue**: Intermittent connection drops during DKG rounds
 - **Solution Approach**: Implementing connection monitoring and automatic reconnection
-- **Files Involved**: `src/utils/peer.rs`, `src/network/webrtc.rs`
+- **Files Involved**: `src/utils/device.rs`, `src/network/webrtc.rs`
 
 ### 2. Cross-Curve Serialization Consistency
 **Challenge**: Ensuring identifier serialization works across Ed25519 and Secp256k1
@@ -45,7 +45,7 @@
 - **Files Involved**: `examples/dkg.rs`, `examples/eth_dkg.rs`, `examples/solana_dkg.rs`
 
 ### 3. State Synchronization
-**Challenge**: Keeping DKG state synchronized across multiple peers
+**Challenge**: Keeping DKG state synchronized across multiple devices
 - **Current Issue**: Complex state transitions during multi-round protocols
 - **Solution Approach**: State machine with clear transition validation
 - **Files Involved**: `src/utils/state.rs`, `src/handlers/dkg_commands.rs`
@@ -54,14 +54,14 @@
 
 ### Major Commits (Last 30 Days)
 1. **WebRTC P2P Implementation** (May 2025)
-   - Added direct peer communication without signaling server dependency
+   - Added direct device communication without signaling server dependency
    - Implemented data channel management for DKG message exchange
    - Enhanced connection state tracking and recovery
 
 2. **Terminal UI Overhaul** (May 2025)
    - Migrated to Ratatui for modern terminal interfaces
    - Added real-time log viewing and state inspection
-   - Implemented interactive command input and peer management
+   - Implemented interactive command input and device management
 
 3. **Multi-Curve Examples** (June 2025)
    - Completed Ethereum DKG example with Secp256k1 curve
@@ -85,7 +85,7 @@ src/handlers/dkg_commands.rs    // DKG operation handlers
 // Networking layer
 src/network/webrtc.rs          // WebRTC P2P implementation
 src/network/websocket.rs       // Signaling server communication
-src/utils/peer.rs              // Peer connection management
+src/utils/device.rs              // Device connection management
 
 // Protocol implementation
 src/protocal/dkg.rs            // FROST DKG protocol handlers
@@ -119,7 +119,7 @@ examples/                      // Current testing via examples
 
 ### Integration Points
 - **MPC Wallet Extension**: Provides WASM-compatible crypto operations
-- **WebRTC Signal Server**: Coordinates peer discovery and initial handshake
+- **WebRTC Signal Server**: Coordinates device discovery and initial handshake
 - **Blockchain Networks**: Direct integration with Solana and Ethereum
 
 ## Performance Metrics
@@ -132,7 +132,7 @@ examples/                      // Current testing via examples
 
 ### Target Performance Goals
 - **DKG Completion**: <2 seconds for typical configurations
-- **Connection Time**: <1 second for peer discovery
+- **Connection Time**: <1 second for device discovery
 - **Resource Usage**: <15MB memory footprint
 - **Throughput**: Support for 10+ concurrent DKG operations
 
@@ -150,7 +150,7 @@ examples/                      // Current testing via examples
 
 ### Month 2: Testing and Validation
 - [ ] Comprehensive integration test suite
-- [ ] Load testing with multiple concurrent peers
+- [ ] Load testing with multiple concurrent devices
 - [ ] Cross-platform compatibility validation
 
 ## Known Issues and Blockers

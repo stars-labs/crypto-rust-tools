@@ -11,7 +11,7 @@ This repository is a collection of Rust command-line utilities for cryptographic
 1. **frost-mpc-cli-node**: Implementation of threshold signatures using the FROST protocol. Provides a CLI node for distributed key generation and signing operations via WebRTC mesh networking.
 2. **ssh-to-solana**: Tool to convert GPG-exported ED25519 SSH keys to Solana addresses.
 3. **yubikey-crpyto**: Library and CLI for constructing and signing Solana and Ethereum transactions using a YubiKey's OpenPGP card.
-4. **webrtc-signal-server**: WebRTC signaling server implementation for peer-to-peer communication.
+4. **webrtc-signal-server**: WebRTC signaling server implementation for device-to-device communication.
 5. **webrtc-signal-server-cloudflare-worker**: WebRTC signaling server implemented as a Cloudflare Worker.
 
 ## Building and Running
@@ -53,13 +53,13 @@ cargo run --release -p webrtc-signal-server
 
 The FROST MPC CLI node implements threshold signatures with distributed key generation. It uses:
 
-1. WebRTC for peer-to-peer communication in a mesh network
+1. WebRTC for device-to-device communication in a mesh network
 2. Terminal UI for user interaction
 3. Supports both Solana (Ed25519) and Ethereum (secp256k1) keys
 4. Signaling server for WebRTC connection establishment
 
 The protocol flow involves:
-- Node registration and peer discovery
+- Node registration and device discovery
 - Session negotiation and WebRTC mesh formation
 - Distributed Key Generation (DKG)
 - Threshold signing
@@ -73,8 +73,8 @@ This library provides integration with YubiKey's OpenPGP card implementation to:
 
 ### WebRTC Signal Server
 
-Handles WebRTC signaling for peer discovery and connection establishment:
-- Peer registration
+Handles WebRTC signaling for device discovery and connection establishment:
+- Device registration
 - Relaying offers, answers, and ICE candidates
 - WebSocket-based communication
 - Available as both a standalone server and Cloudflare Worker implementation
@@ -87,7 +87,7 @@ Handles WebRTC signaling for peer discovery and connection establishment:
 ## Development Notes
 
 1. The codebase heavily uses async/await patterns with Tokio
-2. WebRTC is used for secure peer-to-peer communication
+2. WebRTC is used for secure device-to-device communication
 3. Error handling is done with anyhow/thiserror
 4. The Terminal UI is built with ratatui and crossterm
 5. The frost-mpc-cli-node was recently renamed from solnana-mpc-frost

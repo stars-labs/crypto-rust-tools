@@ -1,12 +1,12 @@
 # webrtc-signal-server
 
-A general WebRTC signal server for peer-to-peer communication, written in Rust and powered by async networking and WebSockets.
+A general WebRTC signal server for device-to-device communication, written in Rust and powered by async networking and WebSockets.
 
 ## Features
 
-- Simple WebSocket-based signaling for WebRTC peers
-- Peer registration and discovery
-- Message relay between peers
+- Simple WebSocket-based signaling for WebRTC devices
+- Device registration and discovery
+- Message relay between devices
 - Asynchronous, scalable, and easy to deploy
 
 ## Usage
@@ -32,30 +32,30 @@ Clients communicate with the server using JSON messages:
 ### Register
 
 ```json
-{ "type": "register", "peer_id": "your-unique-id" }a
+{ "type": "register", "device_id": "your-unique-id" }a
 ```
 
-### List Peers
+### List Devices
 
 ```json
-{ "type": "list_peers" }
+{ "type": "list_devices" }
 ```
 
 ### Relay Message
 
 ```json
-{ "type": "relay", "to": "target-peer-id", "data": { ... } }
+{ "type": "relay", "to": "target-device-id", "data": { ... } }
 ```
 
 ### Server Responses
 
-- List of peers:
+- List of devices:
   ```json
-  { "type": "peers", "peers": ["peer1", "peer2"] }
+  { "type": "devices", "devices": ["device1", "device2"] }
   ```
 - Relayed message:
   ```json
-  { "type": "relay", "from": "peer1", "data": { ... } }
+  { "type": "relay", "from": "device1", "data": { ... } }
   ```
 - Error:
   ```json
