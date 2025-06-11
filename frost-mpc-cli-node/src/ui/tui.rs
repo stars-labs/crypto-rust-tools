@@ -70,11 +70,11 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
                 };
                 // Add color based on status
                 let style = match app.device_statuses.get(p) {
-                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected) => Style::default().fg(Color::Green),
-                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connecting) => Style::default().fg(Color::Yellow),
-                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Failed) |
-                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Disconnected) |
-                    Some(webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Closed) => Style::default().fg(Color::Red),
+                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected) => Style::default().fg(Color::Green),
+                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connecting) => Style::default().fg(Color::Yellow),
+                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed) |
+                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected) |
+                    Some(webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed) => Style::default().fg(Color::Red),
                     _ => Style::default(),
                 };
 
@@ -270,7 +270,7 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         let connected_devices = app.device_statuses
             .iter()
             .filter(|&(_, &status)| 
-                matches!(status, webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected)
+                matches!(status, webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected)
             )
             .count();
             

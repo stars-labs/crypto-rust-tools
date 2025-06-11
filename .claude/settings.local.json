@@ -12,7 +12,8 @@
       "Bash(rm:*)",
       "Bash(cargo run:*)",
       "Bash(cargo build:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }

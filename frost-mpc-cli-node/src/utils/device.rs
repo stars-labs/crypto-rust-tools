@@ -11,9 +11,9 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
-use webrtc::device_connection::RTCDeviceConnection;
-use webrtc::device_connection::configuration::RTCConfiguration;
-use webrtc::device_connection::device_connection_state::RTCDeviceConnectionState;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 use frost_core::Ciphersuite;
 
@@ -78,12 +78,12 @@ pub async fn send_webrtc_message<C>(
 pub async fn create_and_setup_device_connection<C>(
     device_id: String,
     self_device_id: String, // Pass self_device_id
-    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Use InternalCommand
     state_log: Arc<Mutex<AppState<C>>>,
     api: &'static webrtc::api::API,
     config: &'static RTCConfiguration,
-) -> Result<Arc<RTCDeviceConnection>, String> where C: Ciphersuite + Send + Sync + 'static, 
+) -> Result<Arc<RTCPeerConnection>, String> where C: Ciphersuite + Send + Sync + 'static, 
 <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
 <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
 {
@@ -105,7 +105,7 @@ pub async fn create_and_setup_device_connection<C>(
         .push(format!("Creating WebRTC connection object for {}", device_id));
 
     // Use passed-in api and config
-    match api.new_device_connection(config.clone()).await {
+    match api.new_peer_connection(config.clone()).await {
         Ok(pc) => {
             let pc_arc = Arc::new(pc);
 
@@ -192,7 +192,7 @@ pub async fn create_and_setup_device_connection<C>(
             // Fix the setup_device_connection_callbacks function
             // Clone before moving into closure
             let pc_arc_for_state = pc_arc.clone();
-            pc_arc.on_device_connection_state_change(Box::new(move |s: RTCDeviceConnectionState| {
+            pc_arc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
                 // Fix: Use pc_arc directly instead of undefined pc_arc_for_state
                 let pc_arc = pc_arc_for_state.clone();
                 
@@ -212,13 +212,13 @@ pub async fn create_and_setup_device_connection<C>(
 
                 // Handle state changes with improved logic
                 match s {
-                    RTCDeviceConnectionState::Connected => {
+                    RTCPeerConnectionState::Connected => {
                         if let Ok(mut guard) = state_log.try_lock() {
                             guard.log.push(format!("!!! WebRTC CONNECTED with {} !!!", device_id));
                             guard.reconnection_tracker.record_success(&device_id);
                         }
                     }
-                    RTCDeviceConnectionState::Disconnected => {
+                    RTCPeerConnectionState::Disconnected => {
                         // Handle disconnection with more aggressive reconnection
                         if let Ok(mut guard) = state_log.try_lock() {
                             guard.log.push(format!("!!! WebRTC DISCONNECTED with {} !!!", device_id));
@@ -246,7 +246,7 @@ pub async fn create_and_setup_device_connection<C>(
                             }
                         }
                     }
-                    RTCDeviceConnectionState::Failed => {
+                    RTCPeerConnectionState::Failed => {
                         if let Ok(mut guard) = state_log.try_lock() {
                             guard.log.push(format!("!!! WebRTC FAILED with {} !!!", device_id));
                             
@@ -274,17 +274,17 @@ pub async fn create_and_setup_device_connection<C>(
                             }
                         }
                     }
-                    RTCDeviceConnectionState::Connecting | RTCDeviceConnectionState::New => {
+                    RTCPeerConnectionState::Connecting | RTCPeerConnectionState::New => {
                         // We don't need special handling for these states,
                         // they're already logged above when updating device_statuses
                     }
-                    RTCDeviceConnectionState::Closed => {
+                    RTCPeerConnectionState::Closed => {
                         if let Ok(mut guard) = state_log.try_lock() {
                             guard.log.push(format!("WebRTC connection CLOSED with {}", device_id));
                         }
                     }
                     // Handle the Unspecified state to fix the compilation error
-                    RTCDeviceConnectionState::Unspecified => {
+                    RTCPeerConnectionState::Unspecified => {
                         if let Ok(mut guard) = state_log.try_lock() {
                             guard.log.push(format!("WebRTC in UNSPECIFIED state with {}", device_id));
                             // No specific action needed for unspecified state
@@ -594,7 +594,7 @@ pub async fn setup_data_channel_callbacks<C>(
 // Apply any pending ICE candidates for a device
 pub async fn apply_pending_candidates<C>(
     device_id: &str,
-    pc: Arc<RTCDeviceConnection>,
+    pc: Arc<RTCPeerConnection>,
     state_log: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
     // Take the pending candidates for this device

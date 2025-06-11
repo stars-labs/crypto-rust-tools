@@ -6,14 +6,14 @@ use crate::utils::state::InternalCommand;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, mpsc};
 
-use webrtc::device_connection::RTCDeviceConnection;
-use webrtc::device_connection::device_connection_state::RTCDeviceConnectionState;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc_signal_server::ClientMsg as SharedClientMsg;
 
 pub async fn initiate_offers_for_session<C>(
     participants: Vec<String>,
     self_device_id: String,
-    device_connections: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
+    device_connections: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
     state: Arc<Mutex<AppState<C>>>,
 ) where
@@ -58,12 +58,12 @@ pub async fn initiate_offers_for_session<C>(
                 let signaling_state = pc_arc.signaling_state();
 
                 let negotiation_needed = match current_state {
-                    RTCDeviceConnectionState::New
-                    | RTCDeviceConnectionState::Closed
-                    | RTCDeviceConnectionState::Disconnected
-                    | RTCDeviceConnectionState::Failed => true,
+                    RTCPeerConnectionState::New
+                    | RTCPeerConnectionState::Closed
+                    | RTCPeerConnectionState::Disconnected
+                    | RTCPeerConnectionState::Failed => true,
                     _ => match signaling_state {
-                        webrtc::device_connection::signaling_state::RTCSignalingState::Stable => {
+                        webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => {
                             false
                         }
                         _ => false,

@@ -65,6 +65,23 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    
+    // Initialize keystore first, before WebSocket connection
+    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let keystore_path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
+    
+    // Try to initialize the keystore using device_id directly
+    let keystore_result = Keystore::new(&keystore_path, &args.device_id);
+    match &keystore_result {
+        Ok(ks) => {
+            let device_wallets_path = format!("{}/wallets/{}", keystore_path, ks.device_id());
+            println!("Keystore initialized at {} with wallets directory at {}", keystore_path, device_wallets_path);
+        },
+        Err(e) => {
+            println!("Failed to initialize keystore: {}", e);
+        }
+    }
+    
     // Connect to signaling server
     let ws_url = args.webrtc.clone();
     let (ws_stream, _) = connect_async(&ws_url).await?;
@@ -79,13 +96,13 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     match args.curve {
-        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.device_id, ws_sink, ws_stream).await?,
-        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.device_id, ws_sink, ws_stream).await?,
+        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.device_id, keystore_result, ws_sink, ws_stream).await?,
+        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.device_id, keystore_result, ws_sink, ws_stream).await?,
     };
     Ok(())
 }
 
-async fn run_dkg<C>(device_id: String, mut ws_sink: futures_util::stream::SplitSink<
+async fn run_dkg<C>(device_id: String, keystore_result: Result<Keystore, crate::keystore::KeystoreError>, mut ws_sink: futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream< 
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
@@ -103,30 +120,19 @@ where
     // Channel for INTERNAL commands within the CLI app (uses InternalCommand from lib.rs)
     let (internal_cmd_tx, mut internal_cmd_rx) = mpsc::unbounded_channel::<InternalCommand<C>>();
 
-    // Shared state for TUI and networkthin the CLI app (uses InternalCommand from lib.rs)
-    // Specify the Ciphersuite for AppStaterx) = mpsc::unbounded_channel::<InternalCommand>();
-    // Initialize keystore automatically at startup
-    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let keystore_path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
-    let device_name = format!("device-{}", device_id.clone());
-    
-    // Try to initialize the keystore
-    let keystore = match Keystore::new(&keystore_path, &device_name) {
-        Ok(ks) => {
-            let device_wallets_path = format!("{}/wallets/{}", keystore_path, device_name);
-            println!("Keystore initialized at {} with wallets directory at {}", keystore_path, device_wallets_path);
-            Some(Arc::new(ks))
-        },
-        Err(e) => {
-            println!("Failed to initialize keystore: {}", e);
-            None
-        }
+    // Convert keystore result to Option<Arc<Keystore>>
+    let keystore = match keystore_result {
+        Ok(ks) => Some(Arc::new(ks)),
+        Err(_) => None,
     };
     
     // Prepare initial log messages including keystore status
     let mut initial_logs = Vec::new();
-    if keystore.is_some() {
-        let device_wallets_path = format!("{}/wallets/{}", keystore_path, device_name);
+    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let keystore_path = home_dir.join(".frost_keystore").to_string_lossy().into_owned();
+    
+    if let Some(ref ks) = keystore {
+        let device_wallets_path = format!("{}/wallets/{}", keystore_path, ks.device_id());
         initial_logs.push(format!("🔑 Keystore initialized at {}", keystore_path));
         initial_logs.push(format!("📂 Wallet files will be stored in {}", device_wallets_path));
     } else {
@@ -207,50 +213,50 @@ where
         }               
     });
        
-    // TUI setup        //}
+    // TUI setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?; // Keep mut for terminal.backend_mut() later
+    let mut terminal = Terminal::new(backend)?;
 
-    let mut input = String::new(); // Need mut for editing input
-    let mut input_mode = false; // Need mut for toggling input mode
-    //let mut stdout = io::stdout(); // Duplicate removed
-    loop { //e!(stdout, EnterAlternateScreen)?;
-        { //ackend = CrosstermBackend::new(stdout);
-            let app_guard = state.lock().await; // Keep mut for terminal.backend_mut() later
+    let mut input = String::new();
+    let mut input_mode = false;
+    
+    loop {
+        {
+            let app_guard = state.lock().await;
             draw_main_ui(&mut terminal, &app_guard, &input, input_mode)?;
-        } //ut input = String::new(); // Need mut for editing input
-    //let mut input_mode = false; // Need mut for toggling input mode // Duplicate removed
+        }
+        
         // Handle key events with a timeout
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) => { //ck().await;
-                    let mut app_guard = state.lock().await; // input_mode)?;
+                Event::Key(key) => {
+                    let mut app_guard = state.lock().await;
                     let continue_loop = handle_key_event(
                         key,
-                        &mut app_guard, //eout
-                        &mut input, //om_millis(100))? {
+                        &mut app_guard,
+                        &mut input,
                         &mut input_mode,
                         &internal_cmd_tx,
-                    )?; // mut app_guard = state.lock().await;
-                    if !continue_loop { // handle_key_event(
+                    )?;
+                    if !continue_loop {
                         break;
-                    }   //&mut app_guard,
-                }       //&mut input,
+                    }
+                }
                 _ => {} // Ignore other events like Mouse, Resize etc.
-            }           //&internal_cmd_tx,
-        }           //)?;
+            }
+        }
         // No sleep needed - event::poll has a timeout already
-    }                   //break;
-                    //} // Duplicate removed
+    }
+    
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?; //esize etc.
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
-}       // No sleep needed - event::poll has a timeout already
-    //} // Duplicate removed
+}
+
 /// Handler for internal commands sent via MPSC channel
 
 mod handlers;
@@ -258,11 +264,11 @@ use handlers::*;
 use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, handle_create_wallet};
 
 async fn handle_internal_command<C>(
-    cmd: InternalCommand<C>, //kend_mut(), LeaveAlternateScreen)?;
+    cmd: InternalCommand<C>,
     state: Arc<Mutex<AppState<C>>>,
     self_device_id: String,
-    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>, // Fix: add parameter here
-    ws_sink: &mut futures_util::stream::SplitSink< // Add ws_sink parameter
+    internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
+    ws_sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
@@ -388,7 +394,7 @@ async fn check_and_send_mesh_ready<C>( //all data channels are open and send mes
     let current_mesh_status_debug: MeshStatus;
 
     {
-        let mut state_guard = state.lock().await;
+        let state_guard = state.lock().await;
         self_device_id_debug = state_guard.device_id.clone();
         current_mesh_status_debug = state_guard.mesh_status.clone(); // Clone for logging
         if let Some(session) = &state_guard.session {

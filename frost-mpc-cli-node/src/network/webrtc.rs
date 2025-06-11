@@ -4,8 +4,8 @@ use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
-use webrtc::device_connection::configuration::RTCConfiguration;
-use webrtc::device_connection::policy::{
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::policy::{
     bundle_policy::RTCBundlePolicy, ice_transport_policy::RTCIceTransportPolicy,
     rtcp_mux_policy::RTCRtcpMuxPolicy,
 };
@@ -18,7 +18,7 @@ use std::{collections::HashMap,};
 use tokio::sync::{Mutex, mpsc};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::device_connection::RTCDeviceConnection;
+use webrtc::peer_connection::RTCPeerConnection;
 
 use webrtc_signal_server::{ClientMsg as SharedClientMsg};
 // Add display-related imports for better status handling
@@ -85,7 +85,7 @@ pub async fn handle_webrtc_signal<C>(
     state: Arc<Mutex<AppState<C>>>,
     self_device_id: String,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
-    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
 ) where C: Ciphersuite + Send + Sync + 'static, 
 <<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
 <<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
@@ -166,13 +166,13 @@ pub async fn handle_webrtc_signal<C>(
 pub async fn handle_webrtc_offer<C>(
     from_device_id: &str,
     offer_info: SDPInfo, // Add offer_info parameter
-    pc: Arc<RTCDeviceConnection>,
+    pc: Arc<RTCPeerConnection>,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
 ) where C: Ciphersuite {    
     let pc_to_use = pc.clone(); // Start with the assumption we use the passed pc
 
-    match webrtc::device_connection::sdp::session_description::RTCSessionDescription::offer(
+    match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
         offer_info.sdp, // Use offer_info.sdp here
     ) {
         Ok(offer_sdp) => {
@@ -262,7 +262,7 @@ pub async fn handle_webrtc_offer<C>(
 pub async fn handle_webrtc_answer<C>(
     from_device_id: &str,
     answer_info: SDPInfo,
-    pc: Arc<RTCDeviceConnection>,
+    pc: Arc<RTCPeerConnection>,
     state: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
     state
@@ -270,7 +270,7 @@ pub async fn handle_webrtc_answer<C>(
         .await
         .log
         .push(format!("Processing answer from {}...", from_device_id));
-    match webrtc::device_connection::sdp::session_description::RTCSessionDescription::answer(
+    match webrtc::peer_connection::sdp::session_description::RTCSessionDescription::answer(
         answer_info.sdp,
     ) {
         Ok(answer) => {
@@ -301,7 +301,7 @@ pub async fn handle_webrtc_answer<C>(
 pub async fn handle_webrtc_candidate<C>(
     from_device_id: &str,
     candidate_info: CandidateInfo,
-    pc: Arc<RTCDeviceConnection>,
+    pc: Arc<RTCPeerConnection>,
     state: Arc<Mutex<AppState<C>>>,
 ) where C: Ciphersuite {
     state
@@ -318,10 +318,10 @@ pub async fn handle_webrtc_candidate<C>(
     // Check if remote description is set before adding ICE candidate
     let current_state = pc.signaling_state();
     let remote_description_set = match current_state {
-        webrtc::device_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
-        | webrtc::device_connection::signaling_state::RTCSignalingState::HaveLocalPranswer
-        | webrtc::device_connection::signaling_state::RTCSignalingState::HaveRemotePranswer
-        | webrtc::device_connection::signaling_state::RTCSignalingState::Stable => true, //wer
+        webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemoteOffer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveLocalPranswer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::HaveRemotePranswer
+        | webrtc::peer_connection::signaling_state::RTCSignalingState::Stable => true,
         _ => false,
     };
     if remote_description_set {

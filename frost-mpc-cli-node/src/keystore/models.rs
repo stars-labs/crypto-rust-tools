@@ -20,37 +20,37 @@ fn current_timestamp() -> u64 {
 pub struct WalletInfo {
     /// Unique identifier for this wallet (UUID)
     pub wallet_id: String,
-    
+
     /// User-friendly name for the wallet
     pub name: String,
-    
+
     /// Type of cryptographic curve used ("secp256k1" or "ed25519")
     pub curve_type: String,
-    
+
     /// Blockchain the wallet is intended for ("ethereum" or "solana")
     pub blockchain: String,
-    
+
     /// Public blockchain address derived from the group public key
     pub public_address: String,
-    
+
     /// Minimum number of participants required to sign (threshold)
     pub threshold: u16,
-    
+
     /// Total number of participants in the wallet
     pub total_participants: u16,
-    
+
     /// Unix timestamp when the wallet was created
     pub created_at: u64,
-    
+
     /// Serialized group public key for this wallet
     pub group_public_key: String,
-    
+
     /// Devices that have shares for this wallet
     pub devices: Vec<DeviceInfo>,
-    
+
     /// User-defined tags for organizing wallets
     pub tags: Vec<String>,
-    
+
     /// Optional description for the wallet
     pub description: Option<String>,
 }
@@ -88,7 +88,11 @@ impl WalletInfo {
     /// Adds a device to this wallet
     pub fn add_device(&mut self, device: DeviceInfo) {
         // Replace if the device ID already exists, otherwise add
-        if let Some(idx) = self.devices.iter().position(|d| d.device_id == device.device_id) {
+        if let Some(idx) = self
+            .devices
+            .iter()
+            .position(|d| d.device_id == device.device_id)
+        {
             self.devices[idx] = device;
         } else {
             self.devices.push(device);
@@ -101,32 +105,23 @@ impl WalletInfo {
 pub struct DeviceInfo {
     /// Unique identifier for this device
     pub device_id: String,
-    
+
     /// User-friendly name for the device
     pub name: String,
-    
-    /// Device ID used in the FROST protocol
-    pub device_id: String,
-    
+
     /// Serialized FROST identifier
     pub identifier: String,
-    
+
     /// Last time this device was seen/used
     pub last_seen: u64,
 }
 
 impl DeviceInfo {
     /// Creates a new device info
-    pub fn new(
-        device_id: String,
-        name: String,
-        device_id: String,
-        identifier: String,
-    ) -> Self {
+    pub fn new(device_id: String, name: String, identifier: String) -> Self {
         Self {
             device_id,
             name,
-            device_id,
             identifier,
             last_seen: current_timestamp(),
         }
@@ -143,10 +138,10 @@ impl DeviceInfo {
 pub struct KeystoreIndex {
     /// Keystore format version
     pub version: u8,
-    
+
     /// List of all wallets
     pub wallets: Vec<WalletInfo>,
-    
+
     /// List of all devices
     pub devices: Vec<DeviceInfo>,
 }
@@ -164,7 +159,11 @@ impl KeystoreIndex {
     /// Adds or updates a wallet in the index
     pub fn add_wallet(&mut self, wallet: WalletInfo) {
         // Replace if wallet ID already exists, otherwise add
-        if let Some(idx) = self.wallets.iter().position(|w| w.wallet_id == wallet.wallet_id) {
+        if let Some(idx) = self
+            .wallets
+            .iter()
+            .position(|w| w.wallet_id == wallet.wallet_id)
+        {
             self.wallets[idx] = wallet;
         } else {
             self.wallets.push(wallet);
@@ -174,7 +173,11 @@ impl KeystoreIndex {
     /// Adds or updates a device in the index
     pub fn add_device(&mut self, device: DeviceInfo) {
         // Replace if device ID already exists, otherwise add
-        if let Some(idx) = self.devices.iter().position(|d| d.device_id == device.device_id) {
+        if let Some(idx) = self
+            .devices
+            .iter()
+            .position(|d| d.device_id == device.device_id)
+        {
             self.devices[idx] = device;
         } else {
             self.devices.push(device);

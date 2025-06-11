@@ -2,7 +2,7 @@ use frost_core::Ciphersuite;
 use serde::{Deserialize, Serialize};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::device_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 // Import the DKG Package type
 // Import round1 and round2 packages
 
@@ -93,7 +93,7 @@ pub enum WebRTCMessage<C: Ciphersuite> {
         session_id: String,
         device_id: String,
     },
-    
+
     // --- Signing Messages ---
     /// Transaction signing request
     SigningRequest {
@@ -101,33 +101,33 @@ pub enum WebRTCMessage<C: Ciphersuite> {
         transaction_data: String, // Hex-encoded transaction data
         required_signers: usize,
     },
-    
+
     /// Acceptance of a signing request
     SigningAcceptance {
         signing_id: String,
         accepted: bool,
     },
-    
+
     /// Selected signers for threshold signing
     SignerSelection {
         signing_id: String,
         selected_signers: Vec<frost_core::Identifier<C>>,
     },
-    
+
     /// FROST signing commitments (Round 1)
     SigningCommitment {
         signing_id: String,
         sender_identifier: frost_core::Identifier<C>,
         commitment: frost_core::round1::SigningCommitments<C>,
     },
-    
+
     /// FROST signature shares (Round 2)
     SignatureShare {
         signing_id: String,
         sender_identifier: frost_core::Identifier<C>,
         share: frost_core::round2::SignatureShare<C>,
     },
-    
+
     /// Final aggregated signature
     AggregatedSignature {
         signing_id: String,

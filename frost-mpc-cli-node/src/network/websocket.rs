@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 
-use webrtc::device_connection::RTCDeviceConnection;
+use webrtc::peer_connection::RTCPeerConnection;
 
 use webrtc_signal_server::ServerMsg;
 // Add display-related imports for better status handling
@@ -21,7 +21,7 @@ pub async fn handle_websocket_message<C>(
     state: Arc<Mutex<AppState<C>>>,
     self_device_id: String,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
-    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
+    device_connections_arc: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     ws_sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,

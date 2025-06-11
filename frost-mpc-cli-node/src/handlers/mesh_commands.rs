@@ -6,7 +6,7 @@ use frost_core::Ciphersuite;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
-use webrtc::device_connection::device_connection_state::RTCDeviceConnectionState;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 /// Handles reporting that a channel is open
 pub async fn handle_report_channel_open<C>(
@@ -48,7 +48,7 @@ pub async fn handle_report_channel_open<C>(
                 local_self_device_id, device_id_for_main_task, session_exists_at_dispatch
             ));
 
-            guard.device_statuses.insert(device_id_for_main_task.clone(), RTCDeviceConnectionState::Connected);
+            guard.device_statuses.insert(device_id_for_main_task.clone(), RTCPeerConnectionState::Connected);
             log_messages_for_task.push(format!(
                 "[ReportChannelOpenTask-{}] Set device status for {} to Connected.",
                 local_self_device_id, device_id_for_main_task

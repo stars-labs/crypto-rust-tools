@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use frost_core::Ciphersuite;
 use serde_json::json;
 
 use crate::{
