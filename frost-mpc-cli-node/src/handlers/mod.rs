@@ -11,7 +11,6 @@ pub mod session_commands;
 pub mod signing_commands;
 
 pub use dkg_commands::*;
-pub use keystore_commands::*;
 pub use mesh_commands::*;
 pub use send_commands::*;
 pub use session_commands::*;

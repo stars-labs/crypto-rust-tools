@@ -8,8 +8,6 @@ mod encryption;
 mod models;
 mod storage;
 
-pub use encryption::{encrypt_data, decrypt_data};
-pub use models::{DeviceInfo, KeystoreIndex, WalletInfo};
 pub use storage::Keystore;
 
 /// Error types that can occur during keystore operations

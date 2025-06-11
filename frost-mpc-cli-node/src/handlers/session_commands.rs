@@ -23,7 +23,8 @@ async fn check_and_auto_mesh_ready<C>(
         // Check if we have an active session
         if let Some(session) = &state_guard.session {
             // Condition 1: All session responses received (all participants accepted)
-            let all_responses_received = session.accepted_devices.len() == session.participants.len();
+            let all_responses_received =
+                session.accepted_devices.len() == session.participants.len();
 
             // Condition 2: All WebRTC connections to session devices are connected
             let session_devices_except_self: Vec<String> = session
@@ -35,7 +36,7 @@ async fn check_and_auto_mesh_ready<C>(
 
             let all_webrtc_connected = session_devices_except_self.iter().all(|device_id| {
                 state_guard.device_statuses.get(device_id)
-                    .map(|status| matches!(status, webrtc::device_connection::device_connection_state::RTCDeviceConnectionState::Connected))
+                    .map(|status| matches!(status, webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected))
                     .unwrap_or(false)
             });
 
@@ -443,7 +444,9 @@ pub async fn handle_process_session_response<C>(
                         .find(|i| i.session_id == response.session_id)
                     {
                         if !invite_to_update.accepted_devices.contains(&from_device_id) {
-                            invite_to_update.accepted_devices.push(from_device_id.clone());
+                            invite_to_update
+                                .accepted_devices
+                                .push(from_device_id.clone());
                             log_msgs.push(format!(
                                 "Recorded early acceptance from {} for pending invite '{}'. Invite accepted_devices count: {}.",
                                 from_device_id, invite_to_update.session_id, invite_to_update.accepted_devices.len()

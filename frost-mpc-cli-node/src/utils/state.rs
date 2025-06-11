@@ -13,8 +13,8 @@ use std::time::{Duration, Instant}; // Import Duration and Instant
 use tokio::sync::Mutex; // Use TokioMutex for async WebRTC state
 use webrtc::{
     data_channel::RTCDataChannel, ice_transport::ice_candidate::RTCIceCandidateInit,
-    device_connection::RTCDeviceConnection,
-    device_connection::device_connection_state::RTCDeviceConnectionState,
+    peer_connection::RTCPeerConnection,
+    peer_connection::peer_connection_state::RTCPeerConnectionState,
 }; // Keep SessionInfo import
 
 use std::{
@@ -35,10 +35,10 @@ pub enum InternalCommand<C: Ciphersuite> {
         path: String,
         device_name: String,
     },
-    
+
     /// List available wallets
     ListWallets,
-    
+
     /// Create a new wallet from DKG results
     CreateWallet {
         name: String,
@@ -235,21 +235,51 @@ impl<C: Ciphersuite> SigningState<C> {
     pub fn display_status(&self) -> String {
         match self {
             SigningState::Idle => "Idle".to_string(),
-            SigningState::AwaitingAcceptance { signing_id, required_signers, accepted_signers, .. } => {
-                format!("Awaiting Acceptance ({}): {}/{} signers", signing_id, accepted_signers.len(), required_signers)
-            },
-            SigningState::CommitmentPhase { signing_id, commitments, selected_signers, .. } => {
-                format!("Commitment Phase ({}): {}/{} commitments", signing_id, commitments.len(), selected_signers.len())
-            },
-            SigningState::SharePhase { signing_id, shares, selected_signers, .. } => {
-                format!("Share Phase ({}): {}/{} shares", signing_id, shares.len(), selected_signers.len())
-            },
+            SigningState::AwaitingAcceptance {
+                signing_id,
+                required_signers,
+                accepted_signers,
+                ..
+            } => {
+                format!(
+                    "Awaiting Acceptance ({}): {}/{} signers",
+                    signing_id,
+                    accepted_signers.len(),
+                    required_signers
+                )
+            }
+            SigningState::CommitmentPhase {
+                signing_id,
+                commitments,
+                selected_signers,
+                ..
+            } => {
+                format!(
+                    "Commitment Phase ({}): {}/{} commitments",
+                    signing_id,
+                    commitments.len(),
+                    selected_signers.len()
+                )
+            }
+            SigningState::SharePhase {
+                signing_id,
+                shares,
+                selected_signers,
+                ..
+            } => {
+                format!(
+                    "Share Phase ({}): {}/{} shares",
+                    signing_id,
+                    shares.len(),
+                    selected_signers.len()
+                )
+            }
             SigningState::Complete { signing_id, .. } => {
                 format!("Complete ({})", signing_id)
-            },
+            }
             SigningState::Failed { signing_id, reason } => {
                 format!("Failed ({}): {}", signing_id, reason)
-            },
+            }
         }
     }
 
@@ -266,11 +296,11 @@ impl<C: Ciphersuite> SigningState<C> {
     pub fn get_signing_id(&self) -> Option<&str> {
         match self {
             SigningState::Idle => None,
-            SigningState::AwaitingAcceptance { signing_id, .. } |
-            SigningState::CommitmentPhase { signing_id, .. } |
-            SigningState::SharePhase { signing_id, .. } |
-            SigningState::Complete { signing_id, .. } |
-            SigningState::Failed { signing_id, .. } => Some(signing_id),
+            SigningState::AwaitingAcceptance { signing_id, .. }
+            | SigningState::CommitmentPhase { signing_id, .. }
+            | SigningState::SharePhase { signing_id, .. }
+            | SigningState::Complete { signing_id, .. }
+            | SigningState::Failed { signing_id, .. } => Some(signing_id),
         }
     }
 }
@@ -323,9 +353,9 @@ pub struct AppState<C: Ciphersuite> {
     pub session: Option<SessionInfo>,
     pub invites: Vec<SessionInfo>, // Store full SessionInfo for invites
     // WebRTC related state (needs TokioMutex for async access)
-    pub device_connections: Arc<Mutex<HashMap<String, Arc<RTCDeviceConnection>>>>,
+    pub device_connections: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
     // TUI related state (can use StdMutex)
-    pub device_statuses: HashMap<String, RTCDeviceConnectionState>,
+    pub device_statuses: HashMap<String, RTCPeerConnectionState>,
     pub reconnection_tracker: ReconnectionTracker,
     // Perfect Negotiation Flags
     pub making_offer: HashMap<String, bool>,
@@ -354,11 +384,11 @@ pub struct AppState<C: Ciphersuite> {
     pub pending_mesh_ready_signals: Vec<String>,
     // Explicit flag to track if THIS node has sent its own mesh ready signal
     pub own_mesh_ready_sent: bool,
-    
+
     // --- Keystore State ---
     pub keystore: Option<Arc<crate::keystore::Keystore>>,
     pub current_wallet_id: Option<String>,
-    
+
     // --- Signing State ---
     pub signing_state: SigningState<C>,
 }
