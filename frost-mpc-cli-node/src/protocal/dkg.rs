@@ -750,3 +750,7 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "dkg_test.rs"]
+mod tests;

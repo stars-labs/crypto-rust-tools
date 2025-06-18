@@ -7,8 +7,15 @@
 mod encryption;
 mod models;
 mod storage;
+mod extension_compat;
 
 pub use storage::Keystore;
+pub use models::{WalletInfo, DeviceInfo};
+pub use extension_compat::{
+    ExtensionKeyShareData, ExtensionWalletMetadata,
+    ExtensionEncryptedKeyShare, ExtensionKeystoreBackup, ExtensionBackupWallet,
+    encrypt_for_extension, decrypt_from_extension, WalletData
+};
 
 /// Error types that can occur during keystore operations
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +24,7 @@ pub enum KeystoreError {
     IoError(#[from] std::io::Error),
 
     #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    SerializationError(String),
     
     #[error("Encryption error: {0}")]
     EncryptionError(String),

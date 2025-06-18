@@ -262,6 +262,7 @@ where
 mod handlers;
 use handlers::*;
 use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, handle_create_wallet};
+use handlers::extension_commands::{handle_export_extension_backup, handle_import_extension_backup, handle_convert_dkg_to_extension};
 
 async fn handle_internal_command<C>(
     cmd: InternalCommand<C>,
@@ -341,6 +342,17 @@ C: Ciphersuite + Send + Sync + 'static,
             handle_create_wallet(name, description, password, tags, state).await;
         }
         
+        // --- Extension Compatibility Commands ---
+        InternalCommand::ExportExtensionBackup { wallet_id, password, output_path } => {
+            handle_export_extension_backup(wallet_id, password, output_path, state).await;
+        }
+        InternalCommand::ImportExtensionBackup { backup_path, password, new_password } => {
+            handle_import_extension_backup(backup_path, password, new_password, state).await;
+        }
+        InternalCommand::ConvertDkgToExtension { password, output_path } => {
+            handle_convert_dkg_to_extension(password, output_path, state).await;
+        }
+        
         // --- DKG Commands ---
         InternalCommand::FinalizeDkg => {
             handle_finalize_dkg(state).await;
@@ -377,101 +389,3 @@ C: Ciphersuite + Send + Sync + 'static,
     }
 }
  
-async fn check_and_send_mesh_ready<C>( //all data channels are open and send mesh_ready if needed
-   state: Arc<Mutex<AppState<C>>>,
-    cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
-) where C: Ciphersuite + Send + Sync + 'static, 
-<<C as Ciphersuite>::Group as frost_core::Group>::Element: Send + Sync, 
-<<<C as Ciphersuite>::Group as frost_core::Group>::Field as frost_core::Field>::Scalar: Send + Sync,     
-{
-    let mut all_channels_open_debug = false;
-    let mut all_responses_received_debug = false;
-    let mut already_sent_own_ready_debug = false;
-    let mut session_exists_debug = false;
-    let mut participants_to_check_debug: Vec<String> = Vec::new();
-    let mut data_channels_keys_debug: Vec<String> = Vec::new();
-    let self_device_id_debug: String;
-    let current_mesh_status_debug: MeshStatus;
-
-    {
-        let state_guard = state.lock().await;
-        self_device_id_debug = state_guard.device_id.clone();
-        current_mesh_status_debug = state_guard.mesh_status.clone(); // Clone for logging
-        if let Some(session) = &state_guard.session {
-            session_exists_debug = true;
-            let device_id_clone = state_guard.device_id.clone(); // Clone to avoid borrow issues
-            participants_to_check_debug = session
-                .participants
-                .iter()
-                .filter(|p| **p != device_id_clone)
-                .cloned()
-                .collect();
-            
-            data_channels_keys_debug = state_guard.data_channels.keys().cloned().collect();
-
-            all_channels_open_debug = participants_to_check_debug
-                .iter()
-                .all(|p| state_guard.data_channels.contains_key(p));
-
-            // Check if all session responses received (all participants accepted)
-            all_responses_received_debug = session.accepted_devices.len() == session.participants.len();
-            
-            // Clone values before the match to avoid borrowing conflicts
-            let current_session_size = session.participants.len();
-            
-            // Check if we've already sent our own mesh ready signal using explicit tracking
-            // This replaces the flawed logic that incorrectly inferred from mesh status
-            already_sent_own_ready_debug = state_guard.own_mesh_ready_sent;
-        }
-    } // state_guard is dropped
-
-    // Log outside the lock to minimize lock holding time
-    let mut log_guard = state.lock().await;
-    log_guard.log.push(format!(
-        "[MeshCheck-{}] Status: {:?}, SessionExists: {}, ParticipantsToCheck: {:?}, OpenDCKeys: {:?}, AllOpenCalc: {}, AllResponsesReceivedCalc: {}, AlreadySentCalc: {}",
-        self_device_id_debug,
-        current_mesh_status_debug, // Log current status
-        session_exists_debug,
-        participants_to_check_debug,
-        data_channels_keys_debug,
-        all_channels_open_debug,
-        all_responses_received_debug,
-        already_sent_own_ready_debug
-    ));
-    drop(log_guard);
-
-
-    if session_exists_debug && all_channels_open_debug && all_responses_received_debug && !already_sent_own_ready_debug {
-        // Re-acquire lock for the specific log message and subsequent command sending
-        state 
-            .lock()
-            .await
-            .log
-            .push(format!("[MeshCheck-{}] All local data channels open AND all session responses received! Signaling to process own mesh readiness...", self_device_id_debug));
-        
-        if let Err(e) = cmd_tx.send(InternalCommand::SendOwnMeshReadySignal) {
-            // Clone necessary items for the async logging task
-            let state_clone_for_err = state.clone(); 
-            let self_device_id_err_clone = self_device_id_debug.clone();
-            tokio::spawn(async move { 
-                state_clone_for_err
-                    .lock()
-                    .await
-                    .log
-                    .push(format!("[MeshCheck-{}] Failed to send SendOwnMeshReadySignal command: {}", self_device_id_err_clone, e));
-            });   
-        }
-    } else {
-        // Log reason for not sending, re-acquiring lock briefly
-        let mut final_log_guard = state.lock().await;
-        if !session_exists_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] No active session, cannot send SendOwnMeshReadySignal.", self_device_id_debug));
-        } else if !all_channels_open_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Not all channels open yet (expected {:?}, have {:?}), cannot send SendOwnMeshReadySignal.", self_device_id_debug, participants_to_check_debug, data_channels_keys_debug));
-        } else if !all_responses_received_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Not all session responses received yet, cannot send SendOwnMeshReadySignal.", self_device_id_debug));
-        } else if already_sent_own_ready_debug {
-            final_log_guard.log.push(format!("[MeshCheck-{}] Already sent own ready signal (Status: {:?}), not sending again.", self_device_id_debug, current_mesh_status_debug));
-        }
-    }
-}

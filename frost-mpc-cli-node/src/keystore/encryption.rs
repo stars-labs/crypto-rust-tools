@@ -11,8 +11,7 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2, Params,
 };
-use rand::thread_rng;
-use rand::RngCore;
+use rand::{rng, RngCore};
 
 use crate::keystore::KeystoreError;
 
@@ -27,7 +26,7 @@ const KEY_LEN: usize = 32; // 256 bits
 pub fn encrypt_data(data: &[u8], password: &str) -> crate::keystore::Result<Vec<u8>> {
     // Generate a random salt
     let mut salt = [0u8; SALT_LEN];
-    thread_rng().fill_bytes(&mut salt);
+    rng().fill_bytes(&mut salt);
     let salt_string = SaltString::encode_b64(&salt)
         .map_err(|e| KeystoreError::General(format!("Salt encoding error: {}", e)))?;
 
@@ -48,7 +47,7 @@ pub fn encrypt_data(data: &[u8], password: &str) -> crate::keystore::Result<Vec<
 
     // Generate a random nonce
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    thread_rng().fill_bytes(&mut nonce_bytes);
+    rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt the data
@@ -107,3 +106,7 @@ pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> crate::keystore::R
 
     Ok(plaintext)
 }
+
+#[cfg(test)]
+#[path = "encryption_test.rs"]
+mod tests;

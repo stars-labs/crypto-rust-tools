@@ -272,3 +272,7 @@ impl Keystore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "storage_test.rs"]
+mod tests;

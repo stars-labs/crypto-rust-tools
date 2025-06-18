@@ -1207,3 +1207,7 @@ pub async fn handle_initiate_frost_round1<C>(
         ));
     });
 }
+
+#[cfg(test)]
+#[path = "signing_commands_test.rs"]
+mod tests;

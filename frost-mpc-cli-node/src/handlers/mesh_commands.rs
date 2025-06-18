@@ -1,7 +1,6 @@
 use crate::utils::state::{AppState, InternalCommand, MeshStatus};
-use crate::utils::device::send_webrtc_message;
+use crate::utils::device::{send_webrtc_message, check_and_send_mesh_ready};
 use crate::protocal::signal::WebRTCMessage;
-use crate::check_and_send_mesh_ready;
 use frost_core::Ciphersuite;
 use std::collections::HashSet;
 use std::sync::Arc;

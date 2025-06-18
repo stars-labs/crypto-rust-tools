@@ -1,0 +1,8 @@
+{
+  "id": "fe41dfae-5b7e-4ed1-9bdd-328e6445313b",
+  "title": "FROST MPC Project Overview",
+  "details": "FROST MPC CLI Wallet Project\n- This is a CLI MPC wallet using FROST protocol\n- Uses NixOS as development system with nix flake for dependencies\n- Written in Rust for core logic in solana-mpc-frost folder\n- Supports both Ethereum (secp256k1) and Solana (ed25519) blockchains\n- Currently lacks proper keystore loading logic\n- User wants to implement account-based wallet system similar to browser extensions",
+  "category": "project_overview",
+  "dateCreated": "2025-06-15T05:12:51.071Z",
+  "dateUpdated": "2025-06-15T05:12:51.071Z"
+}

@@ -504,6 +504,54 @@ pub fn handle_key_event<C>(
                     app.log.push("⚙️ Storing FROST threshold signature key share in your keystore...".to_string());
                     app.log.push("🔑 Password set to your device ID. Remember to back up your keystore!".to_string());
                     } // close the else block
+                } else if cmd_str.starts_with("/export_extension") {
+                    // Handle the /export_extension command
+                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let wallet_id = parts[1].to_string();
+                        let output_path = parts[2..].join(" "); // Handle paths with spaces
+                        let password = app.device_id.clone(); // Use device ID as password
+                        
+                        let _ = cmd_tx.send(InternalCommand::ExportExtensionBackup {
+                            wallet_id: wallet_id.clone(),
+                            password,
+                            output_path: output_path.clone(),
+                        });
+                        app.log.push(format!("Exporting wallet {} to Chrome extension format at: {}", wallet_id, output_path));
+                    } else {
+                        app.log.push("Invalid /export_extension format. Use: /export_extension <wallet_id> <output_path>".to_string());
+                    }
+                } else if cmd_str.starts_with("/import_extension") {
+                    // Handle the /import_extension command
+                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let backup_path = parts[1..].join(" "); // Handle paths with spaces
+                        let password = app.device_id.clone(); // Use device ID as password for both
+                        
+                        let _ = cmd_tx.send(InternalCommand::ImportExtensionBackup {
+                            backup_path: backup_path.clone(),
+                            password: password.clone(),
+                            new_password: password,
+                        });
+                        app.log.push(format!("Importing Chrome extension backup from: {}", backup_path));
+                    } else {
+                        app.log.push("Invalid /import_extension format. Use: /import_extension <backup_path>".to_string());
+                    }
+                } else if cmd_str.starts_with("/convert_dkg") {
+                    // Handle the /convert_dkg command
+                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let output_path = parts[1..].join(" "); // Handle paths with spaces
+                        let password = app.device_id.clone(); // Use device ID as password
+                        
+                        let _ = cmd_tx.send(InternalCommand::ConvertDkgToExtension {
+                            password,
+                            output_path: output_path.clone(),
+                        });
+                        app.log.push(format!("Converting current DKG session to Chrome extension format at: {}", output_path));
+                    } else {
+                        app.log.push("Invalid /convert_dkg format. Use: /convert_dkg <output_path>".to_string());
+                    }
                 } else if cmd_str.starts_with("/acceptSign") {
                     // Handle the /acceptSign command
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();

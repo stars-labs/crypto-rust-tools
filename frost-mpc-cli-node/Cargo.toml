@@ -3,6 +3,10 @@ name = "frost-mpc-cli-node"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "frost_mpc_cli_node"
+path = "src/lib.rs"
+
 [dependencies]
 frost-ed25519 = "2.1.0"
 frost-secp256k1 = "2.1.0"
@@ -40,7 +44,12 @@ uuid = { version = "1.8", features = ["v4", "serde"] }
 aes-gcm = "0.10.3"
 argon2 = "0.5.2"
 dirs = "5.0.1"
+base64 = "0.21"
+pbkdf2 = "0.12"
 
+
+[dev-dependencies]
+tempfile = "3.8"
 
 [[bin]]
 name = "cli_node"

@@ -1,0 +1,8 @@
+{
+  "id": "404a4683-d101-4d36-9e23-34aec16dd5a6",
+  "title": "Load Wallet Implementation Analysis",
+  "details": "FROST MPC Keystore Load Wallet Implementation Analysis\n\nCURRENT SITUATION:\n1. Keystore infrastructure exists with create, list, save wallet functionality\n2. Missing load_wallet functionality to load existing wallets into memory for signing\n3. User wants account-based wallet system similar to browser extensions\n4. Documentation shows /load_wallet command exists but no implementation found\n\nMISSING COMPONENTS:\n1. LoadWallet InternalCommand variant in utils/state.rs\n2. handle_load_wallet function in handlers/keystore_commands.rs  \n3. CLI parsing for /load_wallet in ui/tui.rs\n4. Command handler mapping in cli_node.rs\n\nREQUIRED IMPLEMENTATION:\n1. Load wallet decrypts key share from file using password\n2. Populate AppState with DKG data (key_package, group_public_key, etc.)\n3. Set DKG state to Complete so signing can work\n4. Set current_wallet_id for account tracking\n\nKEY FILES TO MODIFY:\n- frost-mpc-cli-node/src/utils/state.rs\n- frost-mpc-cli-node/src/handlers/keystore_commands.rs\n- frost-mpc-cli-node/src/ui/tui.rs\n- frost-mpc-cli-node/src/cli_node.rs",
+  "category": "implementation_analysis",
+  "dateCreated": "2025-06-15T05:13:20.233Z",
+  "dateUpdated": "2025-06-15T05:13:20.233Z"
+}

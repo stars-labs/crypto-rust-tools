@@ -23,3 +23,7 @@ futures-util = "0.3"
 [lib]
 name = "webrtc_signal_server"
 path = "src/lib.rs"
+
+[[bin]]
+name = "webrtc-signal-server"
+path = "src/main.rs"

@@ -46,6 +46,26 @@ pub enum InternalCommand<C: Ciphersuite> {
         password: String,
         tags: Vec<String>,
     },
+    
+    /// Export wallet to Chrome extension format
+    ExportExtensionBackup {
+        wallet_id: String,
+        password: String,
+        output_path: String,
+    },
+    
+    /// Import wallet from Chrome extension format
+    ImportExtensionBackup {
+        backup_path: String,
+        password: String,
+        new_password: String,
+    },
+    
+    /// Convert current DKG session to Chrome extension format
+    ConvertDkgToExtension {
+        password: String,
+        output_path: String,
+    },
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
 
