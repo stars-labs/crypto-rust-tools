@@ -299,6 +299,14 @@ where
     }
 }
 
+// Public wrapper for generating blockchain addresses from group public key
+pub fn generate_public_key_addresses<C>(guard: &mut AppState<C>, group_public_key: &PublicKeyPackage<C>)
+where
+    C: Ciphersuite,
+{
+    generate_public_key(guard, group_public_key);
+}
+
 // Helper function to call the solana module
 fn generate_public_key<C>(guard: &mut AppState<C>, group_public_key: &PublicKeyPackage<C>)
 where
@@ -663,7 +671,8 @@ where
                     |s| s.session_id.clone()
                 );
                 
-                let name = format!("wallet-{}", session_id);
+                // Use session_id as both the wallet name and filename
+                let name = session_id.clone();
                 let description = Some(format!(
                     "Threshold wallet created on {}",
                     chrono::Local::now().format("%Y-%m-%d %H:%M")
@@ -731,8 +740,8 @@ where
                 
                 match result {
                     Ok(wallet_id) => {
-                        final_guard.log.push(format!("✅ Successfully created wallet '{}' with key share!", name));
-                        final_guard.log.push(format!("🔐 Wallet ID: {}", wallet_id));
+                        final_guard.log.push(format!("✅ Successfully created wallet with session name '{}' as key share file!", name));
+                        final_guard.log.push(format!("🔐 Wallet file: {}/{}.dat", curve_type, wallet_id));
                         final_guard.log.push("🔑 Password is set to your device ID".to_string());
                         final_guard.current_wallet_id = Some(wallet_id);
                     },
@@ -749,6 +758,142 @@ where
             guard.dkg_state = DkgState::Failed(format!("DKG Finalization Error: {:?}", e));
         }
     }
+}
+
+// =================== SIGNING FUNCTIONS ===================
+// These functions are part of the DKG protocol for threshold signing
+
+use frost_core::{SigningPackage, aggregate};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+pub struct SigningCommitmentResult<C: Ciphersuite> {
+    pub nonces: frost_core::round1::SigningNonces<C>,
+    pub commitments: frost_core::round1::SigningCommitments<C>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignatureShareResult<C: Ciphersuite> {
+    pub share: frost_core::round2::SignatureShare<C>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AggregatedSignatureResult {
+    pub signature_bytes: Vec<u8>,
+}
+
+/// Generates FROST Round 1 commitment for signing
+pub fn generate_signing_commitment<C>(
+    key_package: &frost_core::keys::KeyPackage<C>,
+) -> Result<SigningCommitmentResult<C>, String>
+where
+    C: Ciphersuite,
+{
+    let (nonces, commitments) = frost_core::round1::commit(
+        key_package.signing_share(),
+        &mut OsRng,
+    );
+    
+    Ok(SigningCommitmentResult {
+        nonces,
+        commitments,
+    })
+}
+
+/// Generates FROST Round 2 signature share
+pub fn generate_signature_share<C>(
+    signing_package: &SigningPackage<C>,
+    nonces: &frost_core::round1::SigningNonces<C>,
+    key_package: &frost_core::keys::KeyPackage<C>,
+) -> Result<SignatureShareResult<C>, String>
+where
+    C: Ciphersuite,
+{
+    match frost_core::round2::sign(signing_package, nonces, key_package) {
+        Ok(share) => Ok(SignatureShareResult { share }),
+        Err(e) => Err(format!("Failed to generate signature share: {:?}", e)),
+    }
+}
+
+/// Creates a signing package from commitments and transaction data
+pub fn create_signing_package<C>(
+    commitments: BTreeMap<frost_core::Identifier<C>, frost_core::round1::SigningCommitments<C>>,
+    transaction_data: &[u8],
+) -> SigningPackage<C>
+where
+    C: Ciphersuite,
+{
+    SigningPackage::new(commitments, transaction_data)
+}
+
+/// Aggregates signature shares into a final signature
+pub fn aggregate_signature<C>(
+    signing_package: &SigningPackage<C>,
+    shares: &BTreeMap<frost_core::Identifier<C>, frost_core::round2::SignatureShare<C>>,
+    group_public_key: &PublicKeyPackage<C>,
+) -> Result<AggregatedSignatureResult, String>
+where
+    C: Ciphersuite,
+{
+    match aggregate(signing_package, shares, group_public_key) {
+        Ok(signature) => {
+            match signature.serialize() {
+                Ok(bytes) => {
+                    let bytes_ref: &[u8] = bytes.as_ref();
+                    Ok(AggregatedSignatureResult {
+                        signature_bytes: bytes_ref.to_vec(),
+                    })
+                },
+                Err(e) => Err(format!("Failed to serialize signature: {:?}", e)),
+            }
+        },
+        Err(e) => Err(format!("Failed to aggregate signature: {:?}", e)),
+    }
+}
+
+/// Verifies if a device is selected for signing
+pub fn is_device_selected<C>(
+    device_identifier: &frost_core::Identifier<C>,
+    selected_signers: &[frost_core::Identifier<C>],
+) -> bool
+where
+    C: Ciphersuite,
+{
+    selected_signers.contains(device_identifier)
+}
+
+/// Maps device IDs to FROST identifiers for the selected signers
+pub fn map_selected_signers<C>(
+    accepted_signers: &std::collections::HashSet<String>,
+    identifier_map: &BTreeMap<String, frost_core::Identifier<C>>,
+    required_signers: usize,
+) -> Result<Vec<frost_core::Identifier<C>>, String>
+where
+    C: Ciphersuite,
+{
+    accepted_signers
+        .iter()
+        .take(required_signers)
+        .map(|device_id| {
+            identifier_map.get(device_id)
+                .cloned()
+                .ok_or_else(|| format!("No FROST identifier found for device {}", device_id))
+        })
+        .collect()
+}
+
+
+/// Creates a reverse map from FROST identifiers to device IDs
+pub fn create_device_id_map<C>(
+    identifier_map: &BTreeMap<String, frost_core::Identifier<C>>,
+) -> BTreeMap<frost_core::Identifier<C>, String>
+where
+    C: Ciphersuite,
+{
+    identifier_map
+        .iter()
+        .map(|(device_id, frost_id)| (*frost_id, device_id.clone()))
+        .collect()
 }
 
 #[cfg(test)]

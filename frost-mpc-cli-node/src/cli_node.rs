@@ -168,7 +168,8 @@ where
         own_mesh_ready_sent: false, // Initialize to false - this node hasn't sent its mesh ready signal yet
         keystore: keystore, // Initialize keystore automatically
         current_wallet_id: None, // Initialize current wallet ID to None
-        signing_state: SigningState::Idle // Initialize signing state to idle
+        signing_state: SigningState::Idle, // Initialize signing state to idle
+        pending_signing_requests: Vec::new() // Initialize pending signing requests
     }));
     let state_main_net = state.clone();
     let self_device_id_main_net = device_id.clone(); //mmunication + Internal Commands) ---
@@ -222,11 +223,12 @@ where
 
     let mut input = String::new();
     let mut input_mode = false;
+    let mut ui_mode = ui::tui::UIMode::Normal;
     
     loop {
         {
             let app_guard = state.lock().await;
-            draw_main_ui(&mut terminal, &app_guard, &input, input_mode)?;
+            draw_main_ui(&mut terminal, &app_guard, &input, input_mode, &ui_mode)?;
         }
         
         // Handle key events with a timeout
@@ -239,6 +241,7 @@ where
                         &mut app_guard,
                         &mut input,
                         &mut input_mode,
+                        &mut ui_mode,
                         &internal_cmd_tx,
                     )?;
                     if !continue_loop {

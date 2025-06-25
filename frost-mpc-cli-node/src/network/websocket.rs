@@ -87,6 +87,7 @@ pub async fn handle_websocket_message<C>(
                                         threshold: proposal.threshold,
                                         participants: proposal.participants.clone(),
                                         accepted_devices: Vec::new(),
+                                        session_type: proposal.session_type.clone(),
                                     };
                                     state_guard.invites.push(invite_info);
                                 }
@@ -102,6 +103,7 @@ pub async fn handle_websocket_message<C>(
                                     let internal_response = SessionResponse {
                                         session_id: response.session_id.clone(),
                                         accepted: response.accepted,
+                                        wallet_status: response.wallet_status.clone(),
                                     };
                                     if let Err(e) = internal_cmd_tx.send(
                                         InternalCommand::ProcessSessionResponse {

@@ -24,8 +24,15 @@ pub async fn handle_check_and_trigger_dkg<C>(
         let map_exists = guard.identifier_map.is_some();
         let session_active = guard.session.is_some();
         let dkg_idle = guard.dkg_state == DkgState::Idle;
+        
+        // Check if this is a DKG session
+        let is_dkg_session = if let Some(session) = &guard.session {
+            matches!(session.session_type, crate::protocal::signal::SessionType::DKG)
+        } else {
+            false
+        };
 
-        if mesh_ready && map_exists && session_active && dkg_idle {
+        if mesh_ready && map_exists && session_active && dkg_idle && is_dkg_session {
             guard.log.push(format!(
                 "[CheckAndTriggerDkg-{}] All conditions met. Triggering DKG Round 1.",
                 device_id_for_log
@@ -40,12 +47,13 @@ pub async fn handle_check_and_trigger_dkg<C>(
             }
         } else {
             guard.log.push(format!(
-                "[CheckAndTriggerDkg-{}] Conditions not met. MeshReady: {}, IdentifiersMapped: {}, SessionActive: {}, DkgIdle: {}",
+                "[CheckAndTriggerDkg-{}] Conditions not met. MeshReady: {}, IdentifiersMapped: {}, SessionActive: {}, DkgIdle: {}, IsDkgSession: {}",
                 device_id_for_log,
                 mesh_ready,
                 map_exists,
                 session_active,
-                dkg_idle
+                dkg_idle,
+                is_dkg_session
             ));
         }
     });

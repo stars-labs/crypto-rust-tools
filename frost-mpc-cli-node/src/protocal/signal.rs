@@ -3,6 +3,21 @@ use serde::{Deserialize, Serialize};
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+
+/// Session type enum
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "data")]
+pub enum SessionType {
+    /// Distributed Key Generation session
+    DKG,
+    /// Signing session with existing wallet
+    Signing {
+        wallet_name: String,
+        curve_type: String,
+        blockchain: String,
+        group_public_key: String,
+    },
+}
 // Import the DKG Package type
 // Import round1 and round2 packages
 
@@ -15,6 +30,7 @@ pub struct SessionInfo {
     pub threshold: u16,
     pub participants: Vec<String>,
     pub accepted_devices: Vec<String>, // List of device_ids that have accepted
+    pub session_type: SessionType,
 }
 
 // --- WebRTC Signaling Data (sent via Relay) ---
@@ -56,6 +72,7 @@ pub struct SessionProposal {
     pub total: u16,
     pub threshold: u16,
     pub participants: Vec<String>,
+    pub session_type: SessionType,
 }
 
 /// Session response information
@@ -63,6 +80,16 @@ pub struct SessionProposal {
 pub struct SessionResponse {
     pub session_id: String,
     pub accepted: bool,
+    pub wallet_status: Option<WalletStatus>,
+}
+
+/// Wallet status for signing sessions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStatus {
+    pub has_wallet: bool,
+    pub wallet_valid: bool,
+    pub identifier: Option<u16>,
+    pub error_reason: Option<String>,
 }
 
 // --- Application-Level Messages (sent over established WebRTC Data Channel) ---

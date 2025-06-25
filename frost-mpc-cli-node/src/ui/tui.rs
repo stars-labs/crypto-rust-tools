@@ -7,21 +7,30 @@ use ratatui::{
     Frame, // Add Frame import
     Terminal,
     backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    layout::{Constraint, Direction, Layout, Rect, Alignment},
+    style::{Color, Style, Modifier},
     text::{Line, Span},                                         // Remove Spans
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap}, // Keep Wrap
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, Clear}, // Keep Wrap
 };
 use std::collections::HashSet;
 use std::io;
 use tokio::sync::mpsc; // For command channel // Import SessionInfo
 use frost_core::Ciphersuite;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum UIMode {
+    Normal,
+    SigningRequestPopup { selected_index: usize },
+    HelpPopup,
+}
+
+
 pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
     terminal: &mut Terminal<B>,
     app: &AppState<C>,
     input: &str,
     input_mode: bool,
+    ui_mode: &UIMode,
 ) -> io::Result<()> {
     terminal.draw(|f| {
         // Main layout: Title, Devices, Log, Status, Input
@@ -103,7 +112,7 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             format!("> {}", input)
         } else {
             // Help text for commands
-            "Scroll: ↑/↓ | Input: i | Accept Invite: o | Quit: q | Keys auto-saved after DKG | Sign: /sign <hex>".to_string()
+            "Scroll: ↑/↓ | Input: i | Accept: o | Quit: q | Help: ? | Tab: Requests".to_string()
         };
         let input_box = Paragraph::new(input_display_text)
             .style(if input_mode { Style::default().fg(Color::Yellow) } else { Style::default() })
@@ -118,6 +127,17 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             let cursor_y = main_chunks[4].y + 1; // Inside the input box border
             let position = Rect::new(cursor_x, cursor_y, 1, 1);
             f.set_cursor_position(position);
+        }
+        
+        // Draw popup if needed
+        match ui_mode {
+            UIMode::SigningRequestPopup { selected_index } => {
+                draw_signing_popup::<B, C>(f, app, *selected_index);
+            }
+            UIMode::HelpPopup => {
+                draw_help_popup::<B>(f);
+            }
+            UIMode::Normal => {}
         }
     })?;
     Ok(())
@@ -147,11 +167,17 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
 
     // Session display - show active session only
     if let Some(session) = &app.session {
+        let session_type_str = match &session.session_type {
+            crate::protocal::signal::SessionType::DKG => "DKG".to_string(),
+            crate::protocal::signal::SessionType::Signing { wallet_name, .. } => format!("Sign[{}]", wallet_name),
+        };
+        
         status_items.push(Line::from(vec![
             Span::styled("Session: ", Style::default().fg(Color::Yellow)),
             Span::raw(format!(
-                "{} ({} of {}, threshold {})",
+                "{} {} ({} of {}, threshold {})",
                 session.session_id,
+                session_type_str,
                 session.participants.len(),
                 session.total,
                 session.threshold
@@ -248,19 +274,51 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         Span::styled(app.signing_state.display_status(), signing_style),
     ]));
 
+    // Group Public Key display
+    if let Some(group_public_key) = &app.group_public_key {
+        let group_key_json = serde_json::to_string(group_public_key).unwrap_or_else(|_| "Error".to_string());
+        
+        // Extract just the verifying_key (main public key) from the JSON if possible
+        let display_key = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&group_key_json) {
+            if let Some(verifying_key) = parsed.get("verifying_key").and_then(|v| v.as_str()) {
+                verifying_key.to_string()
+            } else {
+                // Fallback: show first 16 chars of full JSON
+                if group_key_json.len() > 32 {
+                    format!("{}...", &group_key_json[..32])
+                } else {
+                    group_key_json.clone()
+                }
+            }
+        } else {
+            "Error parsing key".to_string()
+        };
+        
+        status_items.push(Line::from(vec![
+            Span::styled("Group Public Key: ", Style::default().fg(Color::Yellow)),
+            Span::styled(display_key, Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        status_items.push(Line::from(vec![
+            Span::styled("Group Public Key: ", Style::default().fg(Color::Yellow)),
+            Span::raw("N/A"),
+        ]));
+    }
+
+    // Blockchain Address display
     if curve_name == "secp256k1" && app.etherum_public_key.is_some() {
         status_items.push(Line::from(vec![
             Span::styled("Ethereum Address: ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.etherum_public_key.clone().unwrap()),
+            Span::styled(app.etherum_public_key.clone().unwrap(), Style::default().fg(Color::Green)),
         ]));
     } else if curve_name == "ed25519" && app.solana_public_key.is_some() {
         status_items.push(Line::from(vec![
             Span::styled("Solana Address: ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.solana_public_key.clone().unwrap()),
+            Span::styled(app.solana_public_key.clone().unwrap(), Style::default().fg(Color::Green)),
         ]));
     } else {
         status_items.push(Line::from(vec![
-            Span::styled("Address: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Blockchain Address: ", Style::default().fg(Color::Yellow)),
             Span::raw("N/A"),
         ]));        
     }
@@ -297,17 +355,238 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
 }
 
 // Returns Ok(true) to continue, Ok(false) to quit, Err on error.
+fn draw_help_popup<B: Backend>(f: &mut Frame) {
+    // Calculate popup size - responsive to screen size
+    let area = f.area();
+    let popup_width = std::cmp::min(80, area.width.saturating_sub(4));
+    let popup_height = std::cmp::min(28, area.height.saturating_sub(4));
+    
+    let popup_area = Rect::new(
+        (area.width.saturating_sub(popup_width)) / 2,
+        (area.height.saturating_sub(popup_height)) / 2,
+        popup_width,
+        popup_height,
+    );
+    
+    // Clear background
+    f.render_widget(Clear, popup_area);
+    
+    // Create help content
+    let help_content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("FROST MPC CLI Node - Complete Help", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Quick Keys (Normal Mode):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  ↑/↓         Scroll log up/down"),
+        Line::from("  i           Enter input mode (type commands)"),
+        Line::from("  o           Accept first pending session invitation"),
+        Line::from("  Tab         View pending signing requests popup"),
+        Line::from("  s           Save log to <device_id>.log file"),
+        Line::from("  ?           Show/hide this help"),
+        Line::from("  q           Quit application"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Basic Commands (press 'i' first):", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  /list                       List connected devices"),
+        Line::from("  /wallets                    Show your wallets"),
+        Line::from("  /propose <name> <total> <threshold> <devices>"),
+        Line::from("    • Auto-detects: DKG if new, signing if exists"),
+        Line::from("  /accept <session-id>        Accept session proposal"),
+        Line::from("  /sign <hex>                 Sign transaction"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Backup & Recovery:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  /export_extension <wallet> <path>  Backup wallet"),
+        Line::from("  /import_extension <path>           Restore wallet"),
+        Line::from("  /convert_dkg <path>                Backup current DKG"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Tips:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  • Use Tab to see and accept signing requests easily"),
+        Line::from("  • Session name becomes wallet name after DKG"),
+        Line::from("  • Always backup wallets after creating them"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Examples:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  /propose company-keys 3 2 alice,bob,charlie"),
+        Line::from("  /export_extension team-wallet ~/backup.json"),
+        Line::from("  /sign 1a2b3c4d5e6f..."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press Esc to close this help", Style::default().fg(Color::Gray))
+        ]),
+    ];
+    
+    // Create popup block
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    
+    let paragraph = Paragraph::new(help_content)
+        .block(block)
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: false });
+    
+    f.render_widget(paragraph, popup_area);
+}
+
+fn draw_signing_popup<B: Backend, C: Ciphersuite>(f: &mut Frame, app: &AppState<C>, selected_index: usize) {
+    let pending_requests = &app.pending_signing_requests;
+    if pending_requests.is_empty() {
+        return;
+    }
+    
+    // Calculate popup size
+    let popup_width = 80;
+    let popup_height = std::cmp::min(20, pending_requests.len() as u16 + 6);
+    
+    let area = f.area();
+    let popup_area = Rect::new(
+        (area.width.saturating_sub(popup_width)) / 2,
+        (area.height.saturating_sub(popup_height)) / 2,
+        popup_width,
+        popup_height,
+    );
+    
+    // Clear background
+    f.render_widget(Clear, popup_area);
+    
+    // Create popup block
+    let block = Block::default()
+        .title(" Pending Signing Requests ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    
+    // Create list items
+    let items: Vec<ListItem> = pending_requests
+        .iter()
+        .enumerate()
+        .map(|(idx, req)| {
+            let is_selected = idx == selected_index;
+            let style = if is_selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            
+            let content = vec![
+                Line::from(vec![
+                    Span::styled("ID: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(&req.signing_id),
+                ]),
+                Line::from(vec![
+                    Span::styled("From: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(&req.from_device),
+                ]),
+                Line::from(vec![
+                    Span::styled("Data: ", Style::default().fg(Color::Cyan)),
+                    Span::raw(if req.transaction_data.len() > 60 {
+                        format!("{}...", &req.transaction_data[..60])
+                    } else {
+                        req.transaction_data.clone()
+                    }),
+                ]),
+                Line::from(""), // Empty line for spacing
+            ];
+            
+            ListItem::new(content).style(style)
+        })
+        .collect();
+    
+    let list = List::new(items)
+        .block(block)
+        .style(Style::default());
+    
+    f.render_widget(list, popup_area);
+    
+    // Instructions at the bottom
+    let instructions = Paragraph::new("↑/↓: Navigate | Enter: Accept | Esc: Cancel")
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+    
+    let instruction_area = Rect::new(
+        popup_area.x,
+        popup_area.y + popup_area.height - 2,
+        popup_area.width,
+        1,
+    );
+    
+    f.render_widget(instructions, instruction_area);
+}
+
 pub fn handle_key_event<C>(
     key: KeyEvent,
     // Add generic parameter here
     app: &mut AppState<C>, // Now mutable and generic
     input: &mut String,                // Now mutable
     input_mode: &mut bool,             // Now mutable
+    ui_mode: &mut UIMode,              // Add UI mode
     // Update the sender type to use the new InternalCommand
     cmd_tx: &mpsc::UnboundedSender<InternalCommand<C>>, // Pass as reference
 ) -> anyhow::Result<bool> where C: Ciphersuite {
-    if *input_mode {
-        // --- Input Mode Key Handling (mostly unchanged) ---
+    match ui_mode {
+        UIMode::HelpPopup => {
+            // Handle help popup
+            match key.code {
+                KeyCode::Esc => {
+                    // Close help popup
+                    *ui_mode = UIMode::Normal;
+                }
+                _ => {}
+            }
+        }
+        UIMode::SigningRequestPopup { selected_index } => {
+            // Handle popup navigation
+            match key.code {
+                KeyCode::Up => {
+                    if *selected_index > 0 {
+                        *selected_index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *selected_index < app.pending_signing_requests.len().saturating_sub(1) {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    // Accept the selected signing request
+                    if let Some(req) = app.pending_signing_requests.get(*selected_index) {
+                        let signing_id = req.signing_id.clone();
+                        let _ = cmd_tx.send(InternalCommand::AcceptSigning {
+                            signing_id: signing_id.clone(),
+                        });
+                        app.log.push(format!("Accepting signing request: {}", signing_id));
+                        
+                        // Remove from pending list
+                        app.pending_signing_requests.remove(*selected_index);
+                        
+                        // Exit popup if no more requests
+                        if app.pending_signing_requests.is_empty() {
+                            *ui_mode = UIMode::Normal;
+                        } else if *selected_index >= app.pending_signing_requests.len() {
+                            *selected_index = app.pending_signing_requests.len() - 1;
+                        }
+                    }
+                }
+                KeyCode::Esc => {
+                    // Exit popup without accepting
+                    *ui_mode = UIMode::Normal;
+                }
+                _ => {}
+            }
+        }
+        UIMode::Normal => {
+            if *input_mode {
+                // --- Input Mode Key Handling (mostly unchanged) ---
         match key.code {
             KeyCode::Enter => {
                 let cmd_str = input.trim().to_string();
@@ -319,8 +598,8 @@ pub fn handle_key_event<C>(
                 // Wrap shared messages when sending
                 if cmd_str == "/list" {
                     let _ = cmd_tx.send(InternalCommand::SendToServer(ClientMsg::ListDevices));
-                } else if cmd_str.starts_with("/list_wallets") {
-                    // Handle the /list_wallets command
+                } else if cmd_str == "/wallets" || cmd_str.starts_with("/list_wallets") {
+                    // Handle the /wallets or /list_wallets command
                     let _ = cmd_tx.send(InternalCommand::ListWallets);
                     app.log.push("Listing available wallets...".to_string());
                 } else if cmd_str.starts_with("/propose") {
@@ -657,6 +936,10 @@ pub fn handle_key_event<C>(
                 app.log.push("Quitting...".to_string());
                 return Ok(false); // Signal to quit
             }
+            KeyCode::Char('?') => {
+                // Show help popup
+                *ui_mode = UIMode::HelpPopup;
+            }
             KeyCode::Char('s') => {
                 // Save log to <device_id>.log
                 let filename = format!("{}.log", app.device_id.trim());
@@ -688,7 +971,16 @@ pub fn handle_key_event<C>(
             KeyCode::Down => {
                 app.log_scroll = app.log_scroll.saturating_add(1);
             }
+            KeyCode::Tab => {
+                // Show signing request popup if there are pending requests
+                if !app.pending_signing_requests.is_empty() {
+                    *ui_mode = UIMode::SigningRequestPopup { selected_index: 0 };
+                    app.log.push(format!("Viewing {} pending signing requests", app.pending_signing_requests.len()));
+                }
+            }
             _ => {}
+        }
+    }
         }
     }
     Ok(true) // Continue loop by default

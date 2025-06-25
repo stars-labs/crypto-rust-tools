@@ -1,5 +1,7 @@
 use crate::utils::state::{AppState, InternalCommand, SigningState};
+
 use crate::protocal::signal::WebRTCMessage;
+use crate::protocal::dkg;
 use crate::utils::device::send_webrtc_message;
 use frost_core::{Ciphersuite, Identifier};
 use std::sync::Arc;
@@ -137,17 +139,7 @@ pub async fn handle_initiate_signing<C>(
             };
             
             // Select signers and map them to FROST Identifiers
-            let selected_signers: Result<Vec<Identifier<C>>, String> = accepted_signers
-                .iter()
-                .take(required_signers)
-                .map(|device_id| {
-                    identifier_map.get(device_id)
-                        .cloned()
-                        .ok_or_else(|| format!("No FROST identifier found for device {}", device_id))
-                })
-                .collect();
-            
-            let selected_signers = match selected_signers {
+            let selected_signers = match dkg::map_selected_signers(&accepted_signers, &identifier_map, required_signers) {
                 Ok(signers) => signers,
                 Err(error) => {
                     guard.log.push(format!("Error mapping device IDs to FROST identifiers: {}", error));
@@ -243,6 +235,9 @@ pub async fn handle_accept_signing<C>(
         
         guard.log.push(format!("Accepting signing request: {}", signing_id));
         
+        // Remove from pending list
+        guard.pending_signing_requests.retain(|req| req.signing_id != signing_id);
+        
         // Send acceptance message to initiator
         let acceptance = WebRTCMessage::SigningAcceptance {
             signing_id: signing_id.clone(),
@@ -313,6 +308,13 @@ pub async fn handle_process_signing_request<C>(
         
         guard.log.push(format!("Received signing request from {}: id={}", from_device_id, signing_id));
         
+        // Add to pending signing requests
+        guard.pending_signing_requests.push(crate::utils::state::PendingSigningRequest {
+            signing_id: signing_id.clone(),
+            from_device: from_device_id.clone(),
+            transaction_data: transaction_data.clone(),
+        });
+        
         // Update signing state to awaiting acceptance
         let required_signers = session.threshold as usize;
         let mut accepted_signers = std::collections::HashSet::new();
@@ -326,7 +328,8 @@ pub async fn handle_process_signing_request<C>(
             accepted_signers,
         };
         
-        guard.log.push(format!("Use '/acceptSign {}' to accept this signing request", signing_id));
+        let pending_count = guard.pending_signing_requests.len();
+        guard.log.push(format!("Press Tab to view pending signing requests ({})", pending_count));
     });
 }
 
@@ -399,17 +402,7 @@ pub async fn handle_process_signing_acceptance<C>(
                 };
                 
                 // Select the first threshold number of signers and map them to FROST Identifiers
-                let selected_signers: Result<Vec<Identifier<C>>, String> = accepted_signers
-                    .into_iter()
-                    .take(required_signers)
-                    .map(|device_id| {
-                        identifier_map.get(&device_id)
-                            .cloned()
-                            .ok_or_else(|| format!("No FROST identifier found for device {}", device_id))
-                    })
-                    .collect();
-                
-                let selected_signers = match selected_signers {
+                let selected_signers = match dkg::map_selected_signers(&accepted_signers, &identifier_map, required_signers) {
                     Ok(signers) => signers,
                     Err(error) => {
                         guard.log.push(format!("Error mapping device IDs to FROST identifiers: {}", error));
@@ -584,7 +577,7 @@ pub async fn handle_process_signing_commitment<C>(
             };
             
             // Create signing package
-            let signing_package = frost_core::SigningPackage::new(
+            let signing_package = dkg::create_signing_package(
                 commitments.clone(),
                 transaction_data.as_bytes(),
             );
@@ -617,17 +610,18 @@ pub async fn handle_process_signing_commitment<C>(
             // Generate our signature share
             guard.log.push("Generating signature share".to_string());
             
-            let signature_share = match frost_core::round2::sign(&signing_package, &our_nonces, &key_package) {
-                Ok(share) => share,
+            let signature_share_result = match dkg::generate_signature_share(&signing_package, &our_nonces, &key_package) {
+                Ok(result) => result,
                 Err(e) => {
-                    guard.log.push(format!("Error generating signature share: {:?}", e));
+                    guard.log.push(format!("Error generating signature share: {}", e));
                     guard.signing_state = SigningState::Failed {
                         signing_id: current_signing_id,
-                        reason: format!("Signature generation failed: {:?}", e),
+                        reason: e,
                     };
                     return;
                 }
             };
+            let signature_share = signature_share_result.share;
             
             // Get our identifier
             let self_identifier = match identifier_map.get(&guard.device_id) {
@@ -665,10 +659,7 @@ pub async fn handle_process_signing_commitment<C>(
             };
             
             // Get reverse identifier map to convert FROST identifiers back to device IDs
-            let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
-                .iter()
-                .map(|(device_id, frost_id)| (*frost_id, device_id.clone()))
-                .collect();
+            let device_id_map = dkg::create_device_id_map(&identifier_map);
             
             drop(guard);
             
@@ -832,33 +823,18 @@ pub async fn handle_process_signature_share<C>(
             // Aggregate the signature
             guard.log.push("Aggregating FROST signature...".to_string());
             
-            let aggregated_signature = match frost_core::aggregate(&signing_package, &shares, &group_public_key) {
-                Ok(sig) => sig,
+            let aggregated_result = match dkg::aggregate_signature(&signing_package, &shares, &group_public_key) {
+                Ok(result) => result,
                 Err(e) => {
-                    guard.log.push(format!("Error aggregating signature: {:?}", e));
+                    guard.log.push(format!("Error aggregating signature: {}", e));
                     guard.signing_state = SigningState::Failed {
                         signing_id: current_signing_id,
-                        reason: format!("Signature aggregation failed: {:?}", e),
+                        reason: e,
                     };
                     return;
                 }
             };
-            
-            // Convert signature to bytes
-            let signature_bytes: Vec<u8> = match aggregated_signature.serialize() {
-                Ok(bytes) => {
-                    let bytes_ref: &[u8] = bytes.as_ref();
-                    bytes_ref.to_vec()
-                },
-                Err(e) => {
-                    guard.log.push(format!("Error serializing signature: {:?}", e));
-                    guard.signing_state = SigningState::Failed {
-                        signing_id: current_signing_id,
-                        reason: format!("Signature serialization failed: {:?}", e),
-                    };
-                    return;
-                }
-            };
+            let signature_bytes = aggregated_result.signature_bytes;
             
             guard.log.push(format!(
                 "Successfully aggregated signature for {} ({} bytes): {}",
@@ -872,6 +848,9 @@ pub async fn handle_process_signature_share<C>(
                 signing_id: current_signing_id.clone(),
                 signature: signature_bytes.clone(),
             };
+            
+            // Remove from pending list
+            guard.pending_signing_requests.retain(|req| req.signing_id != current_signing_id);
             
             // Broadcast the aggregated signature to all session participants
             let aggregated_sig_message = WebRTCMessage::AggregatedSignature {
@@ -931,6 +910,9 @@ pub async fn handle_process_aggregated_signature<C>(
             signature: signature.clone(),
         };
         
+        // Remove from pending list
+        guard.pending_signing_requests.retain(|req| req.signing_id != signing_id);
+        
         guard.log.push(format!(
             "Signing process {} completed successfully. Signature: {}",
             signing_id,
@@ -980,7 +962,7 @@ pub async fn handle_process_signer_selection<C>(
         };
         
         // Check if we are one of the selected signers
-        let is_selected = selected_signers.contains(&self_identifier);
+        let is_selected = dkg::is_device_selected(&self_identifier, &selected_signers);
         
         if !is_selected {
             guard.log.push(format!(
@@ -1038,11 +1020,20 @@ pub async fn handle_process_signer_selection<C>(
         
         guard.log.push("Generating FROST commitment for signing".to_string());
         
-        // Generate FROST Round 1 commitment - using the compatible RNG
-        let (nonces, commitments) = frost_core::round1::commit(
-            key_package.signing_share(),
-            &mut frost_ed25519::rand_core::OsRng,
-        );
+        // Generate FROST Round 1 commitment
+        let commitment_result = match dkg::generate_signing_commitment(&key_package) {
+            Ok(result) => result,
+            Err(e) => {
+                guard.log.push(format!("Error generating commitment: {}", e));
+                guard.signing_state = SigningState::Failed {
+                    signing_id: signing_id.clone(),
+                    reason: e,
+                };
+                return;
+            }
+        };
+        let nonces = commitment_result.nonces;
+        let commitments = commitment_result.commitments;
         
         // Update signing state with our commitment and nonces
         if let SigningState::CommitmentPhase { 
@@ -1066,10 +1057,7 @@ pub async fn handle_process_signer_selection<C>(
         };
         
         // Get reverse identifier map to convert FROST identifiers back to device IDs
-        let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
-            .iter()
-            .map(|(device_id, frost_id)| (*frost_id, device_id.clone()))
-            .collect();
+        let device_id_map = dkg::create_device_id_map(&identifier_map);
         
         drop(guard);
         
@@ -1134,7 +1122,7 @@ pub async fn handle_initiate_frost_round1<C>(
             }
         };
         
-        let is_selected = selected_signers.contains(&self_identifier);
+        let is_selected = dkg::is_device_selected(&self_identifier, &selected_signers);
         
         if !is_selected {
             guard.log.push(format!("Not selected for signing {}, waiting for final signature", signing_id));
@@ -1152,11 +1140,20 @@ pub async fn handle_initiate_frost_round1<C>(
         
         guard.log.push("Generating FROST commitment for signing".to_string());
         
-        // Generate FROST Round 1 commitment - using the compatible RNG
-        let (nonces, commitments) = frost_core::round1::commit(
-            key_package.signing_share(),
-            &mut frost_ed25519::rand_core::OsRng,
-        );
+        // Generate FROST Round 1 commitment
+        let commitment_result = match dkg::generate_signing_commitment(&key_package) {
+            Ok(result) => result,
+            Err(e) => {
+                guard.log.push(format!("Error generating commitment: {}", e));
+                guard.signing_state = SigningState::Failed {
+                    signing_id: signing_id.clone(),
+                    reason: e,
+                };
+                return;
+            }
+        };
+        let nonces = commitment_result.nonces;
+        let commitments = commitment_result.commitments;
         
         // Update signing state with our commitment and nonces
         if let SigningState::CommitmentPhase { 
@@ -1180,10 +1177,7 @@ pub async fn handle_initiate_frost_round1<C>(
         };
         
         // Get identifier map to convert FROST identifiers back to device IDs
-        let device_id_map: BTreeMap<Identifier<C>, String> = identifier_map
-            .into_iter()
-            .map(|(device_id, frost_id)| (frost_id, device_id))
-            .collect();
+        let device_id_map = dkg::create_device_id_map(&identifier_map);
         
         drop(guard);
         

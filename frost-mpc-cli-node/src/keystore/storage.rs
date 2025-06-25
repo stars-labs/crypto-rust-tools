@@ -6,7 +6,6 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 use super::{
     KeystoreError, Result,
@@ -22,8 +21,6 @@ pub struct Keystore {
     /// Unique identifier for this device
     device_id: String,
 
-    /// User-friendly name for this device
-    device_name: String,
 
     /// Keystore index containing metadata for wallets and devices
     index: KeystoreIndex,
@@ -58,8 +55,13 @@ impl Keystore {
         let mut file = File::create(device_id_path)?;
         file.write_all(device_name.as_bytes())?;
 
-        // Create the device-specific wallet directory
-        fs::create_dir_all(base_path.join(Self::WALLETS_DIR).join(&device_id))?;
+        // Create the device-specific wallet directory with curve subdirectories
+        let device_wallet_dir = base_path.join(Self::WALLETS_DIR).join(&device_id);
+        fs::create_dir_all(&device_wallet_dir)?;
+        
+        // Create curve-specific subdirectories
+        fs::create_dir_all(device_wallet_dir.join("ed25519"))?;
+        fs::create_dir_all(device_wallet_dir.join("secp256k1"))?;
 
         // Load or create index file
         let index_path = base_path.join(Self::INDEX_FILE);
@@ -91,12 +93,18 @@ impl Keystore {
                 .map_err(|e| KeystoreError::General(e.to_string()))?;
         }
 
-        Ok(Self {
+        let mut keystore = Self {
             base_path,
             device_id,
-            device_name: device_name.to_string(),
             index,
-        })
+        };
+        
+        // Attempt to migrate existing wallets to new directory structure
+        if let Err(e) = keystore.migrate_to_curve_directories() {
+            eprintln!("Warning: Failed to migrate wallets: {}", e);
+        }
+        
+        Ok(keystore)
     }
 
     /// Saves the keystore index to disk
@@ -113,10 +121,6 @@ impl Keystore {
         &self.device_id
     }
 
-    /// Gets the device name for this keystore
-    pub fn device_name(&self) -> &str {
-        &self.device_name
-    }
 
     /// Lists all wallets in the keystore index
     pub fn list_wallets(&self) -> Vec<&super::models::WalletInfo> {
@@ -148,8 +152,16 @@ impl Keystore {
         tags: Vec<String>,
         description: Option<String>,
     ) -> Result<String> {
-        // Generate a unique wallet ID
-        let wallet_id = Uuid::new_v4().to_string();
+        // Use the wallet name as the wallet ID (for session name convention)
+        // Sanitize the name to ensure it's a valid filename
+        let wallet_id = name.replace("/", "-").replace("\\", "-").replace(":", "-");
+
+        // Check if a wallet with this ID already exists
+        if self.index.get_wallet(&wallet_id).is_some() {
+            return Err(KeystoreError::General(format!(
+                "Wallet with ID '{}' already exists", wallet_id
+            )));
+        }
 
         // Create wallet info
         let mut wallet = WalletInfo::new(
@@ -182,7 +194,7 @@ impl Keystore {
         self.index.add_wallet(wallet.clone());
 
         // Save the wallet key share data
-        self.save_wallet_file(&wallet_id, key_share_data, password)?;
+        self.save_wallet_file(&wallet_id, key_share_data, password, curve_type)?;
 
         // Save the index
         self.save_index()?;
@@ -191,9 +203,9 @@ impl Keystore {
     }
 
     /// Saves encrypted wallet data to a file
-    fn save_wallet_file(&self, wallet_id: &str, data: &[u8], password: &str) -> Result<()> {
-        // Create device-specific wallet directory
-        let wallet_dir = self.base_path.join(Self::WALLETS_DIR).join(&self.device_id);
+    fn save_wallet_file(&self, wallet_id: &str, data: &[u8], password: &str, curve_type: &str) -> Result<()> {
+        // Create device-specific wallet directory with curve type
+        let wallet_dir = self.base_path.join(Self::WALLETS_DIR).join(&self.device_id).join(curve_type);
 
         // Create the directory structure if it doesn't exist
         fs::create_dir_all(&wallet_dir)?;
@@ -213,11 +225,16 @@ impl Keystore {
 
     /// Loads encrypted wallet data from a file
     pub fn load_wallet_file(&self, wallet_id: &str, password: &str) -> Result<Vec<u8>> {
-        // Device-specific wallet path
+        // Get wallet info to find curve type
+        let wallet = self.index.get_wallet(wallet_id)
+            .ok_or_else(|| KeystoreError::WalletNotFound(wallet_id.to_string()))?;
+        
+        // Device-specific wallet path with curve type
         let wallet_path = self
             .base_path
             .join(Self::WALLETS_DIR)
             .join(&self.device_id)
+            .join(&wallet.curve_type)
             .join(format!("{}.dat", wallet_id));
 
         // Read encrypted data from file
@@ -233,42 +250,48 @@ impl Keystore {
         Ok(decrypted_data)
     }
 
-    /// Sets the current active wallet
-    pub fn set_current_wallet(&mut self, wallet_id: &str) -> Result<()> {
-        if self.index.get_wallet(wallet_id).is_none() {
-            return Err(KeystoreError::WalletNotFound(wallet_id.to_string()));
+
+    
+    /// Migrates existing wallets to the new curve-specific directory structure
+    pub fn migrate_to_curve_directories(&mut self) -> Result<()> {
+        let device_dir = self.base_path.join(Self::WALLETS_DIR).join(&self.device_id);
+        
+        // Check if migration is needed by looking for .dat files in the device directory
+        let entries = fs::read_dir(&device_dir)?;
+        let mut migrations_needed = Vec::new();
+        
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("dat") {
+                if let Some(wallet_id) = path.file_stem().and_then(|s| s.to_str()) {
+                    migrations_needed.push(wallet_id.to_string());
+                }
+            }
         }
-
-        // Update the index to reflect the change
-        self.save_index()?;
-
-        Ok(())
-    }
-
-    /// Deletes a wallet from the keystore
-    pub fn delete_wallet(&mut self, wallet_id: &str) -> Result<()> {
-        // Check if wallet exists
-        if self.index.get_wallet(wallet_id).is_none() {
-            return Err(KeystoreError::WalletNotFound(wallet_id.to_string()));
+        
+        // Perform migrations
+        for wallet_id in migrations_needed {
+            // Get wallet info to determine curve type
+            if let Some(wallet) = self.index.get_wallet(&wallet_id) {
+                let old_path = device_dir.join(format!("{}.dat", wallet_id));
+                let new_dir = device_dir.join(&wallet.curve_type);
+                let new_path = new_dir.join(format!("{}.dat", wallet_id));
+                
+                // Create curve directory if it doesn't exist
+                fs::create_dir_all(&new_dir)?;
+                
+                // Move the file
+                fs::rename(&old_path, &new_path)
+                    .map_err(|e| KeystoreError::General(
+                        format!("Failed to migrate wallet {}: {}", wallet_id, e)
+                    ))?;
+                    
+                println!("Migrated wallet {} to {}/{}", wallet_id, &self.device_id, &wallet.curve_type);
+            }
         }
-
-        // Remove from index
-        self.index.remove_wallet(wallet_id);
-
-        // Delete wallet file
-        let wallet_path = self
-            .base_path
-            .join(Self::WALLETS_DIR)
-            .join(&self.device_id)
-            .join(format!("{}.dat", wallet_id));
-
-        if wallet_path.exists() {
-            fs::remove_file(wallet_path)?;
-        }
-
-        // Save the index
-        self.save_index()?;
-
+        
         Ok(())
     }
 }

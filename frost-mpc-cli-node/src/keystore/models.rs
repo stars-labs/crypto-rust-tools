@@ -127,10 +127,6 @@ impl DeviceInfo {
         }
     }
 
-    /// Updates the last seen timestamp to the current time
-    pub fn update_last_seen(&mut self) {
-        self.last_seen = current_timestamp();
-    }
 }
 
 /// Master index of all wallets and devices
@@ -189,25 +185,8 @@ impl KeystoreIndex {
         self.wallets.iter().find(|w| w.wallet_id == wallet_id)
     }
 
-    /// Gets a mutable wallet by ID
-    pub fn get_wallet_mut(&mut self, wallet_id: &str) -> Option<&mut WalletInfo> {
-        self.wallets.iter_mut().find(|w| w.wallet_id == wallet_id)
-    }
-
     /// Gets a device by ID
     pub fn get_device(&self, device_id: &str) -> Option<&DeviceInfo> {
         self.devices.iter().find(|d| d.device_id == device_id)
-    }
-
-    /// Gets a mutable device by ID
-    pub fn get_device_mut(&mut self, device_id: &str) -> Option<&mut DeviceInfo> {
-        self.devices.iter_mut().find(|d| d.device_id == device_id)
-    }
-
-    /// Removes a wallet from the index
-    pub fn remove_wallet(&mut self, wallet_id: &str) -> bool {
-        let len_before = self.wallets.len();
-        self.wallets.retain(|w| w.wallet_id != wallet_id);
-        len_before != self.wallets.len()
     }
 }

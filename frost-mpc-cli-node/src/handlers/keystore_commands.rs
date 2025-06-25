@@ -48,19 +48,32 @@ pub async fn handle_list_wallets<C: frost_core::Ciphersuite + Send + Sync + 'sta
                     w.name.clone(),
                     w.threshold,
                     w.total_participants,
-                    w.blockchain.clone()
+                    w.curve_type.clone(),
+                    w.blockchain.clone(),
+                    w.created_at
                 ))
                 .collect::<Vec<_>>();
             
             // Now that we're done with the keystore borrow, update the UI
-            app_state.log.push("Available wallets:".to_string());
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
+            app_state.log.push("Your wallets:".to_string());
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
             
-            for (id, name, threshold, total, blockchain) in wallet_infos {
+            for (_id, name, threshold, total, curve, _blockchain, created_at) in wallet_infos {
                 app_state.log.push(format!(
-                    "ID: {} | Name: {} | Threshold: {}/{} | Blockchain: {}",
-                    id, name, threshold, total, blockchain
+                    "• {} ({}/{}, {}) - {} devices",
+                    name, threshold, total, curve, total
+                ));
+                app_state.log.push(format!(
+                    "  Created: {}",
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(created_at as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| "Unknown".to_string())
                 ));
             }
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
+            app_state.log.push("".to_string());
+            app_state.log.push("Use wallet name with /propose to start signing".to_string());
         }
     } else {
         app_state.log.push("Keystore is not initialized. Use /init_keystore first.".to_string());

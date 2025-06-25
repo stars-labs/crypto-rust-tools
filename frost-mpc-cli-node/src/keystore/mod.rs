@@ -10,10 +10,10 @@ mod storage;
 mod extension_compat;
 
 pub use storage::Keystore;
-pub use models::{WalletInfo, DeviceInfo};
+pub use models::DeviceInfo;
 pub use extension_compat::{
     ExtensionKeyShareData, ExtensionWalletMetadata,
-    ExtensionEncryptedKeyShare, ExtensionKeystoreBackup, ExtensionBackupWallet,
+    ExtensionKeystoreBackup, ExtensionBackupWallet,
     encrypt_for_extension, decrypt_from_extension, WalletData
 };
 

@@ -27,6 +27,13 @@ use webrtc_signal_server::ClientMsg as SharedClientMsg;
 
 use crate::protocal::signal::SessionResponse;
 
+#[derive(Debug, Clone)]
+pub struct PendingSigningRequest {
+    pub signing_id: String,
+    pub from_device: String,
+    pub transaction_data: String,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum InternalCommand<C: Ciphersuite> {
     // --- Keystore Commands ---
@@ -411,6 +418,9 @@ pub struct AppState<C: Ciphersuite> {
 
     // --- Signing State ---
     pub signing_state: SigningState<C>,
+    
+    // Track all pending signing requests (not just the active one)
+    pub pending_signing_requests: Vec<PendingSigningRequest>,
 }
 
 // --- Reconnection Tracker ---

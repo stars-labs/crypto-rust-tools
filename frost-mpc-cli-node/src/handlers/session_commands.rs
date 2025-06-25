@@ -1,5 +1,5 @@
 use crate::network::webrtc::initiate_webrtc_connections;
-use crate::protocal::signal::{SessionInfo, SessionProposal, SessionResponse, WebSocketMessage};
+use crate::protocal::signal::{SessionInfo, SessionProposal, SessionResponse, WebSocketMessage, SessionType};
 use crate::utils::state::{AppState, InternalCommand};
 use frost_core::{Ciphersuite, Identifier};
 use std::collections::BTreeMap;
@@ -86,11 +86,137 @@ pub async fn handle_propose_session<C>(
     tokio::spawn(async move {
         let mut state_guard = state_clone.lock().await;
 
+        // Auto-detect session type based on wallet name
+        let keystore_arc = state_guard.keystore.clone();
+        let session_type = if let Some(keystore) = keystore_arc {
+            // Check if a wallet with this name exists
+            let wallets = keystore.list_wallets();
+            if let Some(wallet) = wallets.iter().find(|w| w.name == session_id) {
+                // Wallet exists - validate parameters
+                if wallet.total_participants != total {
+                    state_guard.log.push(format!(
+                        "❌ Cannot proceed: Parameter mismatch",
+                    ));
+                    state_guard.log.push(format!(
+                        "Wallet '{}' requires {} participants (you specified: {})",
+                        session_id, wallet.total_participants, total
+                    ));
+                    state_guard.log.push(format!(
+                        "Correct usage: /propose {} {} {} <devices>",
+                        session_id, wallet.total_participants, wallet.threshold
+                    ));
+                    return;
+                }
+                if wallet.threshold != threshold {
+                    state_guard.log.push(format!(
+                        "❌ Cannot proceed: Threshold mismatch",
+                    ));
+                    state_guard.log.push(format!(
+                        "Wallet '{}' has threshold {} (you specified: {})",
+                        session_id, wallet.threshold, threshold
+                    ));
+                    state_guard.log.push(format!(
+                        "Correct usage: /propose {} {} {} <devices>",
+                        session_id, wallet.total_participants, wallet.threshold
+                    ));
+                    return;
+                }
+                
+                state_guard.log.push(format!(
+                    "Found wallet '{}' ({}/{}, {})",
+                    wallet.name, wallet.threshold, wallet.total_participants, wallet.curve_type
+                ));
+                state_guard.log.push("Starting signing session...".to_string());
+                
+                // Load wallet cryptographic materials for signing session
+                let device_id = state_guard.device_id.clone();
+                match keystore.load_wallet_file(&wallet.name, &device_id) {
+                    Ok(wallet_data) => {
+                        // Parse the wallet data JSON
+                        match std::str::from_utf8(&wallet_data) {
+                            Ok(wallet_json) => {
+                                match serde_json::from_str::<serde_json::Value>(wallet_json) {
+                                    Ok(wallet_obj) => {
+                                        // Extract key_package and group_public_key
+                                        if let (Some(key_package_str), Some(group_public_key_str)) = (
+                                            wallet_obj.get("key_package").and_then(|v| v.as_str()),
+                                            wallet_obj.get("group_public_key").and_then(|v| v.as_str())
+                                        ) {
+                                            // Deserialize the cryptographic materials
+                                            match (
+                                                serde_json::from_str::<frost_core::keys::KeyPackage<C>>(key_package_str),
+                                                serde_json::from_str::<frost_core::keys::PublicKeyPackage<C>>(group_public_key_str)
+                                            ) {
+                                                (Ok(key_package), Ok(group_public_key)) => {
+                                                    // Store the cryptographic materials in AppState
+                                                    state_guard.key_package = Some(key_package);
+                                                    state_guard.group_public_key = Some(group_public_key.clone());
+                                                    
+                                                    // Set DKG state to Complete since wallet already exists
+                                                    state_guard.dkg_state = crate::utils::state::DkgState::Complete;
+                                                    
+                                                    // Generate blockchain addresses from the group public key
+                                                    crate::protocal::dkg::generate_public_key_addresses(&mut state_guard, &group_public_key);
+                                                    
+                                                    state_guard.log.push("✅ Wallet cryptographic materials loaded successfully".to_string());
+                                                    state_guard.log.push("🔓 DKG state set to Complete - ready for signing".to_string());
+                                                },
+                                                (Err(e1), _) => {
+                                                    state_guard.log.push(format!("❌ Failed to deserialize key_package: {}", e1));
+                                                },
+                                                (_, Err(e2)) => {
+                                                    state_guard.log.push(format!("❌ Failed to deserialize group_public_key: {}", e2));
+                                                }
+                                            }
+                                        } else {
+                                            state_guard.log.push("❌ Missing key_package or group_public_key in wallet data".to_string());
+                                        }
+                                    },
+                                    Err(e) => {
+                                        state_guard.log.push(format!("❌ Failed to parse wallet JSON: {}", e));
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                state_guard.log.push(format!("❌ Failed to decode wallet data as UTF-8: {}", e));
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        state_guard.log.push(format!("❌ Failed to load wallet file: {}", e));
+                    }
+                }
+                
+                SessionType::Signing {
+                    wallet_name: wallet.name.clone(),
+                    curve_type: wallet.curve_type.clone(),
+                    blockchain: wallet.blockchain.clone(),
+                    group_public_key: wallet.group_public_key.clone(),
+                }
+            } else {
+                // No wallet found - create DKG session
+                state_guard.log.push(format!(
+                    "No wallet '{}' found.",
+                    session_id
+                ));
+                state_guard.log.push(format!(
+                    "Starting DKG to create new {}-of-{} wallet...",
+                    threshold, total
+                ));
+                SessionType::DKG
+            }
+        } else {
+            // No keystore - must be DKG
+            state_guard.log.push("No keystore initialized. Starting DKG session...".to_string());
+            SessionType::DKG
+        };
+
         let session_proposal = SessionProposal {
             session_id: session_id.clone(),
             total,
             threshold,
             participants: participants.clone(),
+            session_type: session_type.clone(),
         };
 
         state_guard.log.push(format!(
@@ -106,6 +232,7 @@ pub async fn handle_propose_session<C>(
             threshold,
             participants: participants.clone(),
             accepted_devices: vec![current_device_id.clone()],
+            session_type: session_type.clone(),
         });
 
         let mut map_created_and_check_dkg = false;
@@ -214,7 +341,7 @@ pub async fn handle_accept_session_proposal<C>(
     let internal_cmd_tx_clone = internal_cmd_tx.clone();
 
     tokio::spawn(async move {
-        let (participants_for_webrtc, device_id_for_webrtc, other_participants) = {
+        let (participants_for_webrtc, device_id_for_webrtc, other_participants, wallet_status) = {
             let mut state_guard = state_clone.lock().await;
             let current_device_id = state_guard.device_id.clone();
 
@@ -225,6 +352,116 @@ pub async fn handle_accept_session_proposal<C>(
             {
                 let invite = state_guard.invites.remove(invite_index);
 
+                // Check if this is a signing session and validate wallet
+                let mut wallet_status = None;
+                match &invite.session_type {
+                    crate::protocal::signal::SessionType::Signing { wallet_name, curve_type: _, blockchain: _, group_public_key: _ } => {
+                        state_guard.log.push(format!(
+                            "Signing session request for wallet: {}",
+                            wallet_name
+                        ));
+                        
+                        // Check if we have the wallet
+                        let has_wallet = if let Some(keystore) = &state_guard.keystore {
+                            keystore.list_wallets().iter().any(|w| &w.name == wallet_name)
+                        } else {
+                            false
+                        };
+                        
+                        if !has_wallet {
+                            state_guard.log.push(format!(
+                                "⚠️ Wallet '{}' not found in local keystore",
+                                wallet_name
+                            ));
+                            state_guard.log.push("Options:".to_string());
+                            state_guard.log.push("[1] Request wallet from participants (not implemented yet)".to_string());
+                            state_guard.log.push("[2] Import wallet from backup (use /import_wallet)".to_string());
+                            state_guard.log.push("[3] Join as observer (not implemented yet)".to_string());
+                            
+                            // For now, we'll still accept but mark wallet as missing
+                            wallet_status = Some(crate::protocal::signal::WalletStatus {
+                                has_wallet: false,
+                                wallet_valid: false,
+                                identifier: None,
+                                error_reason: Some("Wallet not found".to_string()),
+                            });
+                        } else {
+                            state_guard.log.push("✓ Wallet found in keystore".to_string());
+                            
+                            // Load wallet cryptographic materials for signing session
+                            if let Some(keystore) = &state_guard.keystore {
+                                let device_id = state_guard.device_id.clone();
+                                match keystore.load_wallet_file(wallet_name, &device_id) {
+                                    Ok(wallet_data) => {
+                                        // Parse the wallet data JSON
+                                        match std::str::from_utf8(&wallet_data) {
+                                            Ok(wallet_json) => {
+                                                match serde_json::from_str::<serde_json::Value>(wallet_json) {
+                                                    Ok(wallet_obj) => {
+                                                        // Extract key_package and group_public_key
+                                                        if let (Some(key_package_str), Some(group_public_key_str)) = (
+                                                            wallet_obj.get("key_package").and_then(|v| v.as_str()),
+                                                            wallet_obj.get("group_public_key").and_then(|v| v.as_str())
+                                                        ) {
+                                                            // Deserialize the cryptographic materials
+                                                            match (
+                                                                serde_json::from_str::<frost_core::keys::KeyPackage<C>>(key_package_str),
+                                                                serde_json::from_str::<frost_core::keys::PublicKeyPackage<C>>(group_public_key_str)
+                                                            ) {
+                                                                (Ok(key_package), Ok(group_public_key)) => {
+                                                                    // Store the cryptographic materials in AppState
+                                                                    state_guard.key_package = Some(key_package);
+                                                                    state_guard.group_public_key = Some(group_public_key.clone());
+                                                                    
+                                                                    // Set DKG state to Complete since wallet already exists
+                                                                    state_guard.dkg_state = crate::utils::state::DkgState::Complete;
+                                                                    
+                                                                    // Generate blockchain addresses from the group public key
+                                                                    crate::protocal::dkg::generate_public_key_addresses(&mut state_guard, &group_public_key);
+                                                                    
+                                                                    state_guard.log.push("✅ Wallet cryptographic materials loaded successfully".to_string());
+                                                                    state_guard.log.push("🔓 DKG state set to Complete - ready for signing".to_string());
+                                                                },
+                                                                (Err(e1), _) => {
+                                                                    state_guard.log.push(format!("❌ Failed to deserialize key_package: {}", e1));
+                                                                },
+                                                                (_, Err(e2)) => {
+                                                                    state_guard.log.push(format!("❌ Failed to deserialize group_public_key: {}", e2));
+                                                                }
+                                                            }
+                                                        } else {
+                                                            state_guard.log.push("❌ Missing key_package or group_public_key in wallet data".to_string());
+                                                        }
+                                                    },
+                                                    Err(e) => {
+                                                        state_guard.log.push(format!("❌ Failed to parse wallet JSON: {}", e));
+                                                    }
+                                                }
+                                            },
+                                            Err(e) => {
+                                                state_guard.log.push(format!("❌ Failed to decode wallet data as UTF-8: {}", e));
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        state_guard.log.push(format!("❌ Failed to load wallet file: {}", e));
+                                    }
+                                }
+                            }
+                            
+                            wallet_status = Some(crate::protocal::signal::WalletStatus {
+                                has_wallet: true,
+                                wallet_valid: true,
+                                identifier: Some(1), // TODO: Get actual identifier from wallet
+                                error_reason: None,
+                            });
+                        }
+                    }
+                    crate::protocal::signal::SessionType::DKG => {
+                        state_guard.log.push("DKG session - no wallet required".to_string());
+                    }
+                }
+                
                 state_guard
                     .log
                     .push(format!("You accepted session proposal '{}'", session_id));
@@ -256,6 +493,7 @@ pub async fn handle_accept_session_proposal<C>(
                     threshold: invite.threshold,
                     participants: invite.participants.clone(),
                     accepted_devices,
+                    session_type: invite.session_type.clone(),
                 };
                 state_guard.session = Some(session_info);
 
@@ -314,13 +552,13 @@ pub async fn handle_accept_session_proposal<C>(
                     .cloned()
                     .collect();
 
-                (invite.participants, current_device_id, other_participants)
+                (invite.participants, current_device_id, other_participants, wallet_status)
             } else {
                 state_guard.log.push(format!(
                     "No pending invite found for session '{}'",
                     session_id
                 ));
-                (Vec::new(), String::new(), Vec::new())
+                (Vec::new(), String::new(), Vec::new(), None)
             }
         };
 
@@ -329,6 +567,7 @@ pub async fn handle_accept_session_proposal<C>(
             let response = SessionResponse {
                 session_id: session_id.clone(),
                 accepted: true,
+                wallet_status: wallet_status.clone(),
             };
 
             for device in other_participants {
