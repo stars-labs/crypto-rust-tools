@@ -307,44 +307,70 @@ where
     generate_public_key(guard, group_public_key);
 }
 
-// Helper function to call the solana module
+// Helper function to generate blockchain addresses for all supported chains
 fn generate_public_key<C>(guard: &mut AppState<C>, group_public_key: &PublicKeyPackage<C>)
 where
     C: Ciphersuite,
 {
     let c_type_id = TypeId::of::<C>();
+    guard.blockchain_addresses.clear(); // Clear any existing addresses
 
     if c_type_id == TypeId::of::<Ed25519Sha512>() {
-        // Call the solana module's function
+        // Generate Solana address
         if let Some(pubkey) =
             crate::utils::solana_helper::derive_solana_public_key::<C>(group_public_key)
         {
-            guard
-                .log
-                .push(format!("Generated Solana Public Key: {}", pubkey));
-            guard.solana_public_key = Some(pubkey);
+            guard.log.push(format!("Generated Solana Public Key: {}", pubkey));
+            guard.solana_public_key = Some(pubkey.clone()); // Legacy field
+            
+            // Add to blockchain addresses
+            guard.blockchain_addresses.push(crate::keystore::BlockchainInfo {
+                blockchain: "solana".to_string(),
+                network: "mainnet".to_string(),
+                chain_id: None,
+                address: pubkey,
+                address_format: "base58".to_string(),
+                enabled: true,
+                rpc_endpoint: None,
+                metadata: None,
+            });
         } else {
-            guard
-                .log
-                .push("Error generating Solana public key from group key".to_string());
+            guard.log.push("Error generating Solana public key from group key".to_string());
         }
     } else if c_type_id == TypeId::of::<Secp256K1Sha256>() {
         let concrete_group_public_key: &PublicKeyPackage<Secp256K1Sha256> =
             unsafe { mem::transmute(group_public_key) };
         match eth_helper::derive_eth_address(concrete_group_public_key) {
             Ok(address) => {
-                // Format the address to ensure it shows the complete string
-                // ethers Address has a fixed 20-byte length (40 hex chars + 0x prefix)
-                let address_str = format!("0x{}", hex::encode(address.as_bytes()));
-                guard
-                    .log
-                    .push(format!("Generated Ethereum Address: 0x{:x}", address));
-                guard.etherum_public_key = Some(address_str); // Store the full address
+                let address_str = format!("0x{:x}", address);
+                guard.log.push(format!("Generated Ethereum Address: {}", address_str));
+                guard.etherum_public_key = Some(address_str.clone()); // Legacy field
+                
+                // Add multiple EVM-compatible blockchains
+                let evm_chains = vec![
+                    ("ethereum", "mainnet", 1),
+                    ("bsc", "mainnet", 56),
+                    ("polygon", "mainnet", 137),
+                    ("arbitrum", "mainnet", 42161),
+                    ("optimism", "mainnet", 10),
+                    ("avalanche", "mainnet", 43114),
+                ];
+                
+                for (blockchain, network, chain_id) in evm_chains {
+                    guard.blockchain_addresses.push(crate::keystore::BlockchainInfo {
+                        blockchain: blockchain.to_string(),
+                        network: network.to_string(),
+                        chain_id: Some(chain_id),
+                        address: address_str.clone(),
+                        address_format: "EIP-55".to_string(),
+                        enabled: blockchain == "ethereum", // Only Ethereum enabled by default
+                        rpc_endpoint: None,
+                        metadata: None,
+                    });
+                }
             }
             Err(e) => {
-                guard
-                    .log
-                    .push(format!("Error generating Ethereum address: {}", e));
+                guard.log.push(format!("Error generating Ethereum address: {}", e));
             }
         }
     } else {
@@ -693,7 +719,7 @@ where
                 let device_id = guard.device_id.clone();
                 let threshold = guard.session.as_ref().map_or(0, |s| s.threshold);
                 let total_participants = guard.session.as_ref().map_or(0, |s| s.total);
-                let public_address = guard.solana_public_key.clone().or_else(|| guard.etherum_public_key.clone())
+                let _public_address = guard.solana_public_key.clone().or_else(|| guard.etherum_public_key.clone())
                     .unwrap_or_else(|| "N/A".to_string());
                 
                 // Prepare key share data
@@ -703,6 +729,12 @@ where
                     "session_id": session_id,
                     "device_id": device_id
                 }).to_string();
+                
+                // Get identifier map before dropping guard
+                let identifier_map = guard.identifier_map.clone();
+                
+                // Get blockchain addresses from state - clone before dropping lock
+                let blockchains = guard.blockchain_addresses.clone();
                 
                 // Drop the guard before attempting to modify the keystore
                 drop(guard);
@@ -717,11 +749,33 @@ where
                     let password = device_id.clone();
                     let tags = vec![curve_type.to_string()];
                     
-                    keystore_mut.create_wallet(
+                    // Get participant index from identifier map
+                    let participant_index = match identifier_map.as_ref() {
+                        Some(map) => {
+                            // Get the FROST identifier for this device
+                            if let Some(frost_identifier) = map.get(&device_id) {
+                                // Serialize the identifier to get the participant index
+                                let serialized = frost_identifier.serialize();
+                                let bytes: &[u8] = serialized.as_ref();
+                                
+                                // FROST identifiers are big-endian, get the last byte for small numbers
+                                if bytes.len() > 0 { 
+                                    // For secp256k1, identifiers are 32 bytes, we want the last byte
+                                    bytes[bytes.len() - 1] as u16 
+                                } else { 
+                                    1 
+                                }
+                            } else {
+                                1
+                            }
+                        },
+                        None => 1, // Default to 1 if no map
+                    };
+                    
+                    keystore_mut.create_wallet_multi_chain(
                         &name,
                         curve_type,
-                        if curve_type == "ed25519" { "solana" } else { "ethereum" },
-                        &public_address,
+                        blockchains,
                         threshold,
                         total_participants,
                         &group_public_key_json,
@@ -729,6 +783,7 @@ where
                         &password,
                         tags,
                         description,
+                        participant_index,
                     )
                 };
                 
@@ -741,8 +796,9 @@ where
                 match result {
                     Ok(wallet_id) => {
                         final_guard.log.push(format!("✅ Successfully created wallet with session name '{}' as key share file!", name));
-                        final_guard.log.push(format!("🔐 Wallet file: {}/{}.dat", curve_type, wallet_id));
+                        final_guard.log.push(format!("🔐 Wallet file: {}/{}.json", curve_type, wallet_id));
                         final_guard.log.push("🔑 Password is set to your device ID".to_string());
+                        final_guard.log.push("📄 Wallet saved in readable JSON format (encrypted)".to_string());
                         final_guard.current_wallet_id = Some(wallet_id);
                     },
                     Err(e) => {

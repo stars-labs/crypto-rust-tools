@@ -15,6 +15,43 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
+
+/// Information about a blockchain supported by a wallet
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlockchainInfo {
+    /// Blockchain identifier (e.g., "ethereum", "bsc", "polygon", "solana")
+    pub blockchain: String,
+    
+    /// Network type (e.g., "mainnet", "testnet", "devnet")
+    pub network: String,
+    
+    /// Chain ID for EVM-compatible chains
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<u64>,
+    
+    /// Address on this blockchain
+    pub address: String,
+    
+    /// Address format/encoding (e.g., "EIP-55", "base58", "bech32")
+    pub address_format: String,
+    
+    /// Whether this blockchain is actively used
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    
+    /// Optional custom RPC endpoint
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_endpoint: Option<String>,
+    
+    /// Additional metadata specific to this blockchain
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 /// Information about a wallet stored in the keystore
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WalletInfo {
@@ -27,11 +64,14 @@ pub struct WalletInfo {
     /// Type of cryptographic curve used ("secp256k1" or "ed25519")
     pub curve_type: String,
 
-    /// Blockchain the wallet is intended for ("ethereum" or "solana")
-    pub blockchain: String,
+    /// List of blockchains supported by this wallet
+    pub blockchains: Vec<BlockchainInfo>,
 
-    /// Public blockchain address derived from the group public key
-    pub public_address: String,
+    /// Legacy fields for backward compatibility
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blockchain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_address: Option<String>,
 
     /// Minimum number of participants required to sign (threshold)
     pub threshold: u16,
@@ -56,7 +96,36 @@ pub struct WalletInfo {
 }
 
 impl WalletInfo {
-    /// Creates a new wallet info
+    /// Creates a new wallet info with multiple blockchain support
+    pub fn new_multi_chain(
+        wallet_id: String,
+        name: String,
+        curve_type: String,
+        blockchains: Vec<BlockchainInfo>,
+        threshold: u16,
+        total_participants: u16,
+        group_public_key: String,
+        tags: Vec<String>,
+        description: Option<String>,
+    ) -> Self {
+        Self {
+            wallet_id,
+            name,
+            curve_type,
+            blockchains,
+            blockchain: None,
+            public_address: None,
+            threshold,
+            total_participants,
+            created_at: current_timestamp(),
+            group_public_key,
+            devices: Vec::new(),
+            tags,
+            description,
+        }
+    }
+
+    /// Creates a new wallet info (legacy single blockchain)
     pub fn new(
         wallet_id: String,
         name: String,
@@ -69,20 +138,39 @@ impl WalletInfo {
         tags: Vec<String>,
         description: Option<String>,
     ) -> Self {
-        Self {
+        // Create BlockchainInfo from legacy fields
+        let blockchain_info = BlockchainInfo {
+            blockchain: blockchain.clone(),
+            network: "mainnet".to_string(),
+            chain_id: if blockchain == "ethereum" { Some(1) } else { None },
+            address: public_address,
+            address_format: if blockchain == "ethereum" { "EIP-55".to_string() } else { "base58".to_string() },
+            enabled: true,
+            rpc_endpoint: None,
+            metadata: None,
+        };
+
+        Self::new_multi_chain(
             wallet_id,
             name,
             curve_type,
-            blockchain,
-            public_address,
+            vec![blockchain_info],
             threshold,
             total_participants,
-            created_at: current_timestamp(),
             group_public_key,
-            devices: Vec::new(),
             tags,
             description,
-        }
+        )
+    }
+
+    /// Gets the primary blockchain (first enabled blockchain)
+    pub fn primary_blockchain(&self) -> Option<&BlockchainInfo> {
+        self.blockchains.iter().find(|b| b.enabled)
+    }
+
+    /// Gets a blockchain by name
+    pub fn get_blockchain(&self, blockchain: &str) -> Option<&BlockchainInfo> {
+        self.blockchains.iter().find(|b| b.blockchain == blockchain)
     }
 
     /// Adds a device to this wallet
@@ -129,7 +217,83 @@ impl DeviceInfo {
 
 }
 
-/// Master index of all wallets and devices
+/// Metadata embedded within each wallet file
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WalletMetadata {
+    /// Session ID from DKG that created this wallet
+    #[serde(alias = "wallet_id")] // For backward compatibility
+    pub session_id: String,
+    
+    /// Device ID that owns this key share
+    pub device_id: String,
+    
+    /// User-friendly device name (deprecated, use device_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    
+    /// Type of cryptographic curve used ("secp256k1" or "ed25519")
+    pub curve_type: String,
+    
+    /// List of blockchains supported by this wallet
+    pub blockchains: Vec<BlockchainInfo>,
+    
+    /// Legacy fields for backward compatibility
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blockchain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_address: Option<String>,
+    
+    /// Minimum number of participants required to sign
+    pub threshold: u16,
+    
+    /// Total number of participants
+    pub total_participants: u16,
+    
+    /// This device's participant index (1-based: 1, 2, 3, etc.)
+    pub participant_index: u16,
+    
+    /// This device's identifier (deprecated, use device_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    
+    /// Serialized group public key
+    pub group_public_key: String,
+    
+    /// ISO 8601 timestamp when created
+    pub created_at: String,
+    
+    /// ISO 8601 timestamp when last modified
+    pub last_modified: String,
+    
+    /// User-defined tags (deprecated, redundant with curve_type)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    
+    /// Optional description (deprecated, redundant with created_at)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Self-contained wallet file format
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct WalletFile {
+    /// Format version
+    pub version: String,
+    
+    /// Whether the data is encrypted
+    pub encrypted: bool,
+    
+    /// Encryption algorithm used (e.g., "AES-256-GCM-Argon2id" or "AES-256-GCM-PBKDF2")
+    pub algorithm: String,
+    
+    /// Base64-encoded encrypted data
+    pub data: String,
+    
+    /// Embedded metadata
+    pub metadata: WalletMetadata,
+}
+
+/// Master index of all wallets and devices (legacy - for migration only)
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct KeystoreIndex {
     /// Keystore format version

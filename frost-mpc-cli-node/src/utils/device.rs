@@ -478,16 +478,18 @@ pub async fn setup_data_channel_callbacks<C>(
                                 });
                             },
                             // Signing message handlers
-                            WebRTCMessage::SigningRequest { signing_id, transaction_data, required_signers } => {
+                            WebRTCMessage::SigningRequest { signing_id, transaction_data, required_signers, blockchain, chain_id } => {
                                 state_log.lock().await.log.push(format!(
-                                    "Received signing request from {}: id={}, required_signers={}",
-                                    device_id, signing_id, required_signers
+                                    "Received signing request from {}: id={}, blockchain={}, required_signers={}",
+                                    device_id, signing_id, blockchain, required_signers
                                 ));
                                 let _ = cmd_tx.send(InternalCommand::ProcessSigningRequest {
                                     from_device_id: device_id.clone(),
                                     signing_id,
                                     transaction_data,
                                     timestamp: chrono::Utc::now().to_rfc3339(),
+                                    blockchain,
+                                    chain_id,
                                 });
                             },
                             WebRTCMessage::SigningAcceptance { signing_id, accepted } => {

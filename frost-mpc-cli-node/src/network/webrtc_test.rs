@@ -75,6 +75,7 @@ mod tests {
             data_channels: Default::default(),
             solana_public_key: None,
             etherum_public_key: None,
+            blockchain_addresses: Vec::new(),
             mesh_status: crate::utils::state::MeshStatus::Incomplete,
             pending_mesh_ready_signals: vec![],
             own_mesh_ready_sent: false,

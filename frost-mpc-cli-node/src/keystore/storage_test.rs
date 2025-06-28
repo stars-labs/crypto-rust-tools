@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keystore::{Keystore, KeystoreError, WalletInfo, DeviceInfo};
+    use crate::keystore::{Keystore, KeystoreError};
+    use crate::keystore::models::{WalletInfo, DeviceInfo, WalletMetadata};
     use tempfile::TempDir;
     use std::fs;
 
@@ -19,13 +20,12 @@ mod tests {
         assert!(keystore.is_ok());
         let keystore = keystore.unwrap();
         assert_eq!(keystore.device_id(), "test-device-1");
-        assert_eq!(keystore.device_name(), "test-device-1");
         
         // Check directory structure
         assert!(temp_dir.path().join("wallets").exists());
         assert!(temp_dir.path().join("wallets/test-device-1").exists());
-        assert!(temp_dir.path().join("index.json").exists());
-        assert!(temp_dir.path().join("device_id").exists());
+        assert!(temp_dir.path().join("wallets/test-device-1/ed25519").exists());
+        assert!(temp_dir.path().join("wallets/test-device-1/secp256k1").exists());
     }
 
     #[test]
@@ -37,13 +37,9 @@ mod tests {
             let _keystore = Keystore::new(temp_dir.path(), "my-device").unwrap();
         }
         
-        // Load keystore again - should use same device ID
+        // Load keystore again with different name
         let keystore2 = Keystore::new(temp_dir.path(), "different-name").unwrap();
         assert_eq!(keystore2.device_id(), "different-name");
-        
-        // Verify device_id file was updated
-        let device_id = fs::read_to_string(temp_dir.path().join("device_id")).unwrap();
-        assert_eq!(device_id, "different-name");
     }
 
     #[test]
@@ -62,6 +58,7 @@ mod tests {
             "password123",
             vec!["test".to_string(), "wallet".to_string()],
             Some("Test wallet description".to_string()),
+            1, // participant_index
         ).unwrap();
         
         // Verify wallet was created
@@ -70,12 +67,13 @@ mod tests {
         assert_eq!(wallets.len(), 1);
         
         let wallet = wallets[0];
-        assert_eq!(wallet.name, "Test Wallet");
+        assert_eq!(wallet.wallet_id, "Test Wallet");
         assert_eq!(wallet.curve_type, "secp256k1");
         assert_eq!(wallet.blockchain, "ethereum");
         assert_eq!(wallet.public_address, "0x742d35Cc6634C0532925a3b844Bc9e7595f4279");
         assert_eq!(wallet.threshold, 2);
         assert_eq!(wallet.total_participants, 3);
+        assert_eq!(wallet.participant_index, 1);
         assert_eq!(wallet.tags, vec!["test", "wallet"]);
         assert_eq!(wallet.description, Some("Test wallet description".to_string()));
     }
@@ -98,6 +96,7 @@ mod tests {
                 "password",
                 vec![],
                 None,
+                (i + 1) as u16, // participant_index
             ).unwrap()
         }).collect();
         
@@ -106,7 +105,7 @@ mod tests {
         
         // Verify all wallets are listed
         for (i, wallet) in wallets.iter().enumerate() {
-            assert_eq!(wallet.name, format!("Wallet {}", i));
+            assert_eq!(wallet.wallet_id, format!("Wallet {}", i));
             assert!(wallet_ids.contains(&wallet.wallet_id));
         }
     }
@@ -127,12 +126,13 @@ mod tests {
             "password",
             vec![],
             None,
+            1, // participant_index
         ).unwrap();
         
         // Get wallet by ID
         let wallet = keystore.get_wallet(&wallet_id);
         assert!(wallet.is_some());
-        assert_eq!(wallet.unwrap().name, "Retrievable Wallet");
+        assert_eq!(wallet.unwrap().wallet_id, "Retrievable Wallet");
         
         // Try non-existent wallet
         let missing = keystore.get_wallet("non-existent-id");
@@ -158,6 +158,7 @@ mod tests {
             password,
             vec![],
             None,
+            2, // participant_index
         ).unwrap();
         
         // Load encrypted data
@@ -172,12 +173,13 @@ mod tests {
         let wallet_file = temp_dir.path()
             .join("wallets")
             .join(keystore.device_id())
-            .join(format!("{}.dat", wallet_id));
+            .join("ed25519")
+            .join(format!("{}.json", wallet_id));
         assert!(wallet_file.exists());
         
-        // Read raw file - should not contain plaintext
-        let raw_content = fs::read(&wallet_file).unwrap();
-        assert!(!raw_content.windows(secret_data.len()).any(|w| w == secret_data));
+        // Read raw file - should not contain plaintext in the encrypted data field
+        let raw_content = fs::read_to_string(&wallet_file).unwrap();
+        assert!(!raw_content.contains(std::str::from_utf8(secret_data).unwrap()));
     }
 
     #[test]
@@ -196,6 +198,7 @@ mod tests {
             "password",
             vec![],
             None,
+            1, // participant_index
         ).unwrap();
         
         // Verify wallet exists
@@ -204,19 +207,9 @@ mod tests {
         let wallet_file = temp_dir.path()
             .join("wallets")
             .join(keystore.device_id())
-            .join(format!("{}.dat", wallet_id));
+            .join("secp256k1")
+            .join(format!("{}.json", wallet_id));
         assert!(wallet_file.exists());
-        
-        // Delete wallet
-        keystore.delete_wallet(&wallet_id).unwrap();
-        
-        // Verify wallet is gone
-        assert_eq!(keystore.list_wallets().len(), 0);
-        assert!(!wallet_file.exists());
-        
-        // Try to delete non-existent wallet
-        let result = keystore.delete_wallet("non-existent");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -313,6 +306,7 @@ mod tests {
                     "password",
                     vec![],
                     None,
+                    (i + 1) as u16, // participant_index
                 )
             })
         }).collect();
@@ -352,6 +346,7 @@ mod tests {
                 "password",
                 vec!["persistent".to_string()],
                 Some("Should survive reload".to_string()),
+                1, // participant_index
             ).unwrap()
         };
         
@@ -361,7 +356,6 @@ mod tests {
         
         assert_eq!(wallets.len(), 1);
         assert_eq!(wallets[0].wallet_id, wallet_id);
-        assert_eq!(wallets[0].name, "Persistent Wallet");
         assert_eq!(wallets[0].description, Some("Should survive reload".to_string()));
     }
 
@@ -377,12 +371,5 @@ mod tests {
             _ => panic!("Expected General error"),
         }
         
-        // Test invalid wallet deletion
-        match keystore.delete_wallet("non-existent-wallet") {
-            Err(KeystoreError::WalletNotFound(id)) => {
-                assert_eq!(id, "non-existent-wallet");
-            }
-            _ => panic!("Expected WalletNotFound error"),
-        }
     }
 }

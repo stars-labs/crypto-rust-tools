@@ -91,7 +91,7 @@ pub async fn handle_propose_session<C>(
         let session_type = if let Some(keystore) = keystore_arc {
             // Check if a wallet with this name exists
             let wallets = keystore.list_wallets();
-            if let Some(wallet) = wallets.iter().find(|w| w.name == session_id) {
+            if let Some(wallet) = wallets.iter().find(|w| w.session_id == session_id) {
                 // Wallet exists - validate parameters
                 if wallet.total_participants != total {
                     state_guard.log.push(format!(
@@ -124,13 +124,13 @@ pub async fn handle_propose_session<C>(
                 
                 state_guard.log.push(format!(
                     "Found wallet '{}' ({}/{}, {})",
-                    wallet.name, wallet.threshold, wallet.total_participants, wallet.curve_type
+                    wallet.session_id, wallet.threshold, wallet.total_participants, wallet.curve_type
                 ));
                 state_guard.log.push("Starting signing session...".to_string());
                 
                 // Load wallet cryptographic materials for signing session
                 let device_id = state_guard.device_id.clone();
-                match keystore.load_wallet_file(&wallet.name, &device_id) {
+                match keystore.load_wallet_file(&wallet.session_id, &device_id) {
                     Ok(wallet_data) => {
                         // Parse the wallet data JSON
                         match std::str::from_utf8(&wallet_data) {
@@ -187,10 +187,21 @@ pub async fn handle_propose_session<C>(
                     }
                 }
                 
+                // Get primary blockchain from WalletMetadata
+                let blockchain = if !wallet.blockchains.is_empty() {
+                    wallet.blockchains.iter()
+                        .find(|b| b.enabled)
+                        .or_else(|| wallet.blockchains.first())
+                        .map(|b| b.blockchain.clone())
+                        .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    wallet.blockchain.clone().unwrap_or_else(|| "unknown".to_string())
+                };
+                    
                 SessionType::Signing {
-                    wallet_name: wallet.name.clone(),
+                    wallet_name: wallet.session_id.clone(),
                     curve_type: wallet.curve_type.clone(),
-                    blockchain: wallet.blockchain.clone(),
+                    blockchain,
                     group_public_key: wallet.group_public_key.clone(),
                 }
             } else {
@@ -363,7 +374,7 @@ pub async fn handle_accept_session_proposal<C>(
                         
                         // Check if we have the wallet
                         let has_wallet = if let Some(keystore) = &state_guard.keystore {
-                            keystore.list_wallets().iter().any(|w| &w.name == wallet_name)
+                            keystore.list_wallets().iter().any(|w| &w.session_id == wallet_name)
                         } else {
                             false
                         };

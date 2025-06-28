@@ -10,12 +10,14 @@ pub mod send_commands;
 pub mod session_commands;
 pub mod signing_commands;
 pub mod extension_commands;
+// pub mod offline_commands; // Temporarily disabled for browser compatibility focus
 
 pub use dkg_commands::*;
 pub use mesh_commands::*;
 pub use send_commands::*;
 pub use session_commands::*;
 pub use signing_commands::*;
+// pub use offline_commands::*; // Temporarily disabled
 
 #[cfg(test)]
 #[path = "signing_commands_test.rs"]

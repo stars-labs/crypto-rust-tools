@@ -1,5 +1,5 @@
-mod protocal;
-mod keystore;
+// Use modules from the library crate
+use frost_mpc_cli_node::keystore;
 
 use crossterm::{
     event::{self, Event},
@@ -29,17 +29,15 @@ use webrtc_signal_server::ClientMsg;
 // Add display-related imports for better status handling
 use frost_core::Ciphersuite;
 
-mod utils;
+// Use modules from the library crate
+use frost_mpc_cli_node::{utils, ui, network};
 
 use utils::state::{AppState, ReconnectionTracker}; // Remove DkgState import
 
-mod ui;
 use ui::tui::{draw_main_ui, handle_key_event};
-
-mod network;
 use clap::{Parser, ValueEnum};
 use network::websocket::handle_websocket_message;
-use crate::keystore::Keystore;
+use keystore::Keystore;
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Curve {
@@ -60,6 +58,10 @@ struct Args {
 
     #[arg(short, long, default_value = "wss://auto-life.tech")]
     webrtc: String,
+    
+    /// Start in offline mode (no network connectivity)
+    #[arg(long)]
+    offline: bool,
 }
 
 #[tokio::main]
@@ -96,13 +98,13 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     match args.curve {
-        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.device_id, keystore_result, ws_sink, ws_stream).await?,
-        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.device_id, keystore_result, ws_sink, ws_stream).await?,
+        Curve::Secp256k1 => run_dkg::<Secp256K1Sha256>(args.device_id, args.offline, keystore_result, ws_sink, ws_stream).await?,
+        Curve::Ed25519 => run_dkg::<Ed25519Sha512>(args.device_id, args.offline, keystore_result, ws_sink, ws_stream).await?,
     };
     Ok(())
 }
 
-async fn run_dkg<C>(device_id: String, keystore_result: Result<Keystore, crate::keystore::KeystoreError>, mut ws_sink: futures_util::stream::SplitSink<
+async fn run_dkg<C>(device_id: String, offline_mode: bool, keystore_result: Result<Keystore, crate::keystore::KeystoreError>, mut ws_sink: futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream< 
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
@@ -161,6 +163,7 @@ where
         data_channels: HashMap::new(),//p::new(),
         solana_public_key: None,
         etherum_public_key: None,
+        blockchain_addresses: Vec::new(),
         round2_secret_package: None,//),
         received_dkg_round2_packages: BTreeMap::new(), // Initialize new field
         mesh_status: MeshStatus::Incomplete,//(), // device_id -> Vec<RTCDeviceConnectionState>
@@ -169,7 +172,10 @@ where
         keystore: keystore, // Initialize keystore automatically
         current_wallet_id: None, // Initialize current wallet ID to None
         signing_state: SigningState::Idle, // Initialize signing state to idle
-        pending_signing_requests: Vec::new() // Initialize pending signing requests
+        pending_signing_requests: Vec::new(), // Initialize pending signing requests
+        offline_mode: offline_mode, // Initialize offline mode from CLI args
+        // offline_config: crate::offline::OfflineConfig::default(),
+        // offline_sessions: HashMap::new()
     }));
     let state_main_net = state.clone();
     let self_device_id_main_net = device_id.clone(); //mmunication + Internal Commands) ---
@@ -262,10 +268,11 @@ where
 
 /// Handler for internal commands sent via MPSC channel
 
-mod handlers;
+// Use handlers from the library crate
+use frost_mpc_cli_node::handlers;
 use handlers::*;
-use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, handle_create_wallet};
-use handlers::extension_commands::{handle_export_extension_backup, handle_import_extension_backup, handle_convert_dkg_to_extension};
+use handlers::keystore_commands::{handle_init_keystore, handle_list_wallets, handle_create_wallet, handle_locate_wallet};
+// Extension commands removed - using direct wallet file sharing
 
 async fn handle_internal_command<C>(
     cmd: InternalCommand<C>,
@@ -345,15 +352,9 @@ C: Ciphersuite + Send + Sync + 'static,
             handle_create_wallet(name, description, password, tags, state).await;
         }
         
-        // --- Extension Compatibility Commands ---
-        InternalCommand::ExportExtensionBackup { wallet_id, password, output_path } => {
-            handle_export_extension_backup(wallet_id, password, output_path, state).await;
-        }
-        InternalCommand::ImportExtensionBackup { backup_path, password, new_password } => {
-            handle_import_extension_backup(backup_path, password, new_password, state).await;
-        }
-        InternalCommand::ConvertDkgToExtension { password, output_path } => {
-            handle_convert_dkg_to_extension(password, output_path, state).await;
+        // --- Wallet File Location Commands ---
+        InternalCommand::LocateWallet { wallet_id } => {
+            handle_locate_wallet(wallet_id, state).await;
         }
         
         // --- DKG Commands ---
@@ -362,14 +363,14 @@ C: Ciphersuite + Send + Sync + 'static,
         }
         
         // --- Signing Command Handlers ---
-        InternalCommand::InitiateSigning { transaction_data } => {
-            handle_initiate_signing(transaction_data, state, internal_cmd_tx).await;
+        InternalCommand::InitiateSigning { transaction_data, blockchain, chain_id } => {
+            handle_initiate_signing(transaction_data, blockchain, chain_id, state, internal_cmd_tx).await;
         }
         InternalCommand::AcceptSigning { signing_id } => {
             handle_accept_signing(signing_id, state, internal_cmd_tx).await;
         }
-        InternalCommand::ProcessSigningRequest { from_device_id, signing_id, transaction_data, timestamp } => {
-            handle_process_signing_request(from_device_id, signing_id, transaction_data, timestamp, state, internal_cmd_tx).await;
+        InternalCommand::ProcessSigningRequest { from_device_id, signing_id, transaction_data, timestamp, blockchain, chain_id } => {
+            handle_process_signing_request(from_device_id, signing_id, transaction_data, timestamp, blockchain, chain_id, state, internal_cmd_tx).await;
         }
         InternalCommand::ProcessSigningAcceptance { from_device_id, signing_id, timestamp } => {
             handle_process_signing_acceptance(from_device_id, signing_id, timestamp, state, internal_cmd_tx).await;
@@ -389,6 +390,26 @@ C: Ciphersuite + Send + Sync + 'static,
         InternalCommand::InitiateFrostRound1 { signing_id, transaction_data, selected_signers } => {
             handle_initiate_frost_round1(signing_id, transaction_data, selected_signers, state, internal_cmd_tx).await;
         }
+        
+        // --- Offline Mode Command Handlers --- (temporarily disabled)
+        // InternalCommand::OfflineMode { enabled } => {
+        //     handlers::offline_commands::handle_offline_mode(enabled, state).await;
+        // }
+        // InternalCommand::CreateSigningRequest { wallet_id, message, transaction_hex } => {
+        //     handlers::offline_commands::handle_create_signing_request(wallet_id, message, transaction_hex, state).await;
+        // }
+        // InternalCommand::ExportSigningRequest { session_id, output_path } => {
+        //     handlers::offline_commands::handle_export_signing_request(session_id, output_path, state).await;
+        // }
+        // InternalCommand::ImportSigningRequest { input_path } => {
+        //     handlers::offline_commands::handle_import_signing_request(input_path, state).await;
+        // }
+        // InternalCommand::ReviewSigningRequest { session_id } => {
+        //     handlers::offline_commands::handle_review_signing_request(session_id, state).await;
+        // }
+        // InternalCommand::ListOfflineSessions => {
+        //     handlers::offline_commands::handle_list_offline_sessions(state).await;
+        // }
     }
 }
  

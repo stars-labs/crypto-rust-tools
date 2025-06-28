@@ -1,5 +1,4 @@
 use crate::utils::state::{AppState, InternalCommand, SigningState};
-
 use crate::protocal::signal::WebRTCMessage;
 use crate::protocal::dkg;
 use crate::utils::device::send_webrtc_message;
@@ -8,9 +7,14 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use std::collections::BTreeMap;
 
+// Use a type alias to work around import issues
+type BlockchainRegistry = crate::blockchain::BlockchainRegistry;
+
 /// Handles initiating a signing process
 pub async fn handle_initiate_signing<C>(
     transaction_data: String,
+    blockchain: String,
+    chain_id: Option<u64>,
     state: Arc<Mutex<AppState<C>>>,
     internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
 ) where
@@ -45,6 +49,49 @@ pub async fn handle_initiate_signing<C>(
             }
         };
         
+        // Validate blockchain and curve compatibility
+        let blockchain_registry = BlockchainRegistry::new();
+        let blockchain_handler = match blockchain_registry.get(&blockchain)
+            .or_else(|| chain_id.and_then(|id| blockchain_registry.get_by_chain_id(id))) {
+            Some(handler) => handler,
+            None => {
+                guard.log.push(format!("Unsupported blockchain: {}", blockchain));
+                return;
+            }
+        };
+        
+        // Check curve compatibility
+        // TODO: Fix TypeId comparison for curve validation
+        /*
+        let curve_type: &str = if std::any::TypeId::of::<C>() == std::any::TypeId::of::<frost_secp256k1::Secp256K1Sha256>() {
+            "secp256k1"
+        } else if std::any::TypeId::of::<C>() == std::any::TypeId::of::<frost_ed25519::Ed25519Sha512>() {
+            "ed25519"
+        } else {
+            "unknown"
+        };
+        
+        if blockchain_handler.curve_type() != curve_type {
+            guard.log.push(format!(
+                "Blockchain {} requires {} curve, but wallet uses {}",
+                blockchain, blockchain_handler.curve_type(), curve_type
+            ));
+            return;
+        }
+        */
+        
+        // Parse and validate transaction
+        let parsed_tx = match blockchain_handler.parse_transaction(&transaction_data) {
+            Ok(tx) => tx,
+            Err(e) => {
+                guard.log.push(format!("Failed to parse transaction: {}", e));
+                return;
+            }
+        };
+        
+        guard.log.push(format!("Transaction parsed: {}", parsed_tx.summary));
+        guard.log.push(format!("Transaction hash: {}", blockchain_handler.get_tx_hash(&parsed_tx)));
+        
         // Generate unique signing ID
         let signing_id = format!("sign_{}_{}", guard.device_id, chrono::Utc::now().timestamp());
         let required_signers = session.threshold as usize;
@@ -60,6 +107,8 @@ pub async fn handle_initiate_signing<C>(
             initiator: guard.device_id.clone(),
             required_signers,
             accepted_signers,
+            blockchain: blockchain.clone(),
+            chain_id,
         };
         
         guard.log.push(format!(
@@ -76,6 +125,8 @@ pub async fn handle_initiate_signing<C>(
             signing_id: signing_id.clone(),
             transaction_data: transaction_data.clone(),
             required_signers,
+            blockchain: blockchain.clone(),
+            chain_id,
         };
         
         for device_id in session_participants {
@@ -159,6 +210,8 @@ pub async fn handle_initiate_signing<C>(
                 commitments: BTreeMap::new(),
                 own_commitment: None,
                 nonces: None,
+                blockchain: blockchain.clone(),
+                chain_id,
             };
             
             // Send signer selection message to all participants
@@ -266,6 +319,8 @@ pub async fn handle_process_signing_request<C>(
     signing_id: String,
     transaction_data: String,
     _timestamp: String,
+    blockchain: String,
+    chain_id: Option<u64>,
     state: Arc<Mutex<AppState<C>>>,
     _internal_cmd_tx: mpsc::UnboundedSender<InternalCommand<C>>,
 ) where
@@ -306,7 +361,50 @@ pub async fn handle_process_signing_request<C>(
             return;
         }
         
-        guard.log.push(format!("Received signing request from {}: id={}", from_device_id, signing_id));
+        // Validate blockchain and curve compatibility
+        let blockchain_registry = BlockchainRegistry::new();
+        let blockchain_handler = match blockchain_registry.get(&blockchain)
+            .or_else(|| chain_id.and_then(|id| blockchain_registry.get_by_chain_id(id))) {
+            Some(handler) => handler,
+            None => {
+                guard.log.push(format!("Unsupported blockchain '{}' in signing request from {}", blockchain, from_device_id));
+                return;
+            }
+        };
+        
+        // Check curve compatibility
+        // TODO: Fix TypeId comparison for curve validation
+        /*
+        let curve_type: &str = if TypeId::of::<C>() == TypeId::of::<frost_secp256k1::Secp256K1Sha256>() {
+            "secp256k1"
+        } else if TypeId::of::<C>() == TypeId::of::<frost_ed25519::Ed25519Sha512>() {
+            "ed25519"
+        } else {
+            "unknown"
+        };
+        
+        if blockchain_handler.curve_type() != curve_type {
+            guard.log.push(format!(
+                "Blockchain {} requires {} curve, but wallet uses {}. Rejecting signing request from {}",
+                blockchain, blockchain_handler.curve_type(), curve_type, from_device_id
+            ));
+            return;
+        }
+        */
+        
+        // Parse and validate transaction
+        let parsed_tx = match blockchain_handler.parse_transaction(&transaction_data) {
+            Ok(tx) => tx,
+            Err(e) => {
+                guard.log.push(format!("Failed to parse transaction from {}: {}", from_device_id, e));
+                return;
+            }
+        };
+        
+        guard.log.push(format!(
+            "Received signing request from {}: id={}, blockchain={}, tx_hash={}", 
+            from_device_id, signing_id, blockchain, blockchain_handler.get_tx_hash(&parsed_tx)
+        ));
         
         // Add to pending signing requests
         guard.pending_signing_requests.push(crate::utils::state::PendingSigningRequest {
@@ -326,6 +424,8 @@ pub async fn handle_process_signing_request<C>(
             initiator: from_device_id.clone(),
             required_signers,
             accepted_signers,
+            blockchain: blockchain.clone(),
+            chain_id,
         };
         
         let pending_count = guard.pending_signing_requests.len();
@@ -358,13 +458,15 @@ pub async fn handle_process_signing_acceptance<C>(
                 accepted_signers, 
                 required_signers,
                 transaction_data,
+                blockchain,
+                chain_id,
                 .. 
             } => {
                 if current_id != &signing_id {
                     let msg = format!("Signing acceptance ID mismatch: expected {}, got {}", current_id, signing_id);
                     Some((None, msg))
                 } else {
-                    Some((Some((current_id.clone(), accepted_signers.clone(), *required_signers, transaction_data.clone())), String::new()))
+                    Some((Some((current_id.clone(), accepted_signers.clone(), *required_signers, transaction_data.clone(), blockchain.clone(), *chain_id)), String::new()))
                 }
             },
             _ => {
@@ -374,7 +476,7 @@ pub async fn handle_process_signing_acceptance<C>(
         };
         
         let (signing_info_result, error_msg) = signing_info.unwrap();
-        if let Some((current_signing_id, mut accepted_signers, required_signers, transaction_data)) = signing_info_result {
+        if let Some((current_signing_id, mut accepted_signers, required_signers, transaction_data, blockchain, chain_id)) = signing_info_result {
             // Add the accepting device
             accepted_signers.insert(from_device_id.clone());
             guard.log.push(format!("Signing acceptance from {}: {}/{} signers", from_device_id, accepted_signers.len(), required_signers));
@@ -422,6 +524,8 @@ pub async fn handle_process_signing_acceptance<C>(
                     commitments: BTreeMap::new(),
                     own_commitment: None,
                     nonces: None,
+                    blockchain,
+                    chain_id,
                 };
                 
                 // Send signer selection message to all participants
@@ -564,22 +668,58 @@ pub async fn handle_process_signing_commitment<C>(
             guard.log.push("All commitments received, transitioning to share phase".to_string());
             
             // Extract required data
-            let (commitments, our_nonces) = if let SigningState::CommitmentPhase { 
+            let (commitments, our_nonces, blockchain, chain_id) = if let SigningState::CommitmentPhase { 
                 commitments, 
                 nonces,
+                blockchain,
+                chain_id,
                 ..
             } = &mut guard.signing_state {
                 let comms = commitments.clone();
                 let nonces = nonces.take();
-                (comms, nonces)
+                (comms, nonces, blockchain.clone(), *chain_id)
             } else {
                 return;
             };
             
-            // Create signing package
+            // Get blockchain handler to format the message for signing
+            let blockchain_registry = BlockchainRegistry::new();
+            let blockchain_handler = match blockchain_registry.get(&blockchain)
+                .or_else(|| chain_id.and_then(|id| blockchain_registry.get_by_chain_id(id))) {
+                Some(handler) => handler,
+                None => {
+                    guard.log.push(format!("Error: Unsupported blockchain '{}' for signing", blockchain));
+                    guard.signing_state = SigningState::Failed {
+                        signing_id: current_signing_id,
+                        reason: format!("Unsupported blockchain: {}", blockchain),
+                    };
+                    return;
+                }
+            };
+            
+            // Parse and format the transaction for the specific blockchain
+            let signing_message = match blockchain_handler.parse_transaction(&transaction_data)
+                .and_then(|parsed_tx| blockchain_handler.format_for_signing(&parsed_tx)) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    guard.log.push(format!("Error formatting transaction for signing: {}", e));
+                    guard.signing_state = SigningState::Failed {
+                        signing_id: current_signing_id,
+                        reason: format!("Failed to format transaction: {}", e),
+                    };
+                    return;
+                }
+            };
+            
+            guard.log.push(format!(
+                "Formatted {} transaction for signing ({} bytes)",
+                blockchain, signing_message.len()
+            ));
+            
+            // Create signing package with blockchain-formatted message
             let signing_package = dkg::create_signing_package(
                 commitments.clone(),
-                transaction_data.as_bytes(),
+                &signing_message,
             );
             
             // Get our key package for signature generation
@@ -649,6 +789,8 @@ pub async fn handle_process_signing_commitment<C>(
                 signing_package: Some(signing_package),
                 shares,
                 own_share: Some(signature_share.clone()),
+                blockchain,
+                chain_id,
             };
             
             // Send our signature share to all other selected signers
@@ -788,8 +930,8 @@ pub async fn handle_process_signature_share<C>(
             guard.log.push("All signature shares received, aggregating signature".to_string());
             
             // Extract required data
-            let shares = if let SigningState::SharePhase { shares, .. } = &guard.signing_state {
-                shares.clone()
+            let (shares, blockchain, chain_id) = if let SigningState::SharePhase { shares, blockchain, chain_id, .. } = &guard.signing_state {
+                (shares.clone(), blockchain.clone(), *chain_id)
             } else {
                 return;
             };
@@ -834,13 +976,38 @@ pub async fn handle_process_signature_share<C>(
                     return;
                 }
             };
-            let signature_bytes = aggregated_result.signature_bytes;
+            let raw_signature_bytes = aggregated_result.signature_bytes;
+            
+            // Get blockchain handler for signature formatting
+            let blockchain_registry = BlockchainRegistry::new();
+            let _blockchain_handler = match blockchain_registry.get(&blockchain)
+                .or_else(|| chain_id.and_then(|id| blockchain_registry.get_by_chain_id(id))) {
+                Some(handler) => handler,
+                None => {
+                    guard.log.push(format!("Error: Unsupported blockchain '{}' for signature formatting", blockchain));
+                    guard.signing_state = SigningState::Failed {
+                        signing_id: current_signing_id,
+                        reason: format!("Unsupported blockchain: {}", blockchain),
+                    };
+                    return;
+                }
+            };
             
             guard.log.push(format!(
-                "Successfully aggregated signature for {} ({} bytes): {}",
+                "Successfully aggregated FROST signature for {} ({} bytes): {}",
                 current_signing_id,
-                signature_bytes.len(),
-                hex::encode(&signature_bytes)
+                raw_signature_bytes.len(),
+                hex::encode(&raw_signature_bytes)
+            ));
+            
+            // Note: For now we're storing the raw FROST signature bytes
+            // In the future, we can use blockchain_handler.serialize_signature() to format it
+            // blockchain-specific way (e.g., with recovery ID for Ethereum)
+            let signature_bytes = raw_signature_bytes;
+            
+            guard.log.push(format!(
+                "Signature for {} blockchain (chain_id: {:?})",
+                blockchain, chain_id
             ));
             
             // Transition to complete state
@@ -978,13 +1145,15 @@ pub async fn handle_process_signer_selection<C>(
         ));
         
         // Check if we're in the awaiting acceptance state for this signing process
-        let transaction_data = match &guard.signing_state {
+        let (transaction_data, blockchain, chain_id) = match &guard.signing_state {
             SigningState::AwaitingAcceptance { 
                 signing_id: current_id, 
                 transaction_data,
+                blockchain,
+                chain_id,
                 ..
             } if current_id == &signing_id => {
-                transaction_data.clone()
+                (transaction_data.clone(), blockchain.clone(), *chain_id)
             },
             _ => {
                 guard.log.push(format!(
@@ -1003,6 +1172,8 @@ pub async fn handle_process_signer_selection<C>(
             commitments: BTreeMap::new(),
             own_commitment: None,
             nonces: None,
+            blockchain,
+            chain_id,
         };
         
         // Get our key package for signing

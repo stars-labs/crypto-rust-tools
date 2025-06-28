@@ -10,7 +10,7 @@ mod storage;
 mod extension_compat;
 
 pub use storage::Keystore;
-pub use models::DeviceInfo;
+pub use models::{DeviceInfo, BlockchainInfo};
 pub use extension_compat::{
     ExtensionKeyShareData, ExtensionWalletMetadata,
     ExtensionKeystoreBackup, ExtensionBackupWallet,
@@ -40,6 +40,9 @@ pub enum KeystoreError {
 
     #[error("Invalid password")]
     InvalidPassword,
+    
+    #[error("Unsupported blockchain: {0}")]
+    UnsupportedBlockchain(String),
 
     #[error("General keystore error: {0}")]
     General(String),

@@ -127,6 +127,8 @@ pub enum WebRTCMessage<C: Ciphersuite> {
         signing_id: String,
         transaction_data: String, // Hex-encoded transaction data
         required_signers: usize,
+        blockchain: String,       // Blockchain identifier
+        chain_id: Option<u64>,    // Chain ID for EVM chains
     },
 
     /// Acceptance of a signing request

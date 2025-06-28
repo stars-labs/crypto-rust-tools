@@ -59,6 +59,7 @@ mod tests {
             data_channels: std::collections::HashMap::new(),
             solana_public_key: None,
             etherum_public_key: None,
+            blockchain_addresses: Vec::new(),
             mesh_status: MeshStatus::Ready,
             pending_mesh_ready_signals: vec![],
             own_mesh_ready_sent: true,

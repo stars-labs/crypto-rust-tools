@@ -1,6 +1,6 @@
 use crate::protocal::signal::SessionInfo;
-use crate::utils::state::{AppState, DkgStateDisplay}; // Now correctly imports DkgStateDisplay trait
-use crate::{InternalCommand, ClientMsg, MeshStatus}; // Add MeshStatus import
+use crate::utils::state::{AppState, DkgStateDisplay, InternalCommand, MeshStatus}; 
+use webrtc_signal_server::ClientMsg;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::any::TypeId; // Added for ciphersuite check
 use ratatui::{
@@ -46,8 +46,14 @@ pub fn draw_main_ui<B: Backend, C: Ciphersuite>(
             ])
             .split(f.area());
 
+        let title_text = if app.offline_mode {
+            format!(" Device ID: {} [🔒 OFFLINE MODE] ", app.device_id)
+        } else {
+            format!(" Device ID: {} ", app.device_id)
+        };
+        
         let title_block = Block::default()
-            .title(format!(" Device ID: {} ", app.device_id)) // Add spacing
+            .title(title_text)
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded); // Use rounded borders
         f.render_widget(title_block, main_chunks[0]);
@@ -305,13 +311,28 @@ fn draw_status_section<T: frost_core::Ciphersuite>(
         ]));
     }
 
-    // Blockchain Address display
-    if curve_name == "secp256k1" && app.etherum_public_key.is_some() {
+    // Blockchain Address display - multi-chain support
+    if !app.blockchain_addresses.is_empty() {
+        status_items.push(Line::from(vec![
+            Span::styled("Blockchain Addresses:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]));
+        
+        // Show enabled blockchain addresses
+        for blockchain_info in app.blockchain_addresses.iter().filter(|b| b.enabled) {
+            status_items.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{}: ", blockchain_info.blockchain), Style::default().fg(Color::Cyan)),
+                Span::styled(&blockchain_info.address, Style::default().fg(Color::Green)),
+            ]));
+        }
+    } else if curve_name == "secp256k1" && app.etherum_public_key.is_some() {
+        // Legacy display for backward compatibility
         status_items.push(Line::from(vec![
             Span::styled("Ethereum Address: ", Style::default().fg(Color::Yellow)),
             Span::styled(app.etherum_public_key.clone().unwrap(), Style::default().fg(Color::Green)),
         ]));
     } else if curve_name == "ed25519" && app.solana_public_key.is_some() {
+        // Legacy display for backward compatibility
         status_items.push(Line::from(vec![
             Span::styled("Solana Address: ", Style::default().fg(Color::Yellow)),
             Span::styled(app.solana_public_key.clone().unwrap(), Style::default().fg(Color::Green)),
@@ -397,28 +418,42 @@ fn draw_help_popup<B: Backend>(f: &mut Frame) {
         Line::from("  /propose <name> <total> <threshold> <devices>"),
         Line::from("    • Auto-detects: DKG if new, signing if exists"),
         Line::from("  /accept <session-id>        Accept session proposal"),
-        Line::from("  /sign <hex>                 Sign transaction"),
+        Line::from("  /sign <blockchain> <hex> [chain_id]  Sign transaction"),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Backup & Recovery:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+            Span::styled("Wallet Sharing (Chrome Extension):", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
         ]),
-        Line::from("  /export_extension <wallet> <path>  Backup wallet"),
-        Line::from("  /import_extension <path>           Restore wallet"),
-        Line::from("  /convert_dkg <path>                Backup current DKG"),
+        Line::from("  /locate_wallet <wallet>     Show wallet file location"),
+        Line::from(""),
+        Line::from("  📂 Wallet files location:"),
+        Line::from("     ~/.frost_keystore/<device>/<curve>/<wallet>.json"),
+        Line::from(""),
+        Line::from("  🚀 To share with Chrome extension:"),
+        Line::from("     1. Copy the JSON file to teammates"),
+        Line::from("     2. Import in Chrome extension"),
+        Line::from("     3. Use same password (device ID)"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Offline Mode (Coming Soon):", Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  • Air-gapped signing temporarily disabled"),
+        Line::from("  • Focus on browser compatibility first"),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tips:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
         ]),
-        Line::from("  • Use Tab to see and accept signing requests easily"),
-        Line::from("  • Session name becomes wallet name after DKG"),
-        Line::from("  • Always backup wallets after creating them"),
+        Line::from("  • Tab key shows pending signing requests"),
+        Line::from("  • Wallets created via DKG are automatically saved"),
+        Line::from("  • File location shown after wallet creation"),
+        Line::from("  • Same wallet files work in CLI and Chrome"),
         Line::from(""),
         Line::from(vec![
             Span::styled("Examples:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
         ]),
         Line::from("  /propose company-keys 3 2 alice,bob,charlie"),
-        Line::from("  /export_extension team-wallet ~/backup.json"),
-        Line::from("  /sign 1a2b3c4d5e6f..."),
+        Line::from("  /locate_wallet wallet_2of3"),
+        Line::from("  /sign ethereum 0x1a2b3c4d..."),
+        Line::from("  /sign solana AgYDQ7kgE..."),
         Line::from(""),
         Line::from(vec![
             Span::styled("Press Esc to close this help", Style::default().fg(Color::Gray))
@@ -691,21 +726,31 @@ pub fn handle_key_event<C>(
                     }
                 } else if cmd_str.starts_with("/sign") {
                     // Handle the /sign command for transaction signing
+                    // Format: /sign <blockchain> <transaction_hex> [chain_id]
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() == 2 {
-                        let transaction_data = parts[1].to_string();
+                    if parts.len() >= 3 {
+                        let blockchain = parts[1].to_string();
+                        let transaction_data = parts[2].to_string();
+                        let chain_id = parts.get(3).and_then(|s| s.parse::<u64>().ok());
                         
-                        // Validate transaction data is hex
-                        if transaction_data.chars().all(|c| c.is_ascii_hexdigit()) {
+                        // Validate transaction data is hex (allow 0x prefix)
+                        let tx_hex = transaction_data.strip_prefix("0x").unwrap_or(&transaction_data);
+                        if tx_hex.chars().all(|c| c.is_ascii_hexdigit()) {
                             let _ = cmd_tx.send(InternalCommand::InitiateSigning {
                                 transaction_data: transaction_data.clone(),
+                                blockchain: blockchain.clone(),
+                                chain_id,
                             });
-                            app.log.push(format!("Initiating signing for transaction: {}", transaction_data));
+                            app.log.push(format!("Initiating {} signing for transaction: {}", blockchain, transaction_data));
                         } else {
                             app.log.push("Invalid transaction data. Must be hexadecimal string.".to_string());
                         }
                     } else {
-                        app.log.push("Invalid /sign format. Use: /sign <transaction_hex>".to_string());
+                        app.log.push("Invalid /sign format. Use: /sign <blockchain> <transaction_hex> [chain_id]".to_string());
+                        app.log.push("Examples:".to_string());
+                        app.log.push("  /sign ethereum 0x1234...".to_string());
+                        app.log.push("  /sign polygon 0x5678... 137".to_string());
+                        app.log.push("  /sign solana <base58_or_hex>".to_string());
                     }
                 } else if cmd_str.starts_with("/init_keystore") {
                     // Handle the /init_keystore command - use convention over configuration
@@ -783,53 +828,17 @@ pub fn handle_key_event<C>(
                     app.log.push("⚙️ Storing FROST threshold signature key share in your keystore...".to_string());
                     app.log.push("🔑 Password set to your device ID. Remember to back up your keystore!".to_string());
                     } // close the else block
-                } else if cmd_str.starts_with("/export_extension") {
-                    // Handle the /export_extension command
+                } else if cmd_str.starts_with("/locate_wallet") {
+                    // Handle the /locate_wallet command - show file path for Chrome extension import
                     let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() >= 3 {
+                    if parts.len() == 2 {
                         let wallet_id = parts[1].to_string();
-                        let output_path = parts[2..].join(" "); // Handle paths with spaces
-                        let password = app.device_id.clone(); // Use device ID as password
                         
-                        let _ = cmd_tx.send(InternalCommand::ExportExtensionBackup {
+                        let _ = cmd_tx.send(InternalCommand::LocateWallet {
                             wallet_id: wallet_id.clone(),
-                            password,
-                            output_path: output_path.clone(),
                         });
-                        app.log.push(format!("Exporting wallet {} to Chrome extension format at: {}", wallet_id, output_path));
                     } else {
-                        app.log.push("Invalid /export_extension format. Use: /export_extension <wallet_id> <output_path>".to_string());
-                    }
-                } else if cmd_str.starts_with("/import_extension") {
-                    // Handle the /import_extension command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let backup_path = parts[1..].join(" "); // Handle paths with spaces
-                        let password = app.device_id.clone(); // Use device ID as password for both
-                        
-                        let _ = cmd_tx.send(InternalCommand::ImportExtensionBackup {
-                            backup_path: backup_path.clone(),
-                            password: password.clone(),
-                            new_password: password,
-                        });
-                        app.log.push(format!("Importing Chrome extension backup from: {}", backup_path));
-                    } else {
-                        app.log.push("Invalid /import_extension format. Use: /import_extension <backup_path>".to_string());
-                    }
-                } else if cmd_str.starts_with("/convert_dkg") {
-                    // Handle the /convert_dkg command
-                    let parts: Vec<_> = cmd_str.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let output_path = parts[1..].join(" "); // Handle paths with spaces
-                        let password = app.device_id.clone(); // Use device ID as password
-                        
-                        let _ = cmd_tx.send(InternalCommand::ConvertDkgToExtension {
-                            password,
-                            output_path: output_path.clone(),
-                        });
-                        app.log.push(format!("Converting current DKG session to Chrome extension format at: {}", output_path));
-                    } else {
-                        app.log.push("Invalid /convert_dkg format. Use: /convert_dkg <output_path>".to_string());
+                        app.log.push("Invalid /locate_wallet format. Use: /locate_wallet <wallet_id>".to_string());
                     }
                 } else if cmd_str.starts_with("/acceptSign") {
                     // Handle the /acceptSign command
@@ -898,6 +907,30 @@ pub fn handle_key_event<C>(
                             "Invalid /send format. Use: /send <device_id> <message>".to_string(),
                         );
                     }
+                } else if cmd_str.starts_with("/offline") {
+                    app.log.push("Offline mode temporarily disabled for browser compatibility focus".to_string());
+                    // let parts: Vec<_> = cmd_str.split_whitespace().collect();
+                    // if parts.len() == 2 {
+                    //     match parts[1] {
+                    //         "on" => {
+                    //             let _ = cmd_tx.send(InternalCommand::OfflineMode { enabled: true });
+                    //         }
+                    //         "off" => {
+                    //             let _ = cmd_tx.send(InternalCommand::OfflineMode { enabled: false });
+                    //         }
+                    //         _ => {
+                    //             app.log.push("Usage: /offline <on|off>".to_string());
+                    //         }
+                    //     }
+                    // } else {
+                    //     app.log.push("Usage: /offline <on|off>".to_string());
+                    // }
+                } else if cmd_str.starts_with("/create_signing_request") || 
+                          cmd_str.starts_with("/export_signing_request") ||
+                          cmd_str.starts_with("/import_signing_request") ||
+                          cmd_str == "/offline_sessions" ||
+                          cmd_str.starts_with("/review_signing_request") {
+                    app.log.push("Offline mode commands temporarily disabled for browser compatibility focus".to_string());
                 } else if !cmd_str.is_empty() {
                     app.log.push(format!("Unknown command: {}", cmd_str));
                 }

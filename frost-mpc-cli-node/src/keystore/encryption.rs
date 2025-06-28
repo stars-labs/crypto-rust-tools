@@ -1,7 +1,7 @@
 //! Encryption utilities for the keystore module.
 //!
 //! This module provides functions for encrypting and decrypting keystore data
-//! using AES-256-GCM with Argon2id key derivation.
+//! using AES-256-GCM with either Argon2id (CLI default) or PBKDF2 (browser compatible).
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -11,6 +11,8 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2, Params,
 };
+use pbkdf2::{pbkdf2_hmac_array};
+use sha2::Sha256;
 use rand::{rng, RngCore};
 
 use crate::keystore::KeystoreError;
@@ -20,30 +22,80 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32; // 256 bits
 
-/// Encrypts data with a password using AES-256-GCM with Argon2id key derivation.
+// PBKDF2 constants (browser compatible)
+const PBKDF2_ITERATIONS: u32 = 100_000; // Standard for PBKDF2-SHA256
+
+/// Key derivation method used for encryption
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyDerivation {
+    /// Argon2id - secure but not browser compatible
+    Argon2id,
+    /// PBKDF2-SHA256 - browser compatible
+    Pbkdf2,
+}
+
+impl KeyDerivation {
+    /// Returns the algorithm identifier string for metadata
+    pub fn algorithm_string(&self) -> &'static str {
+        match self {
+            KeyDerivation::Argon2id => "AES-256-GCM-Argon2id",
+            KeyDerivation::Pbkdf2 => "AES-256-GCM-PBKDF2",
+        }
+    }
+}
+
+/// Encrypts data with a password using AES-256-GCM with PBKDF2 key derivation.
 ///
 /// The output format is: `salt (16 bytes) + nonce (12 bytes) + ciphertext`
+/// Uses PBKDF2 for browser compatibility with Chrome extensions.
 pub fn encrypt_data(data: &[u8], password: &str) -> crate::keystore::Result<Vec<u8>> {
+    encrypt_data_with_method(data, password, KeyDerivation::Pbkdf2)
+}
+
+/// Encrypts data for browser compatibility using PBKDF2-SHA256 key derivation.
+///
+/// The output format is: `salt (16 bytes) + nonce (12 bytes) + ciphertext`
+pub fn encrypt_data_browser_compat(data: &[u8], password: &str) -> crate::keystore::Result<Vec<u8>> {
+    encrypt_data_with_method(data, password, KeyDerivation::Pbkdf2)
+}
+
+/// Encrypts data with a password using AES-256-GCM with the specified key derivation method.
+///
+/// The output format is: `salt (16 bytes) + nonce (12 bytes) + ciphertext`
+pub fn encrypt_data_with_method(data: &[u8], password: &str, method: KeyDerivation) -> crate::keystore::Result<Vec<u8>> {
     // Generate a random salt
     let mut salt = [0u8; SALT_LEN];
     rng().fill_bytes(&mut salt);
-    let salt_string = SaltString::encode_b64(&salt)
-        .map_err(|e| KeystoreError::General(format!("Salt encoding error: {}", e)))?;
 
-    // Derive key using Argon2id
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        Params::new(4096, 3, 1, Some(KEY_LEN)).unwrap(),
-    );
+    // Derive key using the specified method
+    let key = match method {
+        KeyDerivation::Argon2id => {
+            let salt_string = SaltString::encode_b64(&salt)
+                .map_err(|e| KeystoreError::General(format!("Salt encoding error: {}", e)))?;
 
-    let password_hash = argon2
-        .hash_password(password.as_bytes(), &salt_string)
-        .map_err(|e| KeystoreError::EncryptionError(format!("Password hashing error: {}", e)))?;
-    
-    let binding = password_hash.hash.unwrap();
-    let hash_bytes = binding.as_bytes();
-    let key = Key::<Aes256Gcm>::from_slice(hash_bytes);
+            let argon2 = Argon2::new(
+                argon2::Algorithm::Argon2id,
+                argon2::Version::V0x13,
+                Params::new(4096, 3, 1, Some(KEY_LEN)).unwrap(),
+            );
+
+            let password_hash = argon2
+                .hash_password(password.as_bytes(), &salt_string)
+                .map_err(|e| KeystoreError::EncryptionError(format!("Password hashing error: {}", e)))?;
+            
+            let binding = password_hash.hash.unwrap();
+            let hash_bytes = binding.as_bytes();
+            Key::<Aes256Gcm>::from_slice(hash_bytes).clone()
+        }
+        KeyDerivation::Pbkdf2 => {
+            let key_bytes: [u8; KEY_LEN] = pbkdf2_hmac_array::<Sha256, KEY_LEN>(
+                password.as_bytes(),
+                &salt,
+                PBKDF2_ITERATIONS,
+            );
+            *Key::<Aes256Gcm>::from_slice(&key_bytes)
+        }
+    };
 
     // Generate a random nonce
     let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -51,7 +103,7 @@ pub fn encrypt_data(data: &[u8], password: &str) -> crate::keystore::Result<Vec<
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt the data
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new(&key);
     let ciphertext = cipher
         .encrypt(nonce, data)
         .map_err(|e| KeystoreError::EncryptionError(format!("Encryption error: {}", e)))?;
@@ -68,7 +120,22 @@ pub fn encrypt_data(data: &[u8], password: &str) -> crate::keystore::Result<Vec<
 /// Decrypts data that was encrypted with `encrypt_data`.
 ///
 /// The input format is expected to be: `salt (16 bytes) + nonce (12 bytes) + ciphertext`
+/// This function tries both PBKDF2 and Argon2id for backward compatibility.
 pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> crate::keystore::Result<Vec<u8>> {
+    // Try PBKDF2 first (current default, browser compatible)
+    match decrypt_data_with_method(encrypted_data, password, KeyDerivation::Pbkdf2) {
+        Ok(data) => Ok(data),
+        Err(_) => {
+            // If PBKDF2 fails, try Argon2id (legacy method for backward compatibility)
+            decrypt_data_with_method(encrypted_data, password, KeyDerivation::Argon2id)
+        }
+    }
+}
+
+/// Decrypts data that was encrypted with the specified key derivation method.
+///
+/// The input format is expected to be: `salt (16 bytes) + nonce (12 bytes) + ciphertext`
+pub fn decrypt_data_with_method(encrypted_data: &[u8], password: &str, method: KeyDerivation) -> crate::keystore::Result<Vec<u8>> {
     // Check if the data is long enough to contain the salt and nonce
     if encrypted_data.len() < SALT_LEN + NONCE_LEN {
         return Err(KeystoreError::DecryptionError("Invalid encrypted data format".to_string()));
@@ -79,27 +146,39 @@ pub fn decrypt_data(encrypted_data: &[u8], password: &str) -> crate::keystore::R
     let nonce_bytes = &encrypted_data[SALT_LEN..SALT_LEN + NONCE_LEN];
     let ciphertext = &encrypted_data[SALT_LEN + NONCE_LEN..];
 
-    let salt_string = SaltString::encode_b64(salt)
-        .map_err(|e| KeystoreError::DecryptionError(format!("Salt decoding error: {}", e)))?;
+    // Derive key using the specified method
+    let key = match method {
+        KeyDerivation::Argon2id => {
+            let salt_string = SaltString::encode_b64(salt)
+                .map_err(|e| KeystoreError::DecryptionError(format!("Salt decoding error: {}", e)))?;
 
-    // Derive key using Argon2id with the same parameters as encryption
-    let argon2 = Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        Params::new(4096, 3, 1, Some(KEY_LEN)).unwrap(),
-    );
+            let argon2 = Argon2::new(
+                argon2::Algorithm::Argon2id,
+                argon2::Version::V0x13,
+                Params::new(4096, 3, 1, Some(KEY_LEN)).unwrap(),
+            );
 
-    let password_hash = argon2
-        .hash_password(password.as_bytes(), &salt_string)
-        .map_err(|e| KeystoreError::DecryptionError(format!("Password hashing error: {}", e)))?;
-    
-    let binding = password_hash.hash.unwrap();
-    let hash_bytes = binding.as_bytes();
-    let key = Key::<Aes256Gcm>::from_slice(hash_bytes);
+            let password_hash = argon2
+                .hash_password(password.as_bytes(), &salt_string)
+                .map_err(|e| KeystoreError::DecryptionError(format!("Password hashing error: {}", e)))?;
+            
+            let binding = password_hash.hash.unwrap();
+            let hash_bytes = binding.as_bytes();
+            Key::<Aes256Gcm>::from_slice(hash_bytes).clone()
+        }
+        KeyDerivation::Pbkdf2 => {
+            let key_bytes: [u8; KEY_LEN] = pbkdf2_hmac_array::<Sha256, KEY_LEN>(
+                password.as_bytes(),
+                salt,
+                PBKDF2_ITERATIONS,
+            );
+            *Key::<Aes256Gcm>::from_slice(&key_bytes)
+        }
+    };
 
     // Decrypt the data
     let nonce = Nonce::from_slice(nonce_bytes);
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new(&key);
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| KeystoreError::InvalidPassword)?;

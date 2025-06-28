@@ -8,6 +8,53 @@ use crate::{
     keystore::Keystore,
     utils::state::AppState};
 
+/// Show wallet file location for direct sharing with Chrome extension
+pub async fn handle_locate_wallet<C: frost_core::Ciphersuite + Send + Sync + 'static>(
+    wallet_id: String,
+    state: Arc<Mutex<AppState<C>>>,
+) {
+    let mut app_state = state.lock().await;
+    
+    if let Some(keystore) = &app_state.keystore {
+        if let Some(wallet) = keystore.get_wallet(&wallet_id) {
+            let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let wallet_path = home_dir
+                .join(".frost_keystore")
+                .join(&keystore.device_id())
+                .join(&wallet.curve_type)
+                .join(format!("{}.json", wallet_id));
+            
+            // Clone wallet fields to avoid borrowing issues
+            let wallet_device_id = wallet.device_id.clone();
+            let wallet_participant_index = wallet.participant_index;
+            let wallet_threshold = wallet.threshold;
+            let wallet_total_participants = wallet.total_participants;
+            
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
+            app_state.log.push("WALLET FILE LOCATION".to_string());
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
+            app_state.log.push(format!("Wallet: {}", wallet_id));
+            app_state.log.push(format!("Your device: {} (participant #{})", wallet_device_id, wallet_participant_index));
+            app_state.log.push(format!("Threshold: {}/{}", wallet_threshold, wallet_total_participants));
+            app_state.log.push(format!("File: {}", wallet_path.display()));
+            app_state.log.push("".to_string());
+            app_state.log.push("🚀 CHROME EXTENSION IMPORT:".to_string());
+            app_state.log.push("1. Copy this JSON file".to_string());
+            app_state.log.push("2. In Chrome extension, click 'Import Wallet'".to_string());
+            app_state.log.push("3. Select this file or paste its contents".to_string());
+            app_state.log.push("4. Use the same password (your device ID)".to_string());
+            app_state.log.push("".to_string());
+            app_state.log.push("💡 TIP: You can share this file with teammates for".to_string());
+            app_state.log.push("    collaborative threshold signing!".to_string());
+            app_state.log.push("═══════════════════════════════════════════════════".to_string());
+        } else {
+            app_state.log.push(format!("❌ Wallet '{}' not found", wallet_id));
+        }
+    } else {
+        app_state.log.push("❌ Keystore not initialized".to_string());
+    }
+}
+
 /// Handles the init_keystore command
 pub async fn handle_init_keystore<C: frost_core::Ciphersuite + Send + Sync + 'static>(
     path: String,
@@ -43,15 +90,37 @@ pub async fn handle_list_wallets<C: frost_core::Ciphersuite + Send + Sync + 'sta
             // Clone wallet information to avoid borrow issues
             let wallet_infos = wallets
                 .iter()
-                .map(|w| (
-                    w.wallet_id.clone(),
-                    w.name.clone(),
-                    w.threshold,
-                    w.total_participants,
-                    w.curve_type.clone(),
-                    w.blockchain.clone(),
-                    w.created_at
-                ))
+                .map(|w| {
+                    // Get blockchain info - prioritize new format, fall back to legacy
+                    let blockchains = if !w.blockchains.is_empty() {
+                        w.blockchains.clone()
+                    } else if let (Some(blockchain), Some(address)) = (&w.blockchain, &w.public_address) {
+                        // Convert legacy format
+                        vec![crate::keystore::BlockchainInfo {
+                            blockchain: blockchain.clone(),
+                            network: "mainnet".to_string(),
+                            chain_id: if blockchain == "ethereum" { Some(1) } else { None },
+                            address: address.clone(),
+                            address_format: if blockchain == "ethereum" { "EIP-55".to_string() } else { "base58".to_string() },
+                            enabled: true,
+                            rpc_endpoint: None,
+                            metadata: None,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    (
+                        w.session_id.clone(),
+                        w.session_id.clone(), // session_id serves as the name
+                        w.threshold,
+                        w.total_participants,
+                        w.curve_type.clone(),
+                        blockchains,
+                        w.created_at.clone(),
+                        w.device_id.clone()
+                    )
+                })
                 .collect::<Vec<_>>();
             
             // Now that we're done with the keystore borrow, update the UI
@@ -59,17 +128,29 @@ pub async fn handle_list_wallets<C: frost_core::Ciphersuite + Send + Sync + 'sta
             app_state.log.push("Your wallets:".to_string());
             app_state.log.push("═══════════════════════════════════════════════════".to_string());
             
-            for (_id, name, threshold, total, curve, _blockchain, created_at) in wallet_infos {
+            for (_id, name, threshold, total, curve, blockchains, created_at, device_id) in wallet_infos {
                 app_state.log.push(format!(
                     "• {} ({}/{}, {}) - {} devices",
                     name, threshold, total, curve, total
                 ));
                 app_state.log.push(format!(
-                    "  Created: {}",
-                    chrono::DateTime::<chrono::Utc>::from_timestamp(created_at as i64, 0)
-                        .map(|dt| dt.format("%Y-%m-%d").to_string())
-                        .unwrap_or_else(|| "Unknown".to_string())
+                    "  Your device: {}",
+                    device_id
                 ));
+                app_state.log.push(format!(
+                    "  Created: {}",
+                    chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .map(|dt| dt.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|_| created_at)
+                ));
+                
+                // Show enabled blockchain addresses
+                for blockchain_info in blockchains.iter().filter(|b| b.enabled) {
+                    app_state.log.push(format!(
+                        "  {}: {}",
+                        blockchain_info.blockchain, blockchain_info.address
+                    ));
+                }
             }
             app_state.log.push("═══════════════════════════════════════════════════".to_string());
             app_state.log.push("".to_string());
@@ -108,24 +189,20 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
         return;
     }
     
-    // Determine curve type and blockchain based on TypeId
+    // Determine curve type based on TypeId
     use std::any::TypeId;
     
     let curve_type_id = TypeId::of::<C>();
-    let (curve_type, blockchain) = if curve_type_id == TypeId::of::<frost_secp256k1::Secp256K1Sha256>() {
-        ("secp256k1", "ethereum")
+    let curve_type = if curve_type_id == TypeId::of::<frost_secp256k1::Secp256K1Sha256>() {
+        "secp256k1"
     } else if curve_type_id == TypeId::of::<frost_ed25519::Ed25519Sha512>() {
-        ("ed25519", "solana")
+        "ed25519"
     } else {
-        ("unknown", "unknown")
+        "unknown"
     };
     
-    // Get public address
-    let public_address = if blockchain == "ethereum" {
-        app_state.etherum_public_key.clone().unwrap_or_else(|| "N/A".to_string())
-    } else {
-        app_state.solana_public_key.clone().unwrap_or_else(|| "N/A".to_string())
-    };
+    // Get blockchain addresses from app state
+    let blockchains = app_state.blockchain_addresses.clone();
     
     // Clone necessary data before dropping the lock
     let session_id = app_state.session.as_ref().unwrap().session_id.clone();
@@ -159,11 +236,10 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
     let result = unsafe {
         let keystore_mut = &mut *keystore_ptr;
         
-        keystore_mut.create_wallet(
+        keystore_mut.create_wallet_multi_chain(
             &name,
             curve_type,
-            blockchain,
-            &public_address,
+            blockchains,
             threshold,
             total_participants,
             &group_public_key_json, // Already serialized
@@ -171,6 +247,7 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
             &password,
             tags,
             description,
+            1, // Default participant_index for manual wallet creation
         )
     };
     
@@ -182,11 +259,37 @@ pub async fn handle_create_wallet<C: frost_core::Ciphersuite + Send + Sync + 'st
     
     match result {
         Ok(wallet_id) => {
-            app_state.log.push(format!("Wallet created successfully with ID: {}", wallet_id));
-            app_state.current_wallet_id = Some(wallet_id);
+            app_state.log.push(format!("✅ Wallet created successfully with ID: {}", wallet_id));
+            app_state.current_wallet_id = Some(wallet_id.clone());
+            
+            // Show wallet file location immediately after creation
+            if let Some(keystore) = &app_state.keystore {
+                let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let wallet_path = home_dir
+                    .join(".frost_keystore")
+                    .join(&keystore.device_id())
+                    .join(curve_type)
+                    .join(format!("{}.json", wallet_id));
+                
+                app_state.log.push("".to_string());
+                app_state.log.push("═══════════════════════════════════════════════════".to_string());
+                app_state.log.push("WALLET CREATED - FILE LOCATION".to_string());
+                app_state.log.push("═══════════════════════════════════════════════════".to_string());
+                app_state.log.push(format!("📂 File: {}", wallet_path.display()));
+                app_state.log.push(format!("🔑 Your device: {}", device_id));
+                app_state.log.push("".to_string());
+                app_state.log.push("🚀 CHROME EXTENSION IMPORT:".to_string());
+                app_state.log.push("1. Copy this JSON file to share with teammates".to_string());
+                app_state.log.push("2. In Chrome extension, click 'Import Wallet'".to_string());
+                app_state.log.push("3. Select this file or paste its contents".to_string());
+                app_state.log.push("4. Use the same password (your device ID)".to_string());
+                app_state.log.push("".to_string());
+                app_state.log.push("💡 TIP: Use /locate_wallet {} to show this info again".to_string().replace("{}", &wallet_id));
+                app_state.log.push("═══════════════════════════════════════════════════".to_string());
+            }
         },
         Err(e) => {
-            app_state.log.push(format!("Failed to create wallet: {}", e));
+            app_state.log.push(format!("❌ Failed to create wallet: {}", e));
         }
     }
 }

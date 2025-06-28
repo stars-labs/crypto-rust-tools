@@ -47,7 +47,7 @@ pub struct ExtensionKeyShareData {
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionEncryptedKeyShare {
     pub wallet_id: String,
-    pub algorithm: String,  // "AES-GCM"
+    pub algorithm: String,  // "AES-256-GCM-PBKDF2" for browser compatibility
     pub salt: String,       // base64
     pub iv: String,         // base64
     pub ciphertext: String, // base64
@@ -145,7 +145,9 @@ impl ExtensionKeyShareData {
                         general_purpose::STANDARD.encode(&key_bytes),
                         general_purpose::STANDARD.encode(&pub_bytes),
                         "secp256k1",
-                        Some(wallet_info.public_address.clone()),
+                        Some(wallet_info.get_blockchain("ethereum")
+                            .map(|b| b.address.clone())
+                            .unwrap_or_else(|| "N/A".to_string())),
                         None
                     )
                 },
@@ -165,14 +167,18 @@ impl ExtensionKeyShareData {
                         general_purpose::STANDARD.encode(&pub_bytes),
                         "ed25519",
                         None,
-                        Some(wallet_info.public_address.clone())
+                        Some(wallet_info.get_blockchain("solana")
+                            .map(|b| b.address.clone())
+                            .unwrap_or_else(|| "N/A".to_string()))
                     )
                 },
                 _ => return Err(KeystoreError::General("Unknown blockchain".into())),
             };
         
         // Get group public key hex - use the provided wallet_info address
-        let group_public_key = wallet_info.public_address.clone();
+        let primary_blockchain = wallet_info.primary_blockchain()
+            .ok_or_else(|| KeystoreError::General("No enabled blockchain found".into()))?;
+        let group_public_key = primary_blockchain.address.clone();
         
         Ok(ExtensionKeyShareData {
             key_package: key_package_base64,
@@ -189,6 +195,97 @@ impl ExtensionKeyShareData {
             solana_address,
             created_at: (wallet_info.created_at * 1000) as i64,
             last_used: None, // TODO: Add last_used tracking
+            backup_date: Some(Utc::now().timestamp_millis()),
+        })
+    }
+    
+    /// Convert CLI wallet data to extension format using metadata
+    pub fn from_cli_wallet_metadata(
+        wallet_data: &WalletData,
+        wallet_metadata: &super::models::WalletMetadata,
+        _device_info: &DeviceInfo,
+    ) -> Result<Self> {
+        // Use participant index from metadata
+        let _participant_index = (wallet_metadata.participant_index - 1) as usize; // Convert to 0-based
+        
+        // Serialize key packages based on blockchain type
+        // Get the primary blockchain or first enabled one
+        let primary_blockchain = if !wallet_metadata.blockchains.is_empty() {
+            wallet_metadata.blockchains.iter()
+                .find(|b| b.enabled)
+                .or_else(|| wallet_metadata.blockchains.first())
+                .map(|b| b.blockchain.as_str())
+        } else {
+            wallet_metadata.blockchain.as_deref()
+        }.ok_or_else(|| KeystoreError::General("No blockchain specified".into()))?;
+        
+        let (key_package_base64, public_key_base64, curve, ethereum_address, solana_address) = 
+            match primary_blockchain {
+                "ethereum" => {
+                    let key_package = wallet_data.secp256k1_key_package.as_ref()
+                        .ok_or_else(|| KeystoreError::General("Missing secp256k1 key package".into()))?;
+                    let public_key = wallet_data.secp256k1_public_key.as_ref()
+                        .ok_or_else(|| KeystoreError::General("Missing secp256k1 public key".into()))?;
+                    
+                    (
+                        general_purpose::STANDARD.encode(serde_json::to_vec(key_package)
+                            .map_err(|e| KeystoreError::SerializationError(e.to_string()))?),
+                        general_purpose::STANDARD.encode(serde_json::to_vec(public_key)
+                            .map_err(|e| KeystoreError::SerializationError(e.to_string()))?),
+                        "secp256k1",
+                        Some(wallet_metadata.blockchains.iter()
+                            .find(|b| b.blockchain == "ethereum")
+                            .or_else(|| wallet_metadata.blockchains.first())
+                            .map(|b| b.address.clone())
+                            .or_else(|| wallet_metadata.public_address.clone())
+                            .unwrap_or_default()),
+                        None,
+                    )
+                }
+                "solana" => {
+                    let key_package = wallet_data.ed25519_key_package.as_ref()
+                        .ok_or_else(|| KeystoreError::General("Missing ed25519 key package".into()))?;
+                    let public_key = wallet_data.ed25519_public_key.as_ref()
+                        .ok_or_else(|| KeystoreError::General("Missing ed25519 public key".into()))?;
+                    
+                    (
+                        general_purpose::STANDARD.encode(serde_json::to_vec(key_package)
+                            .map_err(|e| KeystoreError::SerializationError(e.to_string()))?),
+                        general_purpose::STANDARD.encode(serde_json::to_vec(public_key)
+                            .map_err(|e| KeystoreError::SerializationError(e.to_string()))?),
+                        "ed25519",
+                        None,
+                        Some(wallet_metadata.blockchains.iter()
+                            .find(|b| b.blockchain == "solana")
+                            .or_else(|| wallet_metadata.blockchains.first())
+                            .map(|b| b.address.clone())
+                            .or_else(|| wallet_metadata.public_address.clone())
+                            .unwrap_or_default()),
+                    )
+                }
+                _ => return Err(KeystoreError::UnsupportedBlockchain(primary_blockchain.to_string())),
+            };
+        
+        // Group public key is already serialized as a string
+        let group_public_key = wallet_metadata.group_public_key.clone();
+        
+        Ok(ExtensionKeyShareData {
+            key_package: key_package_base64,
+            public_key_package: public_key_base64,
+            group_public_key,
+            session_id: wallet_data.session_id.clone(),
+            device_id: wallet_data.device_id.clone(),
+            participant_index: wallet_metadata.participant_index,
+            threshold: wallet_metadata.threshold,
+            total_participants: wallet_metadata.total_participants,
+            participants: vec![wallet_metadata.device_id.clone()], // Only this device for now
+            curve: curve.to_string(),
+            ethereum_address,
+            solana_address,
+            created_at: chrono::DateTime::parse_from_rfc3339(&wallet_metadata.created_at)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or_else(|_| Utc::now().timestamp_millis()),
+            last_used: None,
             backup_date: Some(Utc::now().timestamp_millis()),
         })
     }

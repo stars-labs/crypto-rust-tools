@@ -54,24 +54,9 @@ pub enum InternalCommand<C: Ciphersuite> {
         tags: Vec<String>,
     },
     
-    /// Export wallet to Chrome extension format
-    ExportExtensionBackup {
+    /// Show wallet file location for direct sharing
+    LocateWallet {
         wallet_id: String,
-        password: String,
-        output_path: String,
-    },
-    
-    /// Import wallet from Chrome extension format
-    ImportExtensionBackup {
-        backup_path: String,
-        password: String,
-        new_password: String,
-    },
-    
-    /// Convert current DKG session to Chrome extension format
-    ConvertDkgToExtension {
-        password: String,
-        output_path: String,
     },
     /// Send a message to the signaling server
     SendToServer(SharedClientMsg),
@@ -139,6 +124,8 @@ pub enum InternalCommand<C: Ciphersuite> {
     /// Initiate a signing process with transaction data
     InitiateSigning {
         transaction_data: String, // Hex-encoded transaction data
+        blockchain: String,       // Blockchain identifier (e.g., "ethereum", "solana")
+        chain_id: Option<u64>,    // Chain ID for EVM chains
     },
 
     /// Accept a signing request
@@ -152,6 +139,8 @@ pub enum InternalCommand<C: Ciphersuite> {
         signing_id: String,
         transaction_data: String,
         timestamp: String,
+        blockchain: String,
+        chain_id: Option<u64>,
     },
 
     /// Process signing acceptance from a device
@@ -195,6 +184,38 @@ pub enum InternalCommand<C: Ciphersuite> {
         transaction_data: String,
         selected_signers: Vec<Identifier<C>>,
     },
+    
+    // --- Offline Mode Commands --- (temporarily disabled for browser compatibility focus)
+    // /// Toggle offline mode
+    // OfflineMode {
+    //     enabled: bool,
+    // },
+    
+    // /// Create a signing request for offline distribution
+    // CreateSigningRequest {
+    //     wallet_id: String,
+    //     message: String,
+    //     transaction_hex: String,
+    // },
+    
+    // /// Export signing request to file/SD card
+    // ExportSigningRequest {
+    //     session_id: String,
+    //     output_path: String,
+    // },
+    
+    // /// Import signing request from file/SD card
+    // ImportSigningRequest {
+    //     input_path: String,
+    // },
+    
+    // /// Review a signing request
+    // ReviewSigningRequest {
+    //     session_id: String,
+    // },
+    
+    // /// List offline sessions
+    // ListOfflineSessions,
 }
 
 /// DKG status tracking enum
@@ -231,6 +252,8 @@ pub enum SigningState<C: Ciphersuite> {
         initiator: String,
         required_signers: usize,
         accepted_signers: HashSet<String>,
+        blockchain: String,
+        chain_id: Option<u64>,
     },
     CommitmentPhase {
         signing_id: String,
@@ -239,6 +262,8 @@ pub enum SigningState<C: Ciphersuite> {
         commitments: BTreeMap<Identifier<C>, frost_core::round1::SigningCommitments<C>>,
         own_commitment: Option<frost_core::round1::SigningCommitments<C>>,
         nonces: Option<frost_core::round1::SigningNonces<C>>,
+        blockchain: String,
+        chain_id: Option<u64>,
     },
     SharePhase {
         signing_id: String,
@@ -247,6 +272,8 @@ pub enum SigningState<C: Ciphersuite> {
         signing_package: Option<frost_core::SigningPackage<C>>,
         shares: BTreeMap<Identifier<C>, frost_core::round2::SignatureShare<C>>,
         own_share: Option<frost_core::round2::SignatureShare<C>>,
+        blockchain: String,
+        chain_id: Option<u64>,
     },
     Complete {
         signing_id: String,
@@ -403,9 +430,12 @@ pub struct AppState<C: Ciphersuite> {
     pub group_public_key: Option<PublicKeyPackage<C>>, // Use PublicKeyPackage from frost_core
     // Add data channels mapping
     pub data_channels: HashMap<String, Arc<RTCDataChannel>>,
-    // Add Solana public key
+    // Legacy fields for backward compatibility
     pub solana_public_key: Option<String>,
     pub etherum_public_key: Option<String>,
+    
+    // Multi-blockchain support
+    pub blockchain_addresses: Vec<crate::keystore::BlockchainInfo>,
     pub mesh_status: MeshStatus,
     // Buffer for MeshReady signals received before session is active
     pub pending_mesh_ready_signals: Vec<String>,
@@ -421,6 +451,11 @@ pub struct AppState<C: Ciphersuite> {
     
     // Track all pending signing requests (not just the active one)
     pub pending_signing_requests: Vec<PendingSigningRequest>,
+    
+    // --- Offline Mode --- (temporarily disabled for browser compatibility focus)
+    pub offline_mode: bool,
+    // pub offline_config: crate::offline::OfflineConfig,
+    // pub offline_sessions: HashMap<String, crate::offline::OfflineSession>,
 }
 
 // --- Reconnection Tracker ---

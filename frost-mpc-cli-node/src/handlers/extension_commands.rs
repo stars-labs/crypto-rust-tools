@@ -17,7 +17,7 @@ use crate::{
     }
 };
 
-/// Export a wallet in Chrome extension backup format
+/// Export a wallet in Chrome extension backup format using browser-compatible encryption
 pub async fn handle_export_extension_backup<C: frost_core::Ciphersuite + Send + Sync + 'static>(
     wallet_id: String,
     password: String,
@@ -33,7 +33,7 @@ pub async fn handle_export_extension_backup<C: frost_core::Ciphersuite + Send + 
                 match write_backup_to_file(&backup, &output_path) {
                     Ok(_) => {
                         app_state.log.push(format!(
-                            "Successfully exported wallet {} to extension format at: {}",
+                            "Successfully exported wallet {} to browser-compatible extension format at: {}",
                             wallet_id, output_path
                         ));
                     }
@@ -271,22 +271,36 @@ fn export_wallet_to_extension_format(
     // Device info is already available from wallet_info
     
     // Convert to extension format
-    let extension_data = ExtensionKeyShareData::from_cli_wallet(
+    let extension_data = ExtensionKeyShareData::from_cli_wallet_metadata(
         &wallet_data,
         wallet_info,
         &device_info,
-        &wallet_info.blockchain,
     )?;
     
     // Encrypt the data
     let encrypted_share = encrypt_for_extension(&extension_data, password, wallet_id)?;
     
+    // Get primary blockchain info from WalletMetadata
+    let (blockchain, address) = if !wallet_info.blockchains.is_empty() {
+        let primary = wallet_info.blockchains.iter()
+            .find(|b| b.enabled)
+            .or_else(|| wallet_info.blockchains.first())
+            .ok_or_else(|| crate::keystore::KeystoreError::General("No blockchain found".into()))?;
+        (primary.blockchain.clone(), primary.address.clone())
+    } else {
+        // Fall back to legacy fields
+        (
+            wallet_info.blockchain.clone().unwrap_or_else(|| "unknown".to_string()),
+            wallet_info.public_address.clone().unwrap_or_else(|| "".to_string())
+        )
+    };
+    
     // Create metadata
     let metadata = ExtensionWalletMetadata {
         id: wallet_id.to_string(),
-        name: wallet_info.name.clone(),
-        blockchain: wallet_info.blockchain.clone(),
-        address: wallet_info.public_address.clone(),
+        name: wallet_info.session_id.clone(), // session_id serves as name
+        blockchain,
+        address,
         session_id: wallet_data.session_id.clone(),
         is_active: true,
         has_backup: true,
@@ -350,16 +364,35 @@ fn import_wallet_from_extension_format(
             "device_id": wallet_data.device_id,
         });
         
+        // Get participant index from key share data before entering unsafe block
+        let participant_index = key_share_data.participant_index;
+        
         // Create wallet in keystore
         let keystore_ptr = Arc::into_raw(keystore.clone()) as *mut Keystore;
         let wallet_id = unsafe {
             let keystore_mut = &mut *keystore_ptr;
             
-            keystore_mut.create_wallet(
+            // Get blockchain info from wallet
+            let blockchains = if !wallet_info.blockchains.is_empty() {
+                wallet_info.blockchains.clone()
+            } else {
+                // Create from legacy fields if needed
+                vec![crate::keystore::BlockchainInfo {
+                    blockchain: wallet.metadata.blockchain.clone(),
+                    network: "mainnet".to_string(),
+                    chain_id: if wallet.metadata.blockchain == "ethereum" { Some(1) } else { None },
+                    address: wallet.metadata.address.clone(),
+                    address_format: if wallet.metadata.blockchain == "ethereum" { "EIP-55".to_string() } else { "base58".to_string() },
+                    enabled: true,
+                    rpc_endpoint: None,
+                    metadata: None,
+                }]
+            };
+            
+            keystore_mut.create_wallet_multi_chain(
                 &wallet_info.name,
                 &wallet_info.curve_type,
-                &wallet_info.blockchain,
-                &wallet_info.public_address,
+                blockchains,
                 wallet_info.threshold as u16,
                 wallet_info.total_participants as u16,
                 &wallet_info.group_public_key,
@@ -367,6 +400,7 @@ fn import_wallet_from_extension_format(
                 new_password,
                 vec![], // tags
                 Some(format!("Imported from Chrome extension backup")),
+                participant_index,
             )?
         };
         
