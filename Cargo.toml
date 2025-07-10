@@ -7,9 +7,6 @@ version = "0.1.0"
 
 [workspace]
 members = [
-    "frost-mpc-cli-node",
     "ssh-to-solana",
-    "webrtc-signal-server",
-    "webrtc-signal-server-cloudflare-worker",
     "yubikey-crpyto",
 ]
