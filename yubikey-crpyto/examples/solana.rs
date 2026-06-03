@@ -7,7 +7,7 @@ use solana_sdk::{
 };
 use std::error::Error;
 use std::io::{self, Write};
-use yubikey_crpyto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubikey_crypto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 const SOLANA_RPC_URL: &str = "https://api.testnet.solana.com";
 
@@ -17,7 +17,7 @@ struct Args {
     /// Applet: openpgp | piv
     #[arg(long, default_value = "openpgp")]
     applet: String,
-    /// Slot: openpgp `sig`, or piv `9a`/`82`/... (see `yubikey-crpyto list`)
+    /// Slot: openpgp `sig`, or piv `9a`/`82`/... (see `yubikey-crypto list`)
     #[arg(long, default_value = "sig")]
     slot: String,
 }

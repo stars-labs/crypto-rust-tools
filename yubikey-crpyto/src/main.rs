@@ -1,17 +1,17 @@
-//! `yubikey-crpyto` CLI: discover and inspect YubiKey signing accounts.
+//! `yubikey-crypto` CLI: discover and inspect YubiKey signing accounts.
 //!
 //! Examples:
-//!   yubikey-crpyto list
-//!   yubikey-crpyto address --applet piv --slot 9a --curve ed25519
-//!   yubikey-crpyto address --applet openpgp --slot sig --curve secp256k1
+//!   yubikey-crypto list
+//!   yubikey-crypto address --applet piv --slot 9a --curve ed25519
+//!   yubikey-crypto address --applet openpgp --slot sig --curve secp256k1
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use yubikey_crpyto::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
+use yubikey_crypto::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
 
 #[derive(Parser)]
 #[command(
-    name = "yubikey-crpyto",
+    name = "yubikey-crypto",
     about = "YubiKey multi-account signing utility"
 )]
 struct Cli {
@@ -72,10 +72,10 @@ fn run() -> Result<(), String> {
         Command::List => {
             // OpenPGP SIG/AUT slots: each holds one key (Solana if Ed25519,
             // Ethereum if secp256k1).
-            use yubikey_crpyto::openpgp_slot;
+            use yubikey_crypto::openpgp_slot;
             for (name, slot) in [("SIG", openpgp_slot::SIG), ("AUT", openpgp_slot::AUT)] {
                 println!("OpenPGP ({name} slot):");
-                match yubikey_crpyto::openpgp_account(slot) {
+                match yubikey_crypto::openpgp_account(slot) {
                     Ok((curve, pk)) => {
                         println!("  {}  ({})", format_address(curve, &pk)?, hex::encode(&pk))
                     }
@@ -86,7 +86,7 @@ fn run() -> Result<(), String> {
             // PIV slots: Ed25519 → Solana.
             println!("PIV slots (Ed25519 → Solana):");
             let mut found = 0;
-            for info in yubikey_crpyto::list_piv_accounts().map_err(|e| format!("{e}"))? {
+            for info in yubikey_crypto::list_piv_accounts().map_err(|e| format!("{e}"))? {
                 if let Some(pk) = info.ed25519_pubkey {
                     found += 1;
                     println!(

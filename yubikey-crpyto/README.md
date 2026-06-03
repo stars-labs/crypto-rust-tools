@@ -1,4 +1,4 @@
-# yubikey-crpyto
+# yubikey-crypto
 
 **Sign Solana and Ethereum transactions with keys that never leave your YubiKey.**
 
@@ -8,7 +8,7 @@ every signature is computed inside the secure element.
 
 ```bash
 # See every account on the key
-cargo run -p yubikey-crpyto -- list
+cargo run -p yubikey-crypto -- list
 # OpenPGP (SIG slot):  Solana: H73nCgxv5uUr62poKvJHXPhKk1pTaQp9DUtAdUxTcQir
 # OpenPGP (AUT slot):  Ethereum: 0x9f2a...c41d
 # PIV slots (Ed25519 → Solana):
@@ -49,7 +49,7 @@ carry. This crate lets you reuse it to custody blockchain keys:
 ```bash
 git clone https://github.com/stars-labs/crypto-rust-tools
 cd crypto-rust-tools
-cargo build --release -p yubikey-crpyto
+cargo build --release -p yubikey-crypto
 ```
 
 Prerequisites:
@@ -62,11 +62,11 @@ Prerequisites:
 
 ```bash
 # List all accounts (OpenPGP SIG/AUT + PIV Ed25519 slots)
-cargo run -p yubikey-crpyto -- list
+cargo run -p yubikey-crypto -- list
 
 # Show one account's address
-cargo run -p yubikey-crpyto -- address --applet piv     --slot 9a  --curve ed25519
-cargo run -p yubikey-crpyto -- address --applet openpgp --slot aut --curve secp256k1
+cargo run -p yubikey-crypto -- address --applet piv     --slot 9a  --curve ed25519
+cargo run -p yubikey-crypto -- address --applet openpgp --slot aut --curve secp256k1
 ```
 
 `--slot` accepts aliases: `sig`/`aut` (OpenPGP); `auth`/`sign`/`keymgmt`/`cardauth`
@@ -75,7 +75,7 @@ or a hex id like `9a`/`82` (PIV).
 ## Library
 
 ```rust
-use yubikey_crpyto::{get_pubkey, sign, eth, Account, Applet, Curve, openpgp_slot};
+use yubikey_crypto::{get_pubkey, sign, eth, Account, Applet, Curve, openpgp_slot};
 
 // Solana account on PIV retired slot 0x82.
 let sol = Account { applet: Applet::Piv, slot: 0x82, curve: Curve::Ed25519 };
@@ -97,11 +97,11 @@ OpenPGP SIG, Ed25519) remain available.
 
 ```bash
 # Solana transfer; choose the account with --applet/--slot
-cargo run -p yubikey-crpyto --example solana -- --applet piv --slot 9a
+cargo run -p yubikey-crypto --example solana -- --applet piv --slot 9a
 
 # Ethereum transfer (set ETHEREUM_RPC_URL in examples/ethereum.rs first).
 # Use --slot aut if your SIG slot is an Ed25519 (Solana) key.
-cargo run -p yubikey-crpyto --example ethereum -- --slot aut
+cargo run -p yubikey-crypto --example ethereum -- --slot aut
 ```
 
 ---

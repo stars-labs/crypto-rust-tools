@@ -1,16 +1,16 @@
 [package]
-name = "yubikey-crpyto"
+name = "yubikey-crypto"
 version = "0.1.2"
 edition = "2024"
 authors = ["xiongchenyu6@gmail.com>"]
-description = "YubiKey OpenPGP card signing for Ed25519 and secp256k1 based crypto signatures"
+description = "Multi-account YubiKey signing (PIV + OpenPGP) for Solana (Ed25519) and Ethereum (secp256k1)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/stars-labs/cypto-rust-tools"
-keywords = ["yubikey", "openpgp", "signing", "hardware", "crypto"]
+repository = "https://github.com/stars-labs/crypto-rust-tools"
+keywords = ["yubikey", "solana", "ethereum", "signing", "hardware"]
 categories = ["cryptography", "authentication", "hardware-support"]
 
 [lib]
-name = "yubikey_crpyto"
+name = "yubikey_crypto"
 path = "src/lib.rs"
 
 [dependencies]
