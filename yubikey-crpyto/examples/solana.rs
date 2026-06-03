@@ -1,4 +1,5 @@
 use base64::Engine;
+use clap::Parser;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     message::Message, pubkey::Pubkey, signature::Signature, system_instruction,
@@ -6,9 +7,20 @@ use solana_sdk::{
 };
 use std::error::Error;
 use std::io::{self, Write};
-use yubikey_ed25519_crpyto::{get_pubkey_from_yubikey, sign_with_yubikey};
+use yubikey_crpyto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 const SOLANA_RPC_URL: &str = "https://api.testnet.solana.com";
+
+/// Account selection for the Solana signer.
+#[derive(Parser)]
+struct Args {
+    /// Applet: openpgp | piv
+    #[arg(long, default_value = "openpgp")]
+    applet: String,
+    /// Slot: openpgp `sig`, or piv `9a`/`82`/... (see `yubikey-crpyto list`)
+    #[arg(long, default_value = "sig")]
+    slot: String,
+}
 
 fn read_line(prompt: &str) -> Result<String, Box<dyn Error>> {
     print!("{}", prompt);
@@ -32,17 +44,38 @@ fn build_transfer_tx(
 }
 
 fn main() {
-    if let Err(e) = solana_transfer_with_yubikey() {
+    let args = Args::parse();
+    let account = match build_account(&args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Invalid account selection: {}", e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = solana_transfer_with_yubikey(&account) {
         eprintln!("Transfer failed: {}", e);
         std::process::exit(1);
     }
 }
 
-fn solana_transfer_with_yubikey() -> Result<(), Box<dyn Error>> {
+fn build_account(args: &Args) -> Result<Account, Box<dyn Error>> {
+    let applet: Applet = args.applet.parse()?;
+    let slot = parse_slot(applet, &args.slot)?;
+    Ok(Account {
+        applet,
+        slot,
+        curve: Curve::Ed25519,
+    })
+}
+
+fn solana_transfer_with_yubikey(account: &Account) -> Result<(), Box<dyn Error>> {
     println!("\n--- Solana Transfer (YubiKey Signing) ---");
 
     // Fetch sender pubkey from YubiKey
-    let from_pubkey_bytes = get_pubkey_from_yubikey()?;
+    let from_pubkey_bytes: [u8; 32] = get_pubkey(account)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| "expected 32-byte Ed25519 public key")?;
     let from_pubkey = Pubkey::from(from_pubkey_bytes);
     println!("Sender pubkey (from YubiKey): {}", from_pubkey);
 
@@ -85,7 +118,7 @@ fn solana_transfer_with_yubikey() -> Result<(), Box<dyn Error>> {
 
     let msg_data = tx.message.serialize();
 
-    let signature_bytes = sign_with_yubikey(&msg_data)?;
+    let signature_bytes = sign(account, &msg_data)?;
 
     let signature_slice: &[u8];
     if signature_bytes.len() == 64 {

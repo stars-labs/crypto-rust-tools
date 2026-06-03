@@ -1,168 +1,131 @@
-use ethers::core::types::{Address, Bytes, U64, U256}; // Removed NameOrAddress, TransactionRequest
+//! Ethereum transfer signed by a YubiKey secp256k1 key (OpenPGP applet).
+//!
+//! The chosen OpenPGP slot must hold a **secp256k1** key. If your SIG slot is an
+//! Ed25519 key for Solana, put the secp256k1 key in the AUT slot and run with
+//! `--slot aut`.
+
+use clap::Parser;
+use ethers::core::types::{Address, Bytes, U64, U256};
 use ethers::providers::{Http, Middleware, Provider};
-use hex;
 use rlp::RlpStream;
 use sha3::{Digest, Keccak256};
-// use std::convert::TryFrom; // Removed unused import
 use std::error::Error;
 use std::io::{self, Write};
-use yubikey_crpyto::{get_pubkey_from_yubikey, sign_with_yubikey};
+use yubikey_crpyto::{Account, Applet, Curve, eth, parse_slot, sign};
 
-// Replace with your desired Ethereum RPC URL (e.g., Infura, Alchemy, or a local node)
-// Using Sepolia testnet as an example
-const ETHEREUM_RPC_URL: &str = "https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID"; // PLEASE REPLACE!
-const CHAIN_ID: u64 = 11155111; // Sepolia chain ID
+// Replace with your own RPC endpoint (Sepolia testnet shown).
+const ETHEREUM_RPC_URL: &str = "https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID";
+const CHAIN_ID: u64 = 11155111; // Sepolia
+
+/// OpenPGP secp256k1 account selection for the Ethereum signer.
+#[derive(Parser)]
+struct Args {
+    /// OpenPGP slot holding the secp256k1 key: `sig` or `aut`.
+    #[arg(long, default_value = "sig")]
+    slot: String,
+}
 
 fn read_line(prompt: &str) -> Result<String, Box<dyn Error>> {
-    print!("{}", prompt);
+    print!("{prompt}");
     io::stdout().flush()?;
     let mut s = String::new();
     io::stdin().read_line(&mut s)?;
     Ok(s.trim().to_string())
 }
 
-async fn ethereum_transaction_with_yubikey() -> Result<(), Box<dyn Error>> {
+fn eth_account(args: &Args) -> Result<Account, Box<dyn Error>> {
+    let slot = parse_slot(Applet::OpenPgp, &args.slot)?;
+    Ok(Account {
+        applet: Applet::OpenPgp,
+        slot,
+        curve: Curve::Secp256k1,
+    })
+}
+
+async fn ethereum_transaction_with_yubikey(account: &Account) -> Result<(), Box<dyn Error>> {
     if ETHEREUM_RPC_URL.contains("YOUR_INFURA_PROJECT_ID") {
-        eprintln!(
-            "Please replace 'YOUR_INFURA_PROJECT_ID' in ETHEREUM_RPC_URL with your actual Infura project ID."
-        );
-        return Err("RPC URL not configured".into());
+        return Err("Set ETHEREUM_RPC_URL to a real RPC endpoint first.".into());
     }
 
-    // 1. Fetch secp256k1 public key from YubiKey
-    let yubikey_secp256k1_pubkey_bytes = get_pubkey_from_yubikey()?;
+    // 1. Fetch the secp256k1 public key and derive the real Ethereum address.
+    let pubkey = yubikey_crpyto::get_pubkey(account)?; // 65-byte uncompressed point
+    let address_bytes = eth::address_from_pubkey(&pubkey)?;
+    let from = Address::from(address_bytes);
     println!(
-        "secp256k1 Public Key from YubiKey (hex): {}",
-        hex::encode(yubikey_secp256k1_pubkey_bytes)
+        "Sender address (from YubiKey): {}",
+        eth::address_to_hex(&address_bytes)
     );
 
-    // 2. Derive a "pseudo" Ethereum address from the secp256k1 public key
-    // WARNING: This is NOT how standard Ethereum addresses are derived.
-    // Standard Ethereum addresses come from secp256k1 public keys.
-    // This is purely for demonstration within this example's context.
-    let mut hasher = Keccak256::new();
-    hasher.update(yubikey_secp256k1_pubkey_bytes);
-    let pubkey_hash = hasher.finalize();
-    let pseudo_eth_address = Address::from_slice(&pubkey_hash[12..]); // Last 20 bytes
-    println!(
-        "Pseudo Ethereum Address (derived from secp256k1 PubKey): {:x}",
-        pseudo_eth_address
-    );
-
-    // 3. Connect to Ethereum node
+    // 2. Query chain state.
     let provider = Provider::<Http>::try_from(ETHEREUM_RPC_URL)?;
-    println!("Connected to Ethereum RPC: {}", ETHEREUM_RPC_URL);
-
-    // 4. Get account details (balance, nonce) for the pseudo address
-    // Note: This pseudo address will likely have 0 balance and nonce unless funded.
-    let balance = provider.get_balance(pseudo_eth_address, None).await?;
-    println!("Balance of pseudo address: {} Wei", balance);
-    let nonce = provider
-        .get_transaction_count(pseudo_eth_address, None)
-        .await?;
-    println!("Nonce for pseudo address: {}", nonce);
-
-    // 5. Get gas price
+    let balance = provider.get_balance(from, None).await?;
+    let nonce = provider.get_transaction_count(from, None).await?;
     let gas_price = provider.get_gas_price().await?;
-    println!("Current gas price: {} Wei", gas_price);
+    println!("Balance: {balance} wei | nonce: {nonce} | gas price: {gas_price} wei");
 
-    // 6. Get user input for transaction
-    let to_address_str = read_line("Recipient Ethereum address (hex, e.g., 0x...): ")?;
-    let to_address = to_address_str.parse::<Address>()?;
-    let amount_eth_str = read_line("Amount (ETH): ")?;
-    let amount_eth = amount_eth_str.parse::<f64>()?;
-    let amount_wei = U256::from((amount_eth * 1e18) as u128); // Simplified conversion
-
-    // 7. Build unsigned EIP-155 transaction
-    // For a simple ETH transfer, gas limit is typically 21000
+    // 3. Transaction parameters.
+    let to = read_line("Recipient address (0x...): ")?.parse::<Address>()?;
+    let amount_eth = read_line("Amount (ETH): ")?.parse::<f64>()?;
+    let amount_wei = U256::from((amount_eth * 1e18) as u128);
     let gas_limit = U256::from(21000);
 
-    // RLP encoding for EIP-155 signing:
-    // rlp([nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0])
-    let mut rlp_stream = RlpStream::new_list(9);
-    rlp_stream.append(&nonce);
-    rlp_stream.append(&gas_price);
-    rlp_stream.append(&gas_limit);
-    rlp_stream.append(&to_address.as_bytes());
-    rlp_stream.append(&amount_wei);
-    rlp_stream.append(&Bytes::default().as_ref()); // Empty data for ETH transfer
-    rlp_stream.append(&U64::from(CHAIN_ID));
-    rlp_stream.append(&U256::zero()); // Placeholder for r
-    rlp_stream.append(&U256::zero()); // Placeholder for s
+    // 4. RLP for EIP-155 signing: rlp([nonce, gasPrice, gas, to, value, data, chainId, 0, 0]).
+    let mut signing_rlp = RlpStream::new_list(9);
+    signing_rlp.append(&nonce);
+    signing_rlp.append(&gas_price);
+    signing_rlp.append(&gas_limit);
+    signing_rlp.append(&to.as_bytes());
+    signing_rlp.append(&amount_wei);
+    signing_rlp.append(&Bytes::default().as_ref());
+    signing_rlp.append(&U64::from(CHAIN_ID));
+    signing_rlp.append(&U256::zero());
+    signing_rlp.append(&U256::zero());
+    let signing_payload = signing_rlp.out();
 
-    let unsigned_tx_rlp = rlp_stream.out();
-    println!(
-        "RLP encoded unsigned tx (for signing): {}",
-        hex::encode(&unsigned_tx_rlp)
-    );
+    // 5. Keccak256 hash, then sign on the YubiKey (prompts for PIN).
+    let tx_hash: [u8; 32] = Keccak256::digest(&signing_payload).into();
+    println!("Signing tx hash {} on YubiKey...", hex::encode(tx_hash));
+    let card_sig = sign(account, &tx_hash)?; // bare R || S (64 bytes)
+    let rs: [u8; 64] = card_sig
+        .as_slice()
+        .try_into()
+        .map_err(|_| format!("expected 64-byte R||S, got {} bytes", card_sig.len()))?;
 
-    // 8. Hash the RLP-encoded transaction (Keccak256)
-    let mut tx_hasher = Keccak256::new();
-    tx_hasher.update(&unsigned_tx_rlp);
-    let tx_hash = tx_hasher.finalize();
-    println!(
-        "Keccak256 Hash of tx (to be signed): {}",
-        hex::encode(tx_hash)
-    );
+    // 6. Recover v, normalize to low-S, and assemble the signed transaction.
+    let signed = eth::ethereum_signature(&pubkey, &tx_hash, &rs, CHAIN_ID)?;
+    let mut tx_rlp = RlpStream::new_list(9);
+    tx_rlp.append(&nonce);
+    tx_rlp.append(&gas_price);
+    tx_rlp.append(&gas_limit);
+    tx_rlp.append(&to.as_bytes());
+    tx_rlp.append(&amount_wei);
+    tx_rlp.append(&Bytes::default().as_ref());
+    tx_rlp.append(&signed.v);
+    tx_rlp.append(&U256::from_big_endian(&signed.r));
+    tx_rlp.append(&U256::from_big_endian(&signed.s));
+    let raw_tx = tx_rlp.out().freeze();
+    println!("Signed raw tx: 0x{}", hex::encode(&raw_tx));
 
-    // 9. Sign the hash with YubiKey (secp256k1 signature)
-    // This will prompt for PIN via the yubikey-secp256k1-crpyto library
-    println!("Please verify on YubiKey and enter PIN if prompted...");
-    let secp256k1_signature_bytes = sign_with_yubikey(tx_hash.as_slice())?;
-    println!(
-        "Raw secp256k1 Signature from YubiKey (hex): {}",
-        hex::encode(&secp256k1_signature_bytes)
-    );
-    println!(
-        "WARNING: This is an secp256k1 signature. It is NOT a valid secp256k1 ECDSA signature required by Ethereum."
-    );
-
-    // 10. Constructing and sending the transaction (Conceptual - will fail on Ethereum)
-    // An Ethereum signature consists of r, s, and v.
-    // secp256k1 signature is typically 64 bytes (R || S). We cannot directly get Ethereum's v, r, s.
-    // For a real Ethereum transaction, you would use a secp256k1 key and the signature
-    // would be used to populate a TransactionRequest or a signed raw transaction.
-
-    // Example of how a signed transaction *would* be formed if we had a valid secp256k1 sig:
-    // let r = U256::from_big_endian(&secp256k1_sig[0..32]);
-    // let s = U256::from_big_endian(&secp256k1_sig[32..64]);
-    // let v = calculate_v_for_eip155(recovery_id, CHAIN_ID); // recovery_id from secp256k1 sig
-    //
-    // let tx = TransactionRequest::new()
-    //     .to(to_address)
-    //     .value(amount_wei)
-    //     .nonce(nonce)
-    //     .gas_price(gas_price)
-    //     .gas(gas_limit)
-    //     .chain_id(CHAIN_ID)
-    //     .with_signature(ethers::core::types::Signature { r, s, v: U64::from(v) });
-    //
-    // let raw_tx_bytes = tx.rlp_signed();
-    // println!("Attempting to send (this will likely be rejected by the node due to invalid signature type)...");
-    // match provider.send_raw_transaction(raw_tx_bytes).await {
-    //     Ok(pending_tx) => {
-    //         println!("Transaction submitted to mempool (but likely invalid): {:?}", pending_tx.tx_hash());
-    //         println!("Waiting for confirmation (will likely not confirm)...");
-    //         // pending_tx.await?; // This would wait for confirmation
-    //         // println!("Transaction confirmed!");
-    //     }
-    //     Err(e) => {
-    //         println!("Failed to send transaction: {}", e);
-    //         println!("This is expected because the secp256k1 signature is not valid for Ethereum.");
-    //     }
-    // }
-
-    println!("\n--- End of Ethereum YubiKey secp256k1 Signing DEMO ---");
-    println!("To interact with Ethereum, a YubiKey with a secp256k1 key (e.g., PIV applet)");
-    println!("and a compatible library for Ethereum signing would be required.");
-
+    // 7. Broadcast.
+    match provider.send_raw_transaction(raw_tx.into()).await {
+        Ok(pending) => println!("Broadcast! tx hash: {:?}", pending.tx_hash()),
+        Err(e) => println!("Broadcast failed: {e}"),
+    }
     Ok(())
 }
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = ethereum_transaction_with_yubikey().await {
-        eprintln!("Operation failed: {}", e);
+    let args = Args::parse();
+    let account = match eth_account(&args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Invalid account selection: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = ethereum_transaction_with_yubikey(&account).await {
+        eprintln!("Operation failed: {e}");
         std::process::exit(1);
     }
 }
