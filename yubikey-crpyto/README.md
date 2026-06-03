@@ -142,11 +142,52 @@ For Ethereum, the card returns a bare `R‖S`; the `eth` module recovers the
 recovery id against the public key, normalizes to low-S, and emits an EIP-155
 `(r, s, v)`.
 
+## Coexisting with GnuPG / SSH
+
+This tool talks to the card **directly over PC/SC**, independently of GnuPG. Two
+interactions are worth knowing if you also use the same YubiKey with `gpg`:
+
+**1. Card contention.** GnuPG's `scdaemon` opens the card exclusively, so the
+tool fails with `PC/SC error: ... other connections outstanding`. Release the
+card first:
+
+```bash
+gpgconf --kill scdaemon        # (and gpg-agent if needed)
+```
+
+`scdaemon` restarts on demand the next time `gpg` uses the card. Tip: `cargo run`
+is slow enough to start that `scdaemon` can re-grab the card mid-launch — build
+first, then kill `scdaemon`, then run the prebuilt binary.
+
+**2. A PIV Ed25519 key can break `gpg-agent`'s SSH.** If you use `gpg-agent` for
+SSH (`enable-ssh-support`), it auto-exposes the card's PIV **9A** key as an SSH
+identity — and GnuPG (≤ 2.4.9) mis-encodes an Ed25519 PIV key's SSH blob (it adds
+a stray `"Ed25519"` curve field). One bad blob makes `ssh-add -L` fail for the
+*whole* list with `error fetching identities: invalid format`, breaking SSH.
+
+Fix: tell `scdaemon` to ignore the PIV applet, so `gpg-agent` only serves your
+OpenPGP keys. Add to `~/.gnupg/scdaemon.conf`:
+
+```
+disable-application piv
+```
+
+(home-manager: `programs.gpg.scdaemonSettings."disable-application" = "piv";`)
+
+This does **not** affect this tool (it uses PC/SC, not scdaemon) or `ykman`; it
+only stops GnuPG from touching PIV. Then `gpgconf --kill gpg-agent scdaemon` and
+re-test `ssh-add -L`. If you instead want PIV-based SSH *through* GnuPG, use an
+RSA-2048 or NIST P-256 key in the 9A slot (not Ed25519).
+
 ## Troubleshooting
 
 - `gpg --card-status` / `ykman piv info` to inspect the card.
 - `no Ed25519 SubjectPublicKeyInfo in certificate`: the PIV slot has no cert or
   holds a non-Ed25519 key — (re)generate it as above.
+- `ssh-add -L` → `invalid format` after provisioning PIV: see *Coexisting with
+  GnuPG / SSH* above (`disable-application piv`).
+- `other connections outstanding`: `scdaemon` holds the card — `gpgconf --kill
+  scdaemon`.
 - Default PINs: OpenPGP user `123456` / admin `12345678`; PIV `123456`.
 
 ## Status
