@@ -41,6 +41,8 @@ pub fn address_to_hex(addr: &[u8; 20]) -> String {
 ///
 /// `pubkey` is the signer's 65-byte uncompressed key, used to brute-force the
 /// recovery id. The signature is normalized to low-S first (EIP-2).
+// Nested `if`s are kept (not a let-chain) so the crate still builds on rustc < 1.88.
+#[allow(clippy::collapsible_if)]
 pub fn ethereum_signature(
     pubkey: &[u8],
     msg_hash: &[u8; 32],

@@ -98,9 +98,14 @@ OpenPGP SIG, Ed25519) remain available.
 
 ## Examples
 
+The example signers are the **multi-chain test suite** (see
+[`multichain-tests/`](multichain-tests/README.md)). They use blockchain SDKs/RPC
+and require a recent toolchain (**rustc ≥ 1.89**); the core library + CLI build on
+older toolchains too.
+
 ```bash
-# Solana transfer; choose the account with --applet/--slot
-cargo run -p yubisign --example solana -- --applet piv --slot 9a
+# Solana transfer on a local node (SDK-free: raw JSON-RPC + manual tx)
+cargo run -p yubisign --example sol_surfpool -- 9a
 
 # Ethereum transfer (set ETHEREUM_RPC_URL in examples/ethereum.rs first).
 # Use --slot aut if your SIG slot is an Ed25519 (Solana) key.
@@ -210,12 +215,53 @@ Reproduce it with the suite in [`multichain-tests/`](multichain-tests/README.md)
 
 ## Backup & recovery
 
-- **On-card generated** keys (`ykman piv keys generate`) are non-exportable — no
-  backup; if the key is gone the funds are unrecoverable.
-- For recoverable accounts, **generate off-card and import** the same key to ≥2
-  YubiKeys (keep an encrypted backup), or use a **wallet multisig** across keys.
-- Lost/broken key, forgotten PIN/PUK, cloning, and full backup strategy are
-  covered in the [FAQ](../README.md#faq--backup-loss--recovery).
+Two provisioning models, pick per account:
+
+- **On-card generation** (`ykman piv keys generate`) — key never leaves the
+  secure element. Strongest, but **non-exportable = no backup**.
+- **Off-card generation + import** — the key exists as a file you can back up
+  (encrypt it!), then load onto one or more YubiKeys. Recoverable: restoring to a
+  fresh key is the *same* import and yields the *same* address.
+
+### Backup-able Ed25519 (Solana/Sui/Aptos) via PIV
+
+```bash
+# 1. Generate OFF-card — encrypt & store account.pem safely (this IS your backup)
+openssl genpkey -algorithm ed25519 -out account.pem
+openssl pkey -in account.pem -pubout -out account.pub.pem
+# 2. Import into a PIV slot + self-signed cert (repeat on each YubiKey you keep)
+ykman piv keys import 9c account.pem
+ykman piv certificates generate -s "CN=account" 9c account.pub.pem
+# 3. Verify
+yubisign address --applet piv --slot 9c --curve ed25519
+```
+
+### Backup-able secp256k1 (Ethereum/Bitcoin) via OpenPGP
+
+```bash
+# 1. Generate OFF-card and back up the secret key
+gpg --batch --pinentry-mode loopback --passphrase '' --gen-key <<'EOF'
+%no-protection
+Key-Type: ECDSA
+Key-Curve: secp256k1
+Key-Usage: sign
+Name-Real: eth-account
+Expire-Date: 0
+%commit
+EOF
+gpg --export-secret-keys --armor <KEYID> > eth-account.backup.asc   # encrypt & store
+# 2. Move it onto the card's signature slot: keytocard -> (1) Signature key -> save
+gpg --edit-key <KEYID>
+# 3. Verify
+yubisign address --applet openpgp --slot sig --curve secp256k1
+```
+
+> Restore = re-run the import (PIV) or `keytocard` from the backup (OpenPGP) on a
+> new YubiKey → identical address. `multichain-tests/run-backup.sh` proves this:
+> the offline-derived address equals the on-card address across two slots.
+
+Lost/broken key, forgotten PIN/PUK, cloning, and the full strategy (redundancy,
+encrypted backups, multisig) are in the [FAQ](../README.md#faq--backup-loss--recovery).
 
 ## Status
 
