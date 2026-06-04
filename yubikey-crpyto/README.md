@@ -1,6 +1,9 @@
 # yubikey-crypto
 
-**Sign Solana and Ethereum transactions with keys that never leave your YubiKey.**
+[![CI](https://github.com/stars-labs/crypto-rust-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/crypto-rust-tools/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
+
+**Sign Solana, Ethereum, Sui and Bitcoin transactions with keys that never leave your YubiKey.**
 
 A small Rust library + CLI that turns a YubiKey into a multi-account hardware
 wallet. Private keys are generated on-card and never touch your disk or RAM —
@@ -190,11 +193,26 @@ RSA-2048 or NIST P-256 key in the 9A slot (not Ed25519).
   scdaemon`.
 - Default PINs: OpenPGP user `123456` / admin `12345678`; PIV `123456`.
 
+## Verified on hardware (multi-chain)
+
+Every account on a real YubiKey (firmware 5.7.4) was used to sign and broadcast
+**real transactions on local nodes** — 50 in total:
+
+| Chain | Local node | Curve · slots | Result |
+|-------|-----------|---------------|--------|
+| Solana | surfpool | Ed25519 · 24 PIV | **24/24 broadcast** |
+| Sui | `sui start` localnet | Ed25519 · 24 PIV | **24/24 executed** |
+| Bitcoin | `bitcoind -regtest` | secp256k1 · OpenPGP SIG+AUT | **2/2 confirmed** |
+| Ethereum | anvil | secp256k1 · OpenPGP | broadcast & mined |
+
+Reproduce it with the suite in [`multichain-tests/`](multichain-tests/README.md)
+(signing helpers live in `examples/{sol_surfpool,sui_sign,btc_sign}.rs`).
+
 ## Status
 
-Byte-level logic (APDU/TLV/signature recovery) is covered by unit tests,
-including a known Hardhat address vector. The live card round-trips
-(SELECT / PIN / sign) should be verified on your own hardware.
+Byte-level logic (APDU/TLV/signature recovery) is covered by unit tests
+(run in CI), including a known Hardhat address vector. Live card round-trips
+are exercised by the hardware suite above.
 
 ## License
 

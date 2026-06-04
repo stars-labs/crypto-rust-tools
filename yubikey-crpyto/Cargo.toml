@@ -1,6 +1,6 @@
 [package]
 name = "yubikey-crypto"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 authors = ["xiongchenyu6@gmail.com>"]
 description = "Multi-account YubiKey signing (PIV + OpenPGP) for Solana (Ed25519) and Ethereum (secp256k1)"
@@ -37,3 +37,9 @@ rlp = "0.5"
 sha3 = "0.10"
 tokio = { version = "1", features = ["full"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
+
+# Used only by the multi-chain test examples (Sui/Bitcoin signing helpers).
+[dev-dependencies]
+blake2 = "0.10"
+ripemd = "0.2"
+bech32 = "0.9"
