@@ -29,7 +29,7 @@ The Solana example is **SDK-free** (raw JSON-RPC over a socket + manual tx
 serialization), so it pulls no `solana-sdk` tree.
 
 > **Toolchain:** the example signers use modern blockchain crates and need
-> **rustc ≥ 1.89**. The core library + CLI build on older toolchains. If your dev
+> **rustc ≥ 1.91**. The core library + CLI build on older toolchains. If your dev
 > shell pins an older Rust (e.g. a Nix flake), bump it before running these.
 
 ## Prerequisites

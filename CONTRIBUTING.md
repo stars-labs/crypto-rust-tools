@@ -14,7 +14,7 @@ yubiwallet/
 ```
 
 **Dependency rule:** the library + CLI must stay SDK-free — only PC/SC, crypto
-and encoding crates. Anything blockchain-specific (ethers, etc.) goes in
+and encoding crates. Anything blockchain-specific (alloy, etc.) goes in
 `[dev-dependencies]` and is used by `examples/` only. This keeps the trusted
 surface small and the crate buildable on older toolchains.
 
@@ -28,7 +28,7 @@ cargo clippy -p yubiwallet --all-targets
 ```
 
 The library, CLI and unit tests build on older Rust. The **example signers need
-rustc ≥ 1.89** (modern blockchain crates). If your dev shell pins an older Rust
+rustc ≥ 1.91** (modern blockchain crates). If your dev shell pins an older Rust
 (e.g. a Nix flake), bump it before building examples.
 
 ## Hardware tests

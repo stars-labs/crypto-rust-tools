@@ -30,9 +30,10 @@ thiserror = "2.0"
 # Used only by the example signers / hardware test suite. The Solana example is
 # SDK-free (std-only JSON-RPC + manual tx) — solana-sdk 4.x is intentionally not
 # a dependency (its solana-keypair/five8 combo is broken upstream, and it pulls a
-# huge tree). Ethereum uses ethers; Sui/Bitcoin use small encoding crates.
+# huge tree). Ethereum uses alloy (the maintained successor to ethers, on modern
+# reqwest/rustls/ring); Sui/Bitcoin use small encoding crates.
 [dev-dependencies]
-ethers = { version = "2.0", features = ["legacy"] }
+alloy = { version = "2.0", features = ["consensus", "network", "providers", "transport-http", "reqwest-rustls-tls", "rpc-types"] }
 tokio = { version = "1", features = ["full"] }
 sha2 = "0.11"
 blake2 = "0.10"

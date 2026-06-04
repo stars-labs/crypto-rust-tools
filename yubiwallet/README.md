@@ -100,7 +100,7 @@ OpenPGP SIG, Ed25519) remain available.
 
 The example signers are the **multi-chain test suite** (see
 [`multichain-tests/`](multichain-tests/README.md)). They use blockchain SDKs/RPC
-and require a recent toolchain (**rustc ≥ 1.89**); the core library + CLI build on
+and require a recent toolchain (**rustc ≥ 1.91**); the core library + CLI build on
 older toolchains too.
 
 ```bash

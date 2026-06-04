@@ -3,11 +3,15 @@
 //! The chosen OpenPGP slot must hold a **secp256k1** key. If your SIG slot is an
 //! Ed25519 key for Solana, put the secp256k1 key in the AUT slot and run with
 //! `--slot aut`.
+//!
+//! Uses `alloy` (the maintained successor to ethers) purely for RPC and tx
+//! encoding; the signature itself is produced on-card via `yubiwallet::sign`.
 
+use alloy::consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+use alloy::eips::eip2718::Encodable2718;
+use alloy::primitives::{Address, Bytes, Signature, TxKind, U256};
+use alloy::providers::{Provider, ProviderBuilder};
 use clap::Parser;
-use ethers::core::types::transaction::eip2718::TypedTransaction;
-use ethers::core::types::{Address, Signature as EthSig, TransactionRequest, U256};
-use ethers::providers::{Http, Middleware, Provider};
 use std::error::Error;
 use std::io::{self, Write};
 use yubiwallet::{Account, Applet, Curve, eth, parse_slot, sign};
@@ -56,44 +60,51 @@ async fn ethereum_transaction_with_yubikey(account: &Account) -> Result<(), Box<
     );
 
     // 2. Query chain state.
-    let provider = Provider::<Http>::try_from(ETHEREUM_RPC_URL)?;
-    let balance = provider.get_balance(from, None).await?;
-    let nonce = provider.get_transaction_count(from, None).await?;
+    let provider = ProviderBuilder::new().connect_http(ETHEREUM_RPC_URL.parse()?);
+    let balance = provider.get_balance(from).await?;
+    let nonce = provider.get_transaction_count(from).await?;
     let gas_price = provider.get_gas_price().await?;
     println!("Balance: {balance} wei | nonce: {nonce} | gas price: {gas_price} wei");
 
-    // 3. Build a legacy EIP-155 transaction with ethers.
+    // 3. Build a legacy EIP-155 transaction with alloy.
     let to = read_line("Recipient address (0x...): ")?.parse::<Address>()?;
     let amount_wei = U256::from((read_line("Amount (ETH): ")?.parse::<f64>()? * 1e18) as u128);
-    let tx: TypedTransaction = TransactionRequest::new()
-        .to(to)
-        .value(amount_wei)
-        .nonce(nonce)
-        .gas(21000u64)
-        .gas_price(gas_price)
-        .chain_id(CHAIN_ID)
-        .into();
+    let tx = TxLegacy {
+        chain_id: Some(CHAIN_ID),
+        nonce,
+        gas_price,
+        gas_limit: 21_000,
+        to: TxKind::Call(to),
+        value: amount_wei,
+        input: Bytes::new(),
+    };
 
-    // 4. Sign the EIP-155 sighash on the YubiKey (prompts for PIN).
-    let tx_hash: [u8; 32] = tx.sighash().0;
+    // 4. Sign the EIP-155 signature hash on the YubiKey (prompts for PIN).
+    let tx_hash: [u8; 32] = tx.signature_hash().0;
     println!("Signing tx hash {} on YubiKey...", hex::encode(tx_hash));
     let rs: [u8; 64] = sign(account, &tx_hash)?
         .as_slice()
         .try_into()
         .map_err(|_| "expected 64-byte R||S")?;
 
-    // 5. Recover v / low-S, assemble the signed tx with ethers, broadcast.
+    // 5. Recover the parity / low-S, then let alloy encode the EIP-155 `v`.
+    //    `eth::ethereum_signature` returns low-S r/s and the EIP-155 `v`; the
+    //    raw recovery id (0/1) is `v - chain_id*2 - 35`, which is the y-parity
+    //    alloy needs (it recomputes the legacy `v` from chain_id on encoding).
     let signed = eth::ethereum_signature(&pubkey, &tx_hash, &rs, CHAIN_ID)?;
-    let eth_sig = EthSig {
-        r: U256::from_big_endian(&signed.r),
-        s: U256::from_big_endian(&signed.s),
-        v: signed.v,
-    };
-    let raw = tx.rlp_signed(&eth_sig);
+    let parity = (signed.v - CHAIN_ID * 2 - 35) == 1;
+    let sig = Signature::new(
+        U256::from_be_bytes(signed.r),
+        U256::from_be_bytes(signed.s),
+        parity,
+    );
+
+    let envelope: TxEnvelope = tx.into_signed(sig).into();
+    let raw = envelope.encoded_2718();
     println!("Signed raw tx: 0x{}", hex::encode(&raw));
 
-    match provider.send_raw_transaction(raw).await {
-        Ok(pending) => println!("Broadcast! tx hash: {:?}", pending.tx_hash()),
+    match provider.send_raw_transaction(&raw).await {
+        Ok(pending) => println!("Broadcast! tx hash: {}", pending.tx_hash()),
         Err(e) => println!("Broadcast failed: {e}"),
     }
     Ok(())
