@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/stars-labs/yubisign"
 keywords = ["yubikey", "solana", "ethereum", "signing", "hardware"]
 categories = ["cryptography", "authentication", "hardware-support"]
+# Shell-based hardware test suite isn't part of the published crate.
+exclude = ["multichain-tests/"]
 
 [lib]
 name = "yubisign"

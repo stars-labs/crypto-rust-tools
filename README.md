@@ -26,6 +26,8 @@ PIV slots (Ed25519 → Solana):
   ... (24 PIV accounts)
 ```
 
+<sub>Record a GIF of your own setup with [`vhs demo/demo.tape`](demo/demo.tape).</sub>
+
 ## Why YubiSign
 
 - 🌱 **No seed phrase.** The #1 way people lose crypto is a lost or stolen
@@ -142,6 +144,12 @@ Back up your PIN / PUK / Admin PIN somewhere safe too.
 **Does YubiSign store my keys or a seed anywhere?**
 No. There is no seed phrase and YubiSign writes no key file — it only talks to
 the card; signing happens on-card after PIN entry.
+
+## Contributing & security
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The keep-it-tiny
+dependency rule and threat model are in [SECURITY.md](SECURITY.md); please report
+vulnerabilities privately (see that file).
 
 ## License
 
