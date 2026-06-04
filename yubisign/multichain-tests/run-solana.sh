@@ -9,7 +9,7 @@ PIN=${YK_PIN:-123456}
 SLOTS="9a 9c 9d 9e 82 83 84 85 86 87 88 89 8a 8b 8c 8d 8e 8f 90 91 92 93 94 95"
 
 cd "$(dirname "$0")/../.."                      # workspace root (crypto-rust-tools)
-cargo build -q -p yubikey-crypto --example sol_surfpool
+cargo build -q -p yubisign --example sol_surfpool
 BIN=target/debug/examples/sol_surfpool
 gpgconf --kill scdaemon gpg-agent 2>/dev/null || true   # release card from scdaemon
 

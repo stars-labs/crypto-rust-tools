@@ -1,18 +1,19 @@
-//! `yubikey-crypto` CLI: discover and inspect YubiKey signing accounts.
+//! `yubisign` CLI: a seedless multi-chain hardware wallet on a YubiKey.
 //!
 //! Examples:
-//!   yubikey-crypto list
-//!   yubikey-crypto address --applet piv --slot 9a --curve ed25519
-//!   yubikey-crypto address --applet openpgp --slot sig --curve secp256k1
+//!   yubisign list
+//!   yubisign address --applet piv --slot 9a --curve ed25519
+//!   yubisign address --applet openpgp --slot sig --curve secp256k1
+//!   yubisign ssh-to-solana "ssh-ed25519 AAAA..."
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use yubikey_crypto::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
+use yubisign::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
 
 #[derive(Parser)]
 #[command(
-    name = "yubikey-crypto",
-    about = "YubiKey multi-account signing utility"
+    name = "yubisign",
+    about = "Seedless multi-chain hardware wallet on a YubiKey"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -21,10 +22,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Enumerate PIV signing slots and show any Ed25519 accounts found.
+    /// Enumerate all accounts (OpenPGP SIG/AUT + PIV Ed25519 slots).
     List,
     /// Show the address for one account.
     Address(AccountArgs),
+    /// Convert a GPG-exported Ed25519 SSH public key to a Solana address.
+    SshToSolana {
+        /// SSH key (`ssh-ed25519 AAAA... [comment]`). Reads stdin if omitted.
+        ssh_key: Option<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -72,10 +78,10 @@ fn run() -> Result<(), String> {
         Command::List => {
             // OpenPGP SIG/AUT slots: each holds one key (Solana if Ed25519,
             // Ethereum if secp256k1).
-            use yubikey_crypto::openpgp_slot;
+            use yubisign::openpgp_slot;
             for (name, slot) in [("SIG", openpgp_slot::SIG), ("AUT", openpgp_slot::AUT)] {
                 println!("OpenPGP ({name} slot):");
-                match yubikey_crypto::openpgp_account(slot) {
+                match yubisign::openpgp_account(slot) {
                     Ok((curve, pk)) => {
                         println!("  {}  ({})", format_address(curve, &pk)?, hex::encode(&pk))
                     }
@@ -86,7 +92,7 @@ fn run() -> Result<(), String> {
             // PIV slots: Ed25519 → Solana.
             println!("PIV slots (Ed25519 → Solana):");
             let mut found = 0;
-            for info in yubikey_crypto::list_piv_accounts().map_err(|e| format!("{e}"))? {
+            for info in yubisign::list_piv_accounts().map_err(|e| format!("{e}"))? {
                 if let Some(pk) = info.ed25519_pubkey {
                     found += 1;
                     println!(
@@ -111,7 +117,39 @@ fn run() -> Result<(), String> {
             println!("{}", format_address(account.curve, &pubkey)?);
             Ok(())
         }
+        Command::SshToSolana { ssh_key } => {
+            let key = match ssh_key {
+                Some(k) => k,
+                None => {
+                    use std::io::BufRead;
+                    std::io::stdin()
+                        .lock()
+                        .lines()
+                        .next()
+                        .ok_or("no input provided")?
+                        .map_err(|e| format!("{e}"))?
+                }
+            };
+            println!("{}", ssh_ed25519_to_solana(&key)?);
+            Ok(())
+        }
     }
+}
+
+/// Extract the Ed25519 key from an `ssh-ed25519` public key and return its
+/// Solana (base58) address. Wire format: `<len>"ssh-ed25519"<len><32-byte key>`.
+fn ssh_ed25519_to_solana(ssh_key: &str) -> Result<String, String> {
+    use base64::Engine;
+    let parts: Vec<&str> = ssh_key.split_whitespace().collect();
+    if parts.len() < 2 || parts[0] != "ssh-ed25519" {
+        return Err("expected 'ssh-ed25519 <base64> [comment]'".into());
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(parts[1])
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let idx = 4 + "ssh-ed25519".len() + 4;
+    let key = raw.get(idx..idx + 32).ok_or("SSH key data too short")?;
+    Ok(bs58::encode(key).into_string())
 }
 
 fn main() -> ExitCode {

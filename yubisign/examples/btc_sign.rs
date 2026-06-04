@@ -9,7 +9,7 @@ use bech32::{ToBase32, Variant, u5};
 use k256::ecdsa::Signature;
 use ripemd::{Digest as _, Ripemd160};
 use sha2::{Digest as _, Sha256};
-use yubikey_crypto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 fn sha256(d: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();

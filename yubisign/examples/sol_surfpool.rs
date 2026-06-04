@@ -9,7 +9,7 @@ use solana_sdk::{
     pubkey::Pubkey, signature::Signature, system_instruction, transaction::Transaction,
 };
 use std::str::FromStr;
-use yubikey_crypto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 fn main() {
     let slot_str = std::env::args().nth(1).expect("arg1=slot (e.g. 9a)");
