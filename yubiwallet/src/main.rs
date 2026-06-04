@@ -1,18 +1,18 @@
-//! `yubisign` CLI: a seedless multi-chain hardware wallet on a YubiKey.
+//! `yubiwallet` CLI: a seedless multi-chain hardware wallet on a YubiKey.
 //!
 //! Examples:
-//!   yubisign list
-//!   yubisign address --applet piv --slot 9a --curve ed25519
-//!   yubisign address --applet openpgp --slot sig --curve secp256k1
-//!   yubisign ssh-to-solana "ssh-ed25519 AAAA..."
+//!   yubiwallet list
+//!   yubiwallet address --applet piv --slot 9a --curve ed25519
+//!   yubiwallet address --applet openpgp --slot sig --curve secp256k1
+//!   yubiwallet ssh-to-solana "ssh-ed25519 AAAA..."
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-use yubisign::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
+use yubiwallet::{Account, Applet, Curve, eth, get_pubkey, parse_slot};
 
 #[derive(Parser)]
 #[command(
-    name = "yubisign",
+    name = "yubiwallet",
     about = "Seedless multi-chain hardware wallet on a YubiKey"
 )]
 struct Cli {
@@ -78,10 +78,10 @@ fn run() -> Result<(), String> {
         Command::List => {
             // OpenPGP SIG/AUT slots: each holds one key (Solana if Ed25519,
             // Ethereum if secp256k1).
-            use yubisign::openpgp_slot;
+            use yubiwallet::openpgp_slot;
             for (name, slot) in [("SIG", openpgp_slot::SIG), ("AUT", openpgp_slot::AUT)] {
                 println!("OpenPGP ({name} slot):");
-                match yubisign::openpgp_account(slot) {
+                match yubiwallet::openpgp_account(slot) {
                     Ok((curve, pk)) => {
                         println!("  {}  ({})", format_address(curve, &pk)?, hex::encode(&pk))
                     }
@@ -92,7 +92,7 @@ fn run() -> Result<(), String> {
             // PIV slots: Ed25519 → Solana.
             println!("PIV slots (Ed25519 → Solana):");
             let mut found = 0;
-            for info in yubisign::list_piv_accounts().map_err(|e| format!("{e}"))? {
+            for info in yubiwallet::list_piv_accounts().map_err(|e| format!("{e}"))? {
                 if let Some(pk) = info.ed25519_pubkey {
                     found += 1;
                     println!(

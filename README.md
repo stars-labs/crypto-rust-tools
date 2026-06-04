@@ -1,12 +1,12 @@
 <div align="center">
 
-# YubiSign
+# YubiWallet
 
 **A seedless, multi-chain hardware wallet on the YubiKey you already own.**
 
 English | [简体中文](README.zh.md)
 
-[![CI](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml)
+[![CI](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 
@@ -17,7 +17,7 @@ browser extension, no extra $50 device.
 </div>
 
 ```console
-$ yubisign list
+$ yubiwallet list
 OpenPGP (SIG slot):  Ethereum: 0xc370580ab2b42762347b76899abaa2a261c95c82
 OpenPGP (AUT slot):  Ethereum: 0xeca4518f33df44ee11233139565a48b2225e389e
 PIV slots (Ed25519 → Solana):
@@ -28,10 +28,10 @@ PIV slots (Ed25519 → Solana):
 
 <sub>Record a GIF of your own setup with [`vhs demo/demo.tape`](demo/demo.tape).</sub>
 
-## Why YubiSign
+## Why YubiWallet
 
 - 🌱 **No seed phrase.** The #1 way people lose crypto is a lost or stolen
-  24-word seed. YubiSign keys are generated inside the YubiKey and can never be
+  24-word seed. YubiWallet keys are generated inside the YubiKey and can never be
   exported — there is no seed to back up, leak, or phish.
 - 🔌 **Reuse hardware you own.** Your YubiKey becomes a hardware wallet. No new
   device to buy or carry.
@@ -49,24 +49,24 @@ PIV slots (Ed25519 → Solana):
 
 > No BIP32 derivation — each account is an independent on-card key. secp256k1
 > accounts are capped at the OpenPGP slots; for *many* EVM/BTC accounts use a
-> BIP32 device. YubiSign shines at: lots of Ed25519 accounts + a couple of
+> BIP32 device. YubiWallet shines at: lots of Ed25519 accounts + a couple of
 > secp256k1 accounts on hardware you already have.
 
 ## Quickstart
 
 ```bash
-git clone https://github.com/stars-labs/yubisign && cd yubisign
-cargo build --release -p yubisign
+git clone https://github.com/stars-labs/yubiwallet && cd yubiwallet
+cargo build --release -p yubiwallet
 
-yubisign list                                                   # all accounts
-yubisign address --applet piv --slot 9a --curve ed25519         # a Solana address
-yubisign address --applet openpgp --slot sig --curve secp256k1  # an Ethereum/Bitcoin key
-yubisign ssh-to-solana "ssh-ed25519 AAAA..."                    # SSH key → Solana address
+yubiwallet list                                                   # all accounts
+yubiwallet address --applet piv --slot 9a --curve ed25519         # a Solana address
+yubiwallet address --applet openpgp --slot sig --curve secp256k1  # an Ethereum/Bitcoin key
+yubiwallet ssh-to-solana "ssh-ed25519 AAAA..."                    # SSH key → Solana address
 ```
 
 Prerequisites: `pcscd` running, `ykman` for PIV provisioning, YubiKey firmware
 **5.7+** for Ed25519 on PIV. Full docs, provisioning, and the library API:
-**[yubisign/README.md](yubisign/README.md)**.
+**[yubiwallet/README.md](yubiwallet/README.md)**.
 
 ## Verified on real hardware
 
@@ -81,7 +81,7 @@ on local nodes** — 50 in total:
 | Ethereum | anvil | broadcast & mined |
 
 Reproduce with the suite in
-**[yubisign/multichain-tests/](yubisign/multichain-tests/README.md)**.
+**[yubiwallet/multichain-tests/](yubiwallet/multichain-tests/README.md)**.
 
 ## How it works
 
@@ -141,8 +141,8 @@ Back up your PIN / PUK / Admin PIN somewhere safe too.
    on different YubiKeys: losing one device, or one key being compromised, does
    not lose the funds. Best choice for large balances.
 
-**Does YubiSign store my keys or a seed anywhere?**
-No. There is no seed phrase and YubiSign writes no key file — it only talks to
+**Does YubiWallet store my keys or a seed anywhere?**
+No. There is no seed phrase and YubiWallet writes no key file — it only talks to
 the card; signing happens on-card after PIN entry.
 
 ## Contributing & security

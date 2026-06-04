@@ -1,12 +1,12 @@
-# Contributing to YubiSign
+# Contributing to YubiWallet
 
-Thanks for your interest! YubiSign is a small Rust library + CLI that turns a
+Thanks for your interest! YubiWallet is a small Rust library + CLI that turns a
 YubiKey into a multi-chain hardware signer.
 
 ## Project layout
 
 ```
-yubisign/
+yubiwallet/
   src/            # library + CLI (the only published, security-critical code)
     account.rs apdu.rs openpgp.rs piv.rs eth.rs error.rs pin.rs lib.rs main.rs
   examples/       # per-chain signing demos (use blockchain SDKs / RPC)
@@ -21,10 +21,10 @@ surface small and the crate buildable on older toolchains.
 ## Building & checking
 
 ```bash
-cargo build -p yubisign          # library + CLI (builds on rustc 1.86+)
-cargo test  -p yubisign          # unit tests (APDU/TLV/signature recovery)
-cargo fmt   -p yubisign --check
-cargo clippy -p yubisign --all-targets
+cargo build -p yubiwallet          # library + CLI (builds on rustc 1.86+)
+cargo test  -p yubiwallet          # unit tests (APDU/TLV/signature recovery)
+cargo fmt   -p yubiwallet --check
+cargo clippy -p yubiwallet --all-targets
 ```
 
 The library, CLI and unit tests build on older Rust. The **example signers need
@@ -35,7 +35,7 @@ rustc ≥ 1.89** (modern blockchain crates). If your dev shell pins an older Rus
 
 `multichain-tests/` runs real transactions on local nodes (surfpool, `sui`
 localnet, `bitcoind -regtest`) and needs a physical YubiKey. They are **not** in
-CI. See `yubisign/multichain-tests/README.md`.
+CI. See `yubiwallet/multichain-tests/README.md`.
 
 ## Pull requests
 

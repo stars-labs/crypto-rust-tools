@@ -9,12 +9,12 @@ or email the maintainer at `xiongchenyu6@gmail.com`. We aim to acknowledge withi
 
 ## Security model
 
-YubiSign is a thin client. **It never sees, stores, or transmits private keys.**
+YubiWallet is a thin client. **It never sees, stores, or transmits private keys.**
 
 - **Keys live in the YubiKey's secure element.** With on-card key generation the
   private key is created on the device and is non-exportable — it cannot be read
   out, cloned, or backed up.
-- **Every signature is computed on-card** after PIN verification. YubiSign only
+- **Every signature is computed on-card** after PIN verification. YubiWallet only
   builds the message/transaction, sends an APDU, and receives the signature.
 - **No seed phrase, no key files.** There is nothing on disk to leak. For PIV the
   public key is read from the slot's certificate.
@@ -41,7 +41,7 @@ YubiSign is a thin client. **It never sees, stores, or transmits private keys.**
   Use off-card generation + import to ≥2 keys, or a wallet multisig, for anything
   meaningful (see the README backup guide).
 - **Supply-chain trust in the YubiKey secure element / firmware** (Yubico).
-- **Address/transaction spoofing in your wallet UI** — YubiSign signs the bytes it
+- **Address/transaction spoofing in your wallet UI** — YubiWallet signs the bytes it
   is given.
 
 ## Defaults
@@ -51,5 +51,5 @@ PIV PIN `123456` / PUK `12345678` / management key.
 
 ## Scope
 
-In scope: the `yubisign` library and CLI. Out of scope: the example signers
+In scope: the `yubiwallet` library and CLI. Out of scope: the example signers
 (test tooling), third-party nodes/RPCs, and the YubiKey hardware/firmware itself.

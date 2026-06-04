@@ -47,7 +47,7 @@ sui client new-env --alias localnet --rpc http://127.0.0.1:9000 && sui client sw
 ## Run
 
 ```bash
-cd yubisign/multichain-tests
+cd yubiwallet/multichain-tests
 YK_PIN=123456 ./run-solana.sh                         # 24 PIV slots, surfpool
 YK_PIN=123456 ./run-sui.sh                            # 24 PIV slots, sui localnet
 YK_PIN=123456 BTC_DATADIR=/tmp/btcreg ./run-bitcoin.sh  # OpenPGP SIG+AUT, regtest
@@ -63,7 +63,7 @@ can be restored to any YubiKey and yields the same account.
 
 It generates an Ed25519 key off-card, derives its Solana address *offline* from
 the file, imports the **same** key into two PIV slots, and asserts the offline
-address equals what YubiSign reads from both slots:
+address equals what YubiWallet reads from both slots:
 
 ```bash
 YK_PIN=123456 ./run-backup.sh          # ⚠ overwrites PIV slots 94 and 95

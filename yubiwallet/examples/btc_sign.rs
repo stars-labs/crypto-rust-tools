@@ -10,7 +10,7 @@ use bech32::segwit;
 use k256::ecdsa::Signature;
 use ripemd::{Digest as _, Ripemd160};
 use sha2::Sha256;
-use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubiwallet::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 fn sha256(d: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();

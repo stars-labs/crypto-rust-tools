@@ -1,12 +1,12 @@
 <div align="center">
 
-# YubiSign
+# YubiWallet
 
 **用你手上已有的 YubiKey,变成一个无助记词的多链硬件钱包。**
 
 [English](README.md) | 简体中文
 
-[![CI](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml)
+[![CI](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 
@@ -16,7 +16,7 @@
 </div>
 
 ```console
-$ yubisign list
+$ yubiwallet list
 OpenPGP (SIG slot):  Ethereum: 0xc370580ab2b42762347b76899abaa2a261c95c82
 OpenPGP (AUT slot):  Ethereum: 0xeca4518f33df44ee11233139565a48b2225e389e
 PIV slots (Ed25519 → Solana):
@@ -25,9 +25,9 @@ PIV slots (Ed25519 → Solana):
   ... (24 个 PIV 账户)
 ```
 
-## 为什么用 YubiSign
+## 为什么用 YubiWallet
 
-- 🌱 **没有助记词。** 丢币最常见的原因就是 24 词种子被弄丢或被偷。YubiSign 的
+- 🌱 **没有助记词。** 丢币最常见的原因就是 24 词种子被弄丢或被偷。YubiWallet 的
   密钥在 YubiKey 内部生成、无法导出——根本没有种子需要备份、泄露或被钓鱼。
 - 🔌 **复用你已有的硬件。** 让 YubiKey 直接当硬件钱包,不用再买、再带一个设备。
 - 🪪 **一把卡,多账户、多链。** 卡内 26 把独立密钥 → Solana / Sui / Aptos
@@ -43,23 +43,23 @@ PIV slots (Ed25519 → Solana):
 | Ethereum、Bitcoin、Cosmos… | secp256k1 | OpenPGP `SIG`+`AUT` | ~2 |
 
 > 没有 BIP32 派生——每个账户都是卡内一把独立密钥。secp256k1 账户受限于 OpenPGP
-> 的槽位数;如果要**很多** EVM/BTC 账户请用支持 BIP32 的设备。YubiSign 的最佳
+> 的槽位数;如果要**很多** EVM/BTC 账户请用支持 BIP32 的设备。YubiWallet 的最佳
 > 场景:在你已有的硬件上,放很多 Ed25519 账户 + 少量 secp256k1 账户。
 
 ## 快速上手
 
 ```bash
-git clone https://github.com/stars-labs/yubisign && cd yubisign
-cargo build --release -p yubisign
+git clone https://github.com/stars-labs/yubiwallet && cd yubiwallet
+cargo build --release -p yubiwallet
 
-yubisign list                                                   # 列出所有账户
-yubisign address --applet piv --slot 9a --curve ed25519         # 一个 Solana 地址
-yubisign address --applet openpgp --slot sig --curve secp256k1  # 一把 Ethereum/Bitcoin 密钥
-yubisign ssh-to-solana "ssh-ed25519 AAAA..."                    # SSH 公钥 → Solana 地址
+yubiwallet list                                                   # 列出所有账户
+yubiwallet address --applet piv --slot 9a --curve ed25519         # 一个 Solana 地址
+yubiwallet address --applet openpgp --slot sig --curve secp256k1  # 一把 Ethereum/Bitcoin 密钥
+yubiwallet ssh-to-solana "ssh-ed25519 AAAA..."                    # SSH 公钥 → Solana 地址
 ```
 
 前置条件:`pcscd` 运行中、用 `ykman` 配置 PIV、PIV 上的 Ed25519 需要固件
-**5.7+**。完整文档、密钥配置和库 API:**[yubisign/README.md](yubisign/README.md)**。
+**5.7+**。完整文档、密钥配置和库 API:**[yubiwallet/README.md](yubiwallet/README.md)**。
 
 ## 真机验证
 
@@ -73,7 +73,7 @@ yubisign ssh-to-solana "ssh-ed25519 AAAA..."                    # SSH 公钥 →
 | Bitcoin | `bitcoind -regtest` | **2/2 确认** |
 | Ethereum | anvil | 广播并打包 |
 
-复现见 **[yubisign/multichain-tests/](yubisign/multichain-tests/README.md)**。
+复现见 **[yubiwallet/multichain-tests/](yubiwallet/multichain-tests/README.md)**。
 
 ## 工作原理
 
@@ -126,8 +126,8 @@ Admin PIN 也耗尽会触发 reset,**直接清空密钥**)。所以:
 3. **多签**——用钱包多签(Solana Squads、Gnosis Safe 等),不同 YubiKey 各持一把:
    丢一把设备、或一把密钥被攻破,都不会丢资产。大额首选。
 
-**YubiSign 会把我的密钥或助记词存在哪里吗?**
-不会。没有助记词,YubiSign 也不写任何密钥文件——它只和卡通信,签名在卡内完成
+**YubiWallet 会把我的密钥或助记词存在哪里吗?**
+不会。没有助记词,YubiWallet 也不写任何密钥文件——它只和卡通信,签名在卡内完成
 (输入 PIN 后)。
 
 ## 贡献与安全

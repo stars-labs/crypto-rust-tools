@@ -1,6 +1,6 @@
-# YubiSign
+# YubiWallet
 
-[![CI](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubisign/actions/workflows/ci.yml)
+[![CI](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 
 **Sign Solana, Ethereum, Sui and Bitcoin transactions with keys that never leave your YubiKey.**
@@ -11,7 +11,7 @@ every signature is computed inside the secure element.
 
 ```bash
 # See every account on the key
-cargo run -p yubisign -- list
+cargo run -p yubiwallet -- list
 # OpenPGP (SIG slot):  Solana: H73nCgxv5uUr62poKvJHXPhKk1pTaQp9DUtAdUxTcQir
 # OpenPGP (AUT slot):  Ethereum: 0x9f2a...c41d
 # PIV slots (Ed25519 → Solana):
@@ -50,9 +50,9 @@ carry. This crate lets you reuse it to custody blockchain keys:
 ## Install
 
 ```bash
-git clone https://github.com/stars-labs/yubisign
-cd yubisign
-cargo build --release -p yubisign
+git clone https://github.com/stars-labs/yubiwallet
+cd yubiwallet
+cargo build --release -p yubiwallet
 ```
 
 Prerequisites:
@@ -65,11 +65,11 @@ Prerequisites:
 
 ```bash
 # List all accounts (OpenPGP SIG/AUT + PIV Ed25519 slots)
-cargo run -p yubisign -- list
+cargo run -p yubiwallet -- list
 
 # Show one account's address
-cargo run -p yubisign -- address --applet piv     --slot 9a  --curve ed25519
-cargo run -p yubisign -- address --applet openpgp --slot aut --curve secp256k1
+cargo run -p yubiwallet -- address --applet piv     --slot 9a  --curve ed25519
+cargo run -p yubiwallet -- address --applet openpgp --slot aut --curve secp256k1
 ```
 
 `--slot` accepts aliases: `sig`/`aut` (OpenPGP); `auth`/`sign`/`keymgmt`/`cardauth`
@@ -78,7 +78,7 @@ or a hex id like `9a`/`82` (PIV).
 ## Library
 
 ```rust
-use yubisign::{get_pubkey, sign, eth, Account, Applet, Curve, openpgp_slot};
+use yubiwallet::{get_pubkey, sign, eth, Account, Applet, Curve, openpgp_slot};
 
 // Solana account on PIV retired slot 0x82.
 let sol = Account { applet: Applet::Piv, slot: 0x82, curve: Curve::Ed25519 };
@@ -105,11 +105,11 @@ older toolchains too.
 
 ```bash
 # Solana transfer on a local node (SDK-free: raw JSON-RPC + manual tx)
-cargo run -p yubisign --example sol_surfpool -- 9a
+cargo run -p yubiwallet --example sol_surfpool -- 9a
 
 # Ethereum transfer (set ETHEREUM_RPC_URL in examples/ethereum.rs first).
 # Use --slot aut if your SIG slot is an Ed25519 (Solana) key.
-cargo run -p yubisign --example ethereum -- --slot aut
+cargo run -p yubiwallet --example ethereum -- --slot aut
 ```
 
 ---
@@ -233,7 +233,7 @@ openssl pkey -in account.pem -pubout -out account.pub.pem
 ykman piv keys import 9c account.pem
 ykman piv certificates generate -s "CN=account" 9c account.pub.pem
 # 3. Verify
-yubisign address --applet piv --slot 9c --curve ed25519
+yubiwallet address --applet piv --slot 9c --curve ed25519
 ```
 
 ### Backup-able secp256k1 (Ethereum/Bitcoin) via OpenPGP
@@ -253,7 +253,7 @@ gpg --export-secret-keys --armor <KEYID> > eth-account.backup.asc   # encrypt & 
 # 2. Move it onto the card's signature slot: keytocard -> (1) Signature key -> save
 gpg --edit-key <KEYID>
 # 3. Verify
-yubisign address --applet openpgp --slot sig --curve secp256k1
+yubiwallet address --applet openpgp --slot sig --curve secp256k1
 ```
 
 > Restore = re-run the import (PIV) or `keytocard` from the backup (OpenPGP) on a

@@ -4,11 +4,11 @@
 //!
 //! SDK-free on purpose: talks JSON-RPC over a plain TCP socket and serializes a
 //! legacy transfer transaction by hand, so it pulls **no** solana-sdk tree. The
-//! signature is produced on-card via `yubisign::sign`. Targets a local node
+//! signature is produced on-card via `yubiwallet::sign`. Targets a local node
 //! (surfpool default 127.0.0.1:8899); override with SOLANA_RPC=host:port.
 use base64::Engine;
 use std::io::{Read, Write};
-use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubiwallet::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 const SYSTEM_PROGRAM: [u8; 32] = [0u8; 32]; // 11111111111111111111111111111111
 // wSOL mint — any valid pubkey works as the transfer recipient.

@@ -1,18 +1,18 @@
 [package]
-name = "yubisign"
+name = "yubiwallet"
 version = "0.3.1"
 edition = "2024"
-authors = ["xiongchenyu6@gmail.com>"]
+authors = ["xiongchenyu6 <xiongchenyu6@gmail.com>"]
 description = "Seedless multi-chain hardware wallet on a YubiKey — sign Solana, Ethereum, Sui and Bitcoin with keys that never leave the device"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/stars-labs/yubisign"
-keywords = ["yubikey", "solana", "ethereum", "signing", "hardware"]
+repository = "https://github.com/stars-labs/yubiwallet"
+keywords = ["yubikey", "wallet", "solana", "ethereum", "hardware"]
 categories = ["cryptography", "authentication", "hardware-support"]
 # Shell-based hardware test suite isn't part of the published crate.
 exclude = ["multichain-tests/"]
 
 [lib]
-name = "yubisign"
+name = "yubiwallet"
 path = "src/lib.rs"
 
 # The core library + CLI only need PC/SC, crypto and encoding — no blockchain

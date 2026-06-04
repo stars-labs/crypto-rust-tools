@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Demonstrates the *backup-able* workflow: generate an Ed25519 key OFF-card,
 # derive its Solana address offline, then import the SAME key into two PIV slots
-# and confirm YubiSign reports the identical address from both — proving the
+# and confirm YubiWallet reports the identical address from both — proving the
 # backup file alone determines the account, so it can be restored to any YubiKey.
 #
 #   YK_PIN=123456 ./run-backup.sh
@@ -12,8 +12,8 @@ PIN=${YK_PIN:-123456}
 MGMT=${PIV_MGMT:-010203040506070801020304050607080102030405060708}
 
 cd "$(dirname "$0")/../.."
-cargo build -q -p yubisign
-BIN=target/debug/yubisign
+cargo build -q -p yubiwallet
+BIN=target/debug/yubiwallet
 gpgconf --kill scdaemon gpg-agent 2>/dev/null || true
 
 # 1) Generate an Ed25519 key OFF-card. THIS file is your backup — keep it

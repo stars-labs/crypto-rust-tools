@@ -8,8 +8,8 @@ on:
     branches: [main]
 
 jobs:
-  yubisign:
-    name: yubisign (fmt / clippy / test)
+  yubiwallet:
+    name: yubiwallet (fmt / clippy / test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,10 +24,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
-        run: cargo fmt -p yubisign --check
+        run: cargo fmt -p yubiwallet --check
 
       - name: Clippy
-        run: cargo clippy -p yubisign --all-targets
+        run: cargo clippy -p yubiwallet --all-targets
 
       - name: Test
-        run: cargo test -p yubisign
+        run: cargo test -p yubiwallet
