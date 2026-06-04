@@ -5,10 +5,11 @@
 //!       -> print bcrt1 (regtest) P2WPKH address + compressed pubkey
 //!   cargo run --example btc_sign -- <slot> sign <txid> <vout> <in_sat> <dest_spk_hex> <out_sat>
 //!       -> print the raw signed segwit tx hex (PIN on stdin)
-use bech32::{ToBase32, Variant, u5};
+use bech32::hrp::BCRT;
+use bech32::segwit;
 use k256::ecdsa::Signature;
 use ripemd::{Digest as _, Ripemd160};
-use sha2::{Digest as _, Sha256};
+use sha2::Sha256;
 use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 fn sha256(d: &[u8]) -> [u8; 32] {
@@ -44,9 +45,7 @@ fn main() {
     let h160 = hash160(&cpk);
 
     if args.len() < 3 {
-        let mut data = vec![u5::try_from_u8(0).unwrap()]; // witness v0
-        data.extend(h160.to_base32());
-        let addr = bech32::encode("bcrt", data, Variant::Bech32).unwrap();
+        let addr = segwit::encode_v0(BCRT, &h160).expect("valid v0 witness program");
         println!("addr={addr}");
         println!("cpk={}", hex::encode(cpk));
         return;

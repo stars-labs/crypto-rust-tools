@@ -5,10 +5,9 @@
 //! `--slot aut`.
 
 use clap::Parser;
-use ethers::core::types::{Address, Bytes, U64, U256};
+use ethers::core::types::transaction::eip2718::TypedTransaction;
+use ethers::core::types::{Address, Signature as EthSig, TransactionRequest, U256};
 use ethers::providers::{Http, Middleware, Provider};
-use rlp::RlpStream;
-use sha3::{Digest, Keccak256};
 use std::error::Error;
 use std::io::{self, Write};
 use yubisign::{Account, Applet, Curve, eth, parse_slot, sign};
@@ -63,51 +62,37 @@ async fn ethereum_transaction_with_yubikey(account: &Account) -> Result<(), Box<
     let gas_price = provider.get_gas_price().await?;
     println!("Balance: {balance} wei | nonce: {nonce} | gas price: {gas_price} wei");
 
-    // 3. Transaction parameters.
+    // 3. Build a legacy EIP-155 transaction with ethers.
     let to = read_line("Recipient address (0x...): ")?.parse::<Address>()?;
-    let amount_eth = read_line("Amount (ETH): ")?.parse::<f64>()?;
-    let amount_wei = U256::from((amount_eth * 1e18) as u128);
-    let gas_limit = U256::from(21000);
+    let amount_wei = U256::from((read_line("Amount (ETH): ")?.parse::<f64>()? * 1e18) as u128);
+    let tx: TypedTransaction = TransactionRequest::new()
+        .to(to)
+        .value(amount_wei)
+        .nonce(nonce)
+        .gas(21000u64)
+        .gas_price(gas_price)
+        .chain_id(CHAIN_ID)
+        .into();
 
-    // 4. RLP for EIP-155 signing: rlp([nonce, gasPrice, gas, to, value, data, chainId, 0, 0]).
-    let mut signing_rlp = RlpStream::new_list(9);
-    signing_rlp.append(&nonce);
-    signing_rlp.append(&gas_price);
-    signing_rlp.append(&gas_limit);
-    signing_rlp.append(&to.as_bytes());
-    signing_rlp.append(&amount_wei);
-    signing_rlp.append(&Bytes::default().as_ref());
-    signing_rlp.append(&U64::from(CHAIN_ID));
-    signing_rlp.append(&U256::zero());
-    signing_rlp.append(&U256::zero());
-    let signing_payload = signing_rlp.out();
-
-    // 5. Keccak256 hash, then sign on the YubiKey (prompts for PIN).
-    let tx_hash: [u8; 32] = Keccak256::digest(&signing_payload).into();
+    // 4. Sign the EIP-155 sighash on the YubiKey (prompts for PIN).
+    let tx_hash: [u8; 32] = tx.sighash().0;
     println!("Signing tx hash {} on YubiKey...", hex::encode(tx_hash));
-    let card_sig = sign(account, &tx_hash)?; // bare R || S (64 bytes)
-    let rs: [u8; 64] = card_sig
+    let rs: [u8; 64] = sign(account, &tx_hash)?
         .as_slice()
         .try_into()
-        .map_err(|_| format!("expected 64-byte R||S, got {} bytes", card_sig.len()))?;
+        .map_err(|_| "expected 64-byte R||S")?;
 
-    // 6. Recover v, normalize to low-S, and assemble the signed transaction.
+    // 5. Recover v / low-S, assemble the signed tx with ethers, broadcast.
     let signed = eth::ethereum_signature(&pubkey, &tx_hash, &rs, CHAIN_ID)?;
-    let mut tx_rlp = RlpStream::new_list(9);
-    tx_rlp.append(&nonce);
-    tx_rlp.append(&gas_price);
-    tx_rlp.append(&gas_limit);
-    tx_rlp.append(&to.as_bytes());
-    tx_rlp.append(&amount_wei);
-    tx_rlp.append(&Bytes::default().as_ref());
-    tx_rlp.append(&signed.v);
-    tx_rlp.append(&U256::from_big_endian(&signed.r));
-    tx_rlp.append(&U256::from_big_endian(&signed.s));
-    let raw_tx = tx_rlp.out().freeze();
-    println!("Signed raw tx: 0x{}", hex::encode(&raw_tx));
+    let eth_sig = EthSig {
+        r: U256::from_big_endian(&signed.r),
+        s: U256::from_big_endian(&signed.s),
+        v: signed.v,
+    };
+    let raw = tx.rlp_signed(&eth_sig);
+    println!("Signed raw tx: 0x{}", hex::encode(&raw));
 
-    // 7. Broadcast.
-    match provider.send_raw_transaction(raw_tx.into()).await {
+    match provider.send_raw_transaction(raw).await {
         Ok(pending) => println!("Broadcast! tx hash: {:?}", pending.tx_hash()),
         Err(e) => println!("Broadcast failed: {e}"),
     }
