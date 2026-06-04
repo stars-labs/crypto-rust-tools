@@ -48,13 +48,36 @@ sui client new-env --alias localnet --rpc http://127.0.0.1:9000 && sui client sw
 
 ```bash
 cd yubisign/multichain-tests
-YK_PIN=123456 ./run-solana.sh
-YK_PIN=123456 ./run-sui.sh
-YK_PIN=123456 BTC_DATADIR=/tmp/btcreg ./run-bitcoin.sh
+YK_PIN=123456 ./run-solana.sh                         # 24 PIV slots, surfpool
+YK_PIN=123456 ./run-sui.sh                            # 24 PIV slots, sui localnet
+YK_PIN=123456 BTC_DATADIR=/tmp/btcreg ./run-bitcoin.sh  # OpenPGP SIG+AUT, regtest
 ```
 
 > These tests require a physical YubiKey and the local nodes; they are **not**
 > part of CI. The crate's unit tests (APDU/TLV/signature recovery) run in CI.
+
+## Backup & restore demo
+
+`run-backup.sh` proves the **backup-able** workflow: a key generated **off-card**
+can be restored to any YubiKey and yields the same account.
+
+It generates an Ed25519 key off-card, derives its Solana address *offline* from
+the file, imports the **same** key into two PIV slots, and asserts the offline
+address equals what YubiSign reads from both slots:
+
+```bash
+YK_PIN=123456 ./run-backup.sh          # ⚠ overwrites PIV slots 94 and 95
+# offline address (from backup file): 9ttXUDCGx95Q1kwJ1aQxUJCFLpFCrx4yhD2FCRA1oeR5
+# slot 94 on-card address:            9ttXUDCGx95Q1kwJ1aQxUJCFLpFCrx4yhD2FCRA1oeR5
+# slot 95 on-card address:            9ttXUDCGx95Q1kwJ1aQxUJCFLpFCrx4yhD2FCRA1oeR5
+# === BACKUP OK: offline file == slot 94 == slot 95 (restorable to any YubiKey) ===
+```
+
+`offline == slot 94 == slot 95` means: keep that key file encrypted, and you can
+restore the account onto a replacement YubiKey by re-importing it. (See the
+[Backup & recovery](../README.md#backup--recovery) section for the full
+PIV-import and OpenPGP-`keytocard` recipes, and the
+[FAQ](../../README.md#faq--backup-loss--recovery).)
 
 ## Sample output
 
