@@ -208,6 +208,15 @@ Every account on a real YubiKey (firmware 5.7.4) was used to sign and broadcast
 Reproduce it with the suite in [`multichain-tests/`](multichain-tests/README.md)
 (signing helpers live in `examples/{sol_surfpool,sui_sign,btc_sign}.rs`).
 
+## Backup & recovery
+
+- **On-card generated** keys (`ykman piv keys generate`) are non-exportable — no
+  backup; if the key is gone the funds are unrecoverable.
+- For recoverable accounts, **generate off-card and import** the same key to ≥2
+  YubiKeys (keep an encrypted backup), or use a **wallet multisig** across keys.
+- Lost/broken key, forgotten PIN/PUK, cloning, and full backup strategy are
+  covered in the [FAQ](../README.md#faq--backup-loss--recovery).
+
 ## Status
 
 Byte-level logic (APDU/TLV/signature recovery) is covered by unit tests

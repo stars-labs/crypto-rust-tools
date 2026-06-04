@@ -92,6 +92,57 @@ Reproduce with the suite in
 Per-chain encoding (address derivation, Sui Blake2b intent digest, Bitcoin
 BIP143 + low-S DER, Ethereum EIP-155 `v` recovery) is documented in the crate.
 
+## FAQ — backup, loss & recovery
+
+**Can I back up an on-card key?**
+It depends how you provision the slot:
+- **On-card generation** (`ykman piv keys generate`) — the private key is created
+  inside the secure element and can *never* be exported. Strongest security, but
+  **no backup**: if that key is gone, funds at its address are unrecoverable.
+- **Off-card + import** — generate the key in software, keep an encrypted backup,
+  then load it onto one or more YubiKeys. You trade a little security (the key
+  briefly existed off-device) for recoverability.
+
+Pick per account: recoverable funds → off-card + import to ≥2 keys; cold / max
+security → on-card and accept there is no backup.
+
+**What if I lose my YubiKey?**
+It is PIN-protected — a finder can't sign without your PIN, and wrong-PIN
+attempts lock the applet (exhausting the PUK / Admin PIN forces a reset that
+*wipes* the keys). So:
+- Have a **backup** (same key imported to a 2nd YubiKey, or an encrypted key
+  backup)? Use it to move funds to a fresh address immediately.
+- **On-card-only with no backup?** You can't move them either — treat as lost.
+  This is why redundancy matters for any real balance.
+- Always change PINs from the defaults.
+
+**What if my YubiKey breaks or dies?**
+Same as loss: backed-up (off-card) keys restore onto a new YubiKey; on-card-only
+keys are unrecoverable. Keep a second provisioned key as redundancy.
+
+**Can someone clone my YubiKey?**
+No. Secure-element keys are non-extractable — they cannot be copied off the device.
+
+**I forgot my PIN.**
+- PIV: unblock with the **PUK** (`ykman piv access unblock-pin`); if the PUK is
+  also exhausted you must reset the PIV applet (wipes its keys).
+- OpenPGP: the **Admin PIN (PW3)** resets the User PIN; if PW3 is lost, resetting
+  the OpenPGP applet wipes its keys.
+Back up your PIN / PUK / Admin PIN somewhere safe too.
+
+**Recommended backup strategy?**
+1. **Redundancy** — generate off-card and import the same key to 2–3 YubiKeys
+   kept in separate locations.
+2. **Encrypted backup** — store the off-card private key with `age`/`gpg` in ≥2
+   places.
+3. **Multisig** — use a wallet multisig (Solana Squads, Gnosis Safe, …) with keys
+   on different YubiKeys: losing one device, or one key being compromised, does
+   not lose the funds. Best choice for large balances.
+
+**Does YubiSign store my keys or a seed anywhere?**
+No. There is no seed phrase and YubiSign writes no key file — it only talks to
+the card; signing happens on-card after PIN entry.
+
 ## License
 
 MIT OR Apache-2.0
