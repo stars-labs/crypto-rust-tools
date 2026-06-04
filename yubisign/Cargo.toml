@@ -1,16 +1,16 @@
 [package]
-name = "yubikey-crypto"
-version = "0.2.0"
+name = "yubisign"
+version = "0.3.0"
 edition = "2024"
 authors = ["xiongchenyu6@gmail.com>"]
-description = "Multi-account YubiKey signing (PIV + OpenPGP) for Solana (Ed25519) and Ethereum (secp256k1)"
+description = "Seedless multi-chain hardware wallet on a YubiKey — sign Solana, Ethereum, Sui and Bitcoin with keys that never leave the device"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/stars-labs/crypto-rust-tools"
+repository = "https://github.com/stars-labs/yubisign"
 keywords = ["yubikey", "solana", "ethereum", "signing", "hardware"]
 categories = ["cryptography", "authentication", "hardware-support"]
 
 [lib]
-name = "yubikey_crypto"
+name = "yubisign"
 path = "src/lib.rs"
 
 [dependencies]

@@ -9,7 +9,7 @@
 use base64::Engine;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
-use yubikey_crypto::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
+use yubisign::{Account, Applet, Curve, get_pubkey, parse_slot, sign};
 
 type Blake2b256 = Blake2b<U32>;
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {

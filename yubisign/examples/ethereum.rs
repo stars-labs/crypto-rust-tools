@@ -11,7 +11,7 @@ use rlp::RlpStream;
 use sha3::{Digest, Keccak256};
 use std::error::Error;
 use std::io::{self, Write};
-use yubikey_crypto::{Account, Applet, Curve, eth, parse_slot, sign};
+use yubisign::{Account, Applet, Curve, eth, parse_slot, sign};
 
 // Replace with your own RPC endpoint (Sepolia testnet shown).
 const ETHEREUM_RPC_URL: &str = "https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID";
@@ -48,7 +48,7 @@ async fn ethereum_transaction_with_yubikey(account: &Account) -> Result<(), Box<
     }
 
     // 1. Fetch the secp256k1 public key and derive the real Ethereum address.
-    let pubkey = yubikey_crypto::get_pubkey(account)?; // 65-byte uncompressed point
+    let pubkey = yubisign::get_pubkey(account)?; // 65-byte uncompressed point
     let address_bytes = eth::address_from_pubkey(&pubkey)?;
     let from = Address::from(address_bytes);
     println!(

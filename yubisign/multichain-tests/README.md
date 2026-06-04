@@ -41,7 +41,7 @@ sui client new-env --alias localnet --rpc http://127.0.0.1:9000 && sui client sw
 ## Run
 
 ```bash
-cd yubikey-crpyto/multichain-tests
+cd yubisign/multichain-tests
 YK_PIN=123456 ./run-solana.sh
 YK_PIN=123456 ./run-sui.sh
 YK_PIN=123456 BTC_DATADIR=/tmp/btcreg ./run-bitcoin.sh

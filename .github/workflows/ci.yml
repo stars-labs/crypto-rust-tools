@@ -8,8 +8,8 @@ on:
     branches: [main]
 
 jobs:
-  yubikey-crypto:
-    name: yubikey-crypto (fmt / clippy / test)
+  yubisign:
+    name: yubisign (fmt / clippy / test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,10 +24,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
-        run: cargo fmt -p yubikey-crypto --check
+        run: cargo fmt -p yubisign --check
 
       - name: Clippy
-        run: cargo clippy -p yubikey-crypto --all-targets
+        run: cargo clippy -p yubisign --all-targets
 
       - name: Test
-        run: cargo test -p yubikey-crypto
+        run: cargo test -p yubisign

@@ -1,12 +1,3 @@
-[package]
-edition = "2024"
-name = "crypto-rust-tools"
-version = "0.1.0"
-
-[dependencies]
-
 [workspace]
-members = [
-    "ssh-to-solana",
-    "yubikey-crpyto",
-]
+resolver = "2"
+members = ["yubisign"]

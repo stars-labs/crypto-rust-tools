@@ -10,7 +10,7 @@ DD=${BTC_DATADIR:-/tmp/btcreg}
 SLOTS="sig aut"
 
 cd "$(dirname "$0")/../.."
-cargo build -q -p yubikey-crypto --example btc_sign
+cargo build -q -p yubisign --example btc_sign
 BIN=target/debug/examples/btc_sign
 btc() { bitcoin-cli -datadir="$DD" "$@"; }
 
