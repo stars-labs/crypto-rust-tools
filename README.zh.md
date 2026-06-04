@@ -130,6 +130,11 @@ Admin PIN 也耗尽会触发 reset,**直接清空密钥**)。所以:
 不会。没有助记词,YubiSign 也不写任何密钥文件——它只和卡通信,签名在卡内完成
 (输入 PIN 后)。
 
+## 贡献与安全
+
+欢迎贡献,见 [CONTRIBUTING.md](CONTRIBUTING.md)。依赖精简原则与威胁模型见
+[SECURITY.md](SECURITY.md);安全问题请按该文件**私下**报告。
+
 ## 许可证
 
 MIT OR Apache-2.0
