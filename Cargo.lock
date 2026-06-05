@@ -4539,6 +4539,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "yubiwallet-wasm"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "getrandom 0.2.16",
+ "hex",
+ "wasm-bindgen",
+ "yubiwallet",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"

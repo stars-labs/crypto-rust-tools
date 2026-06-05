@@ -3,6 +3,7 @@
 /// Errors returned by YubiKey card operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "card")]
     #[error("PC/SC error: {0}")]
     Pcsc(#[from] pcsc::Error),
 

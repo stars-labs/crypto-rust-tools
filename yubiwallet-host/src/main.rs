@@ -6,6 +6,7 @@
 //! (via the `yubiwallet` library); all chain logic lives in the extension.
 //!
 //! Methods:
+//!   get_info       {}                              -> { name, version, protocol, methods }
 //!   list_accounts  {}                              -> { accounts: [...] }
 //!   sign_secp256k1 { account_id, prehash:<32B hex> } -> { r, s, recovery_id }
 //!   sign_ed25519   { account_id, message:<hex> }   -> { signature:<64B hex> }
@@ -96,8 +97,17 @@ fn serialize(id: u64, result: MethodResult) -> Vec<u8> {
     serde_json::to_vec(&resp).unwrap_or_default()
 }
 
+/// Protocol version the extension can negotiate against.
+const PROTOCOL_VERSION: u32 = 1;
+
 fn dispatch(method: &str, params: &Value) -> MethodResult {
     match method {
+        "get_info" => Ok(json!({
+            "name": "yubiwallet-host",
+            "version": env!("CARGO_PKG_VERSION"),
+            "protocol": PROTOCOL_VERSION,
+            "methods": ["get_info", "get_status", "list_accounts", "sign_secp256k1", "sign_ed25519"],
+        })),
         "list_accounts" => Ok(json!({ "accounts": list_accounts() })),
         "get_status" => {
             let accounts = list_accounts();
