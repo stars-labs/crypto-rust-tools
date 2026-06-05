@@ -12,12 +12,24 @@ impossible; we need a **native host** the extension talks to.
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    dApp["dApp (web page)"]
+    subgraph EXT["Browser extension (MV3) — chain logic + approval UI"]
+        direction TB
+        prov["inpage provider"] --> cs["content script"] --> bg["background"] --> ui["approval popup"]
+    end
+    host["yubiwallet-host (Rust)<br/>key ops only · holds PIN"]
+    yk["YubiKey<br/>PIV / OpenPGP (CCID)"]
+
+    dApp -->|"EIP-1193 / Wallet Standard"| EXT
+    EXT -->|"Native Messaging<br/>(u32-le len + JSON)"| host
+    host -->|"PC/SC APDU"| yk
+    EXT -. "✗ blocked: WebUSB / WebHID / WebAuthn<br/>cannot reach the CCID interface" .-> yk
 ```
-dApp  ──EIP-1193 / Wallet Standard──▶  Extension (MV3)
-                                         inpage · content · background · popup
-Extension  ──Native Messaging (u32-le len + JSON)──▶  yubiwallet-host (Rust)
-yubiwallet-host  ──PC/SC APDU──▶  YubiKey
-```
+
+A browser can't reach the card directly (the dotted path), so signing must route
+through the native host.
 
 **Split of responsibility**
 - **host** = key primitives only (no network, no chain logic): list accounts,
@@ -75,6 +87,25 @@ So a browser wallet = `yubiwallet-wasm` (addresses/encoding) + `yubiwallet-host`
   `eth_sendRawTransaction`.
 - **personal_sign / eth_signTypedData_v4** → viem computes EIP-191/712 hash →
   host `sign_secp256k1` → `r‖s‖(recovery_id+27)`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as dApp
+    participant E as Extension
+    participant H as yubiwallet-host
+    participant Y as YubiKey
+    D->>E: eth_sendTransaction(tx)
+    E->>E: viem builds tx, computes sighash
+    E->>E: show approval popup
+    E->>H: sign_secp256k1(account_id, prehash)
+    H->>H: collect PIN (pinentry / tty)
+    H->>Y: APDU sign (PSO:CDS / GENERAL AUTHENTICATE)
+    Y-->>H: R‖S
+    H-->>E: { r, s, recovery_id }
+    E->>E: assemble signed tx (yParity = recovery_id)
+    E->>D: txHash (via eth_sendRawTransaction)
+```
 
 **Solana** (later): Wallet Standard `signTransaction` → web3.js builds message →
 host `sign_ed25519(message)` → attach.
