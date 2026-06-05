@@ -94,6 +94,24 @@ Reproduce with the suite in
 Per-chain encoding (address derivation, Sui Blake2b intent digest, Bitcoin
 BIP143 + low-S DER, Ethereum EIP-155 `v` recovery) is documented in the crate.
 
+## Use it in your app
+
+YubiWallet is a Rust core you can embed — and, for the web, drive a YubiKey from
+a **dApp in the browser**. Pick the surface that matches where your code runs:
+
+| You are writing… | Use | What it does |
+|------------------|-----|--------------|
+| A native app (Rust) | [`yubiwallet`](https://crates.io/crates/yubiwallet) crate | talk to the card directly |
+| A browser extension | the **native-messaging host** | bridge browser ↔ card |
+| Wallet UI / dApp logic (JS) | the **`yubiwallet-wasm`** package | address derivation + signature recovery (no signing) |
+
+A browser can't reach the YubiKey's PIV/OpenPGP interface directly, so the
+extension speaks Native Messaging to a small local host (`yubiwallet-host`) that
+does the card I/O — the **PIN is collected by the host and never crosses the
+extension or network**. Drop-in templates (manifest + cross-browser installer,
+typed TS client, WASM build + usage) live in **[integration/](integration/README.md)**;
+the full design is in **[docs/dapp-bridge-design.md](docs/dapp-bridge-design.md)**.
+
 ## FAQ — backup, loss & recovery
 
 **Can I back up an on-card key?**
