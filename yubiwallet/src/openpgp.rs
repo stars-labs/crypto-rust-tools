@@ -87,13 +87,13 @@ pub fn detect_account(slot: u8) -> Result<(Curve, Vec<u8>), Error> {
     )))
 }
 
-/// Sign `message` with an OpenPGP slot. Prompts for the user PIN.
+/// Sign `message` with an OpenPGP slot. `pin` is used if `Some`, else prompted.
 ///
 /// - SIG: PSO:COMPUTE DIGITAL SIGNATURE (PW1 mode 0x81).
 /// - AUT: INTERNAL AUTHENTICATE (PW1 mode 0x82).
 ///
 /// Returns the raw card signature (Ed25519: 64 bytes; secp256k1: `R || S`).
-pub fn sign(acc: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn sign(acc: &Account, message: &[u8], pin: Option<&str>) -> Result<Vec<u8>, Error> {
     let (_ctx, card) = apdu::connect()?;
     select(&card)?;
 
@@ -101,7 +101,7 @@ pub fn sign(acc: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
     let mut sig_buf = [0u8; 512];
     let signature = match acc.slot {
         openpgp_slot::SIG => {
-            let user_pin = pin::prompt("Enter User PIN (PW1/PIN2): ")?;
+            let user_pin = pin::resolve(pin, "Enter User PIN (PW1/PIN2): ")?;
             apdu::send(
                 &card,
                 CLA,
@@ -124,7 +124,7 @@ pub fn sign(acc: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
             )?
         }
         openpgp_slot::AUT => {
-            let user_pin = pin::prompt("Enter User PIN (PW1): ")?;
+            let user_pin = pin::resolve(pin, "Enter User PIN (PW1): ")?;
             apdu::send(
                 &card,
                 CLA,
