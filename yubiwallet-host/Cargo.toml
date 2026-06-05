@@ -1,0 +1,19 @@
+[package]
+name = "yubiwallet-host"
+version = "0.1.0"
+edition = "2024"
+authors = ["xiongchenyu6@gmail.com>"]
+description = "Native-messaging host bridging a browser extension to a YubiKey via yubiwallet"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stars-labs/yubiwallet"
+
+[[bin]]
+name = "yubiwallet-host"
+path = "src/main.rs"
+
+[dependencies]
+yubiwallet = { path = "../yubiwallet" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+bs58 = "0.5"

@@ -32,11 +32,22 @@ pub fn get_pubkey(account: &Account) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// Sign `message` with `account`'s key. May prompt for a PIN.
+/// Sign `message` with `account`'s key, prompting for the PIN on stdin.
 pub fn sign(account: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
+    sign_dispatch(account, message, None)
+}
+
+/// Sign `message` with a caller-supplied PIN (no stdin prompt).
+///
+/// Intended for non-interactive callers such as the native-messaging host.
+pub fn sign_with_pin(account: &Account, message: &[u8], pin: &str) -> Result<Vec<u8>, Error> {
+    sign_dispatch(account, message, Some(pin))
+}
+
+fn sign_dispatch(account: &Account, message: &[u8], pin: Option<&str>) -> Result<Vec<u8>, Error> {
     match account.applet {
-        Applet::OpenPgp => openpgp::sign(account, message),
-        Applet::Piv => piv::sign(account, message),
+        Applet::OpenPgp => openpgp::sign(account, message, pin),
+        Applet::Piv => piv::sign(account, message, pin),
     }
 }
 

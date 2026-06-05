@@ -11,3 +11,14 @@ pub fn prompt(message: &str) -> Result<String, Error> {
     io::stdin().read_line(&mut pin)?;
     Ok(pin.trim().to_string())
 }
+
+/// Use the caller-supplied PIN if present, otherwise prompt on stdin.
+///
+/// Lets non-interactive callers (e.g. the native-messaging host) provide the
+/// PIN without the library reading from stdin.
+pub fn resolve(pin: Option<&str>, message: &str) -> Result<String, Error> {
+    match pin {
+        Some(p) => Ok(p.to_string()),
+        None => prompt(message),
+    }
+}

@@ -61,8 +61,8 @@ pub fn get_pubkey(acc: &Account) -> Result<Vec<u8>, Error> {
     Ok(fetch_ed25519_pubkey(&card, acc.slot)?.to_vec())
 }
 
-/// Sign `message` with a PIV Ed25519 account (prompts for the PIV PIN).
-pub fn sign(acc: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
+/// Sign `message` with a PIV Ed25519 account. `pin` is used if `Some`, else prompted.
+pub fn sign(acc: &Account, message: &[u8], pin: Option<&str>) -> Result<Vec<u8>, Error> {
     ensure_ed25519(acc)?;
     if !piv_slot::is_valid(acc.slot) {
         return Err(Error::Unsupported(format!(
@@ -73,7 +73,7 @@ pub fn sign(acc: &Account, message: &[u8]) -> Result<Vec<u8>, Error> {
     let (_ctx, card) = apdu::connect()?;
     select(&card)?;
 
-    let pin_str = pin::prompt("Enter PIV PIN: ")?;
+    let pin_str = pin::resolve(pin, "Enter PIV PIN: ")?;
     let padded = pin_padded(&pin_str)?;
     let mut buf = [0u8; 512];
     apdu::send(
