@@ -1,11 +1,14 @@
 [package]
 name = "yubiwallet-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-authors = ["xiongchenyu6@gmail.com>"]
+authors = ["xiongchenyu6 <xiongchenyu6@gmail.com>"]
 description = "WASM bindings for YubiWallet's chain-independent logic (address derivation, EVM signature recovery) — for wallet integrators. Signing itself requires the native host."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stars-labs/yubiwallet"
+readme = "README.md"
+keywords = ["yubikey", "wallet", "ethereum", "solana", "wasm"]
+categories = ["wasm", "cryptography::cryptocurrencies"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

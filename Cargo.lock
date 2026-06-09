@@ -4540,7 +4540,7 @@ dependencies = [
 
 [[package]]
 name = "yubiwallet-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bs58",
  "getrandom 0.2.16",
