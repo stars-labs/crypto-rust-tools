@@ -7,6 +7,8 @@
 English | [简体中文](README.zh.md)
 
 [![CI](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/yubiwallet.svg?logo=rust)](https://crates.io/crates/yubiwallet)
+[![npm](https://img.shields.io/npm/v/@stars-labs/yubiwallet-wasm.svg?logo=npm)](https://www.npmjs.com/package/@stars-labs/yubiwallet-wasm)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 
@@ -103,7 +105,7 @@ a **dApp in the browser**. Pick the surface that matches where your code runs:
 |------------------|-----|--------------|
 | A native app (Rust) | [`yubiwallet`](https://crates.io/crates/yubiwallet) crate | talk to the card directly |
 | A browser extension | the **native-messaging host** | bridge browser ↔ card |
-| Wallet UI / dApp logic (JS) | the **`yubiwallet-wasm`** package | address derivation + signature recovery (no signing) |
+| Wallet UI / dApp logic (JS) | the [`@stars-labs/yubiwallet-wasm`](https://www.npmjs.com/package/@stars-labs/yubiwallet-wasm) package | address derivation + signature recovery (no signing) |
 
 A browser can't reach the YubiKey's PIV/OpenPGP interface directly, so the
 extension speaks Native Messaging to a small local host (`yubiwallet-host`) that
