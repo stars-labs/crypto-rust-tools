@@ -7,6 +7,8 @@
 [English](README.md) | 简体中文
 
 [![CI](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml/badge.svg)](https://github.com/stars-labs/yubiwallet/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/yubiwallet.svg?logo=rust)](https://crates.io/crates/yubiwallet)
+[![npm](https://img.shields.io/npm/v/@stars-labs/yubiwallet-wasm.svg?logo=npm)](https://www.npmjs.com/package/@stars-labs/yubiwallet-wasm)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#许可证)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](#)
 
@@ -95,7 +97,7 @@ YubiWallet 是一个可嵌入的 Rust 内核——在 Web 端,还能让浏览器
 |---------|-----|------|
 | 原生应用(Rust) | [`yubiwallet`](https://crates.io/crates/yubiwallet) crate | 直接与卡通信 |
 | 浏览器扩展 | **native-messaging host** | 在浏览器与卡之间架桥 |
-| 钱包 UI / dApp 逻辑(JS) | **`yubiwallet-wasm`** 包 | 地址推导 + 签名恢复(不签名) |
+| 钱包 UI / dApp 逻辑(JS) | [`@stars-labs/yubiwallet-wasm`](https://www.npmjs.com/package/@stars-labs/yubiwallet-wasm) 包 | 地址推导 + 签名恢复(不签名) |
 
 浏览器无法直接访问 YubiKey 的 PIV/OpenPGP 接口,所以扩展通过 Native Messaging
 与本地的小程序 `yubiwallet-host` 通信,由它完成与卡的 I/O——**PIN 由 host 自己
